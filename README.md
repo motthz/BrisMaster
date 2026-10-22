@@ -29,8 +29,8 @@ Gli aggiornamenti sono automatici: all'avvio l'app controlla le release di quest
 Il motore usa il **Monte Carlo determinizzato** (PIMC):
 
 1. Dalle carte che conosce (la propria mano, la briscola, le carte uscite) genera centinaia di distribuzioni possibili delle carte coperte.
-2. In ogni distribuzione prova ciascuna carta della mano e simula il resto della partita.
-3. Quando nel mazzo restano quattro carte o meno risolve la partita in modo esatto con alfa-beta.
+2. In ogni distribuzione prova ciascuna carta della mano e simula il resto della partita. Nelle simulazioni entrambi i giocatori vedono le carte di quella distribuzione: chi apre prevede la risposta, chi risponde prende quando conviene e non spreca le briscole. Quando nel mazzo restano due carte la simulazione si ferma e il resto si risolve in modo esatto.
+3. Quando nel mazzo restano otto carte o meno risolve ogni distribuzione in modo esatto con alfa-beta.
 4. Gioca la carta con la probabilità di vittoria più alta (a parità, quella con più punti attesi).
 
 Il motore vede solo quello che vedrebbe un giocatore: le simulazioni non sbirciano mai la mano avversaria.
@@ -44,18 +44,19 @@ cargo run --release -p briscola-sim -- --panel --deals 10000 --out tabella.md
 cargo run --release -p briscola-sim -- --player engine:1000 --opponent ismcts:2000 --deals 5000
 ```
 
-Risultati del livello Difficile, 20.000 partite per avversario (dettagli in [bench/RISULTATI.md](bench/RISULTATI.md)):
+Risultati del livello Difficile, 4.000 partite per avversario, tra parentesi la v0.1.1 (dettagli in [bench/RISULTATI.md](bench/RISULTATI.md)):
 
 | Avversario | % vittorie | IC 95% |
 |---|---:|---|
-| Casuale | 92,5% | 92,2 – 92,9 |
-| Euristico | 70,5% | 69,9 – 71,1 |
-| Aggressivo | 73,5% | 72,9 – 74,1 |
-| Risparmiatore | 72,5% | 71,9 – 73,1 |
-| Briscolone | 74,8% | 74,2 – 75,4 |
-| Contacarte | 67,3% | 66,7 – 68,0 |
-| ISMCTS (2000 iterazioni) | 54,1% | 53,4 – 54,8 |
-| Motore livello Medio | 53,8% | 53,1 – 54,5 |
+| Casuale | 94,4% (92,5) | 93,6 – 95,0 |
+| Euristico | 70,2% (70,5) | 68,8 – 71,6 |
+| Aggressivo | 80,7% (73,5) | 79,4 – 81,8 |
+| Risparmiatore | 73,2% (72,5) | 71,8 – 74,5 |
+| Briscolone | 75,3% (74,8) | 74,0 – 76,7 |
+| Contacarte | 67,3% (67,3) | 65,8 – 68,7 |
+| ISMCTS (2000 iterazioni) | 58,7% (54,1) | 57,2 – 60,2 |
+| Motore livello Medio | 52,6% (53,8) | 51,0 – 54,1 |
+| Motore della v0.1.1 (Difficile) | 52,6% su 20.000 partite | 51,9 – 53,3 |
 
 Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro avversari deboli o medi il motore vince nettamente più della metà delle partite, ma contro un giocatore forte quanto lui nessun algoritmo può garantire più del 50%: due copie dello stesso motore vincono per forza il 50% a testa.
 

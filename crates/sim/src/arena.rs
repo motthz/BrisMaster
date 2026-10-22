@@ -104,14 +104,15 @@ fn play(order: &[Card], agents: &mut [Box<dyn Agent>; 2], rng: &mut SmallRng) ->
 /// due giocatori diversi contro lo stesso avversario vedono le stesse carte.
 #[cfg(test)]
 pub fn run_match(player: &str, opponent: &str, deals: u64, seed: u64) -> Result<MatchStats, String> {
-    Ok(run_deals(player, opponent, deals, seed)?.into_iter().fold(MatchStats::default(), MatchStats::merge))
+    Ok(run_deals(player, opponent, 0..deals, seed)?.into_iter().fold(MatchStats::default(), MatchStats::merge))
 }
 
 /// Come `run_match`, ma restituisce il risultato di ogni mazzo, in ordine.
-pub fn run_deals(player: &str, opponent: &str, deals: u64, seed: u64) -> Result<Vec<MatchStats>, String> {
+/// Il mazzo `d` dipende solo dal seme e da `d`, quindi si può giocare un tratto alla volta.
+pub fn run_deals(player: &str, opponent: &str, deals: std::ops::Range<u64>, seed: u64) -> Result<Vec<MatchStats>, String> {
     make_agent(player)?;
     make_agent(opponent)?;
-    Ok((0..deals)
+    Ok(deals
         .into_par_iter()
         .map(|d| {
             let mut s = MatchStats { deals: 1, ..Default::default() };

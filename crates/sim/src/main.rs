@@ -79,32 +79,38 @@ fn table_row(name: &str, s: &MatchStats) -> String {
     )
 }
 
-/// Risultati per mazzo. Con la variabile BRISCOLA_SIM_CACHE (una cartella) ogni confronto finito
-/// viene salvato, così un rapporto lungo interrotto riparte da dove era arrivato.
+/// Risultati per mazzo. Con la variabile BRISCOLA_SIM_CACHE (una cartella) si salvano
+/// a blocchi di mazzi, così un rapporto lungo interrotto riparte da dove era arrivato.
 fn deals_cached(player: &str, opponent: &str, deals: u64, seed: u64) -> Vec<MatchStats> {
-    let path = std::env::var("BRISCOLA_SIM_CACHE").ok().map(|dir| {
-        let key: String = format!("{player}_{opponent}_{deals}_{seed}")
+    const CHUNK: u64 = 250;
+    let play = |r: std::ops::Range<u64>| {
+        run_deals(player, opponent, r, seed).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(2)
+        })
+    };
+    let Ok(dir) = std::env::var("BRISCOLA_SIM_CACHE") else { return play(0..deals) };
+    let mut out = Vec::with_capacity(deals as usize);
+    for start in (0..deals).step_by(CHUNK as usize) {
+        let end = (start + CHUNK).min(deals);
+        let key: String = format!("{player}_{opponent}_{seed}_{start}-{end}")
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '_' })
+            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
             .collect();
-        std::path::Path::new(&dir).join(key)
-    });
-    if let Some(text) = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
-        let parsed: Option<Vec<MatchStats>> = text.lines().map(MatchStats::from_line).collect();
-        if let Some(v) = parsed.filter(|v| v.len() as u64 == deals) {
-            return v;
-        }
+        let path = std::path::Path::new(&dir).join(key);
+        let cached: Option<Vec<MatchStats>> = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| t.lines().map(MatchStats::from_line).collect::<Option<Vec<_>>>())
+            .filter(|v| v.len() as u64 == end - start);
+        let chunk = cached.unwrap_or_else(|| {
+            let v = play(start..end);
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(&path, v.iter().map(|s| s.to_line() + "\n").collect::<String>());
+            v
+        });
+        out.extend(chunk);
     }
-    let v = run_deals(player, opponent, deals, seed).unwrap_or_else(|e| {
-        eprintln!("{e}");
-        std::process::exit(2)
-    });
-    if let Some(p) = path {
-        let _ = std::fs::create_dir_all(p.parent().unwrap());
-        let text: String = v.iter().map(|s| s.to_line() + "\n").collect();
-        let _ = std::fs::write(p, text);
-    }
-    v
+    out
 }
 
 fn run(player: &str, opponent: &str, deals: u64, seed: u64) -> MatchStats {

@@ -26,7 +26,7 @@ pub struct MatchStats {
 }
 
 impl MatchStats {
-    fn merge(mut self, o: MatchStats) -> MatchStats {
+    pub fn merge(mut self, o: MatchStats) -> MatchStats {
         self.tally.merge(&o.tally);
         self.seat_wins[0] += o.seat_wins[0];
         self.seat_wins[1] += o.seat_wins[1];
@@ -84,6 +84,11 @@ fn play(order: &[Card], agents: &mut [Box<dyn Agent>; 2], rng: &mut SmallRng) ->
 /// `deals` mazzi in duplicato tra `player` e `opponent`. Stesso seme, stessi mazzi:
 /// due giocatori diversi contro lo stesso avversario vedono le stesse carte.
 pub fn run_match(player: &str, opponent: &str, deals: u64, seed: u64) -> Result<MatchStats, String> {
+    Ok(run_deals(player, opponent, deals, seed)?.into_iter().fold(MatchStats::default(), MatchStats::merge))
+}
+
+/// Come `run_match`, ma restituisce il risultato di ogni mazzo, in ordine.
+pub fn run_deals(player: &str, opponent: &str, deals: u64, seed: u64) -> Result<Vec<MatchStats>, String> {
     make_agent(player)?;
     make_agent(opponent)?;
     Ok((0..deals)
@@ -110,7 +115,15 @@ pub fn run_match(player: &str, opponent: &str, deals: u64, seed: u64) -> Result<
             s.sum_sq = pair * pair;
             s
         })
-        .reduce(MatchStats::default, MatchStats::merge))
+        .collect())
+}
+
+/// Statistiche cumulative sui primi `n` mazzi, per ogni `n` in `checkpoints`.
+pub fn prefixes(per_deal: &[MatchStats], checkpoints: &[u64]) -> Vec<MatchStats> {
+    checkpoints
+        .iter()
+        .map(|&n| per_deal[..(n as usize).min(per_deal.len())].iter().copied().fold(MatchStats::default(), MatchStats::merge))
+        .collect()
 }
 
 pub fn describe(spec: &str) -> String {

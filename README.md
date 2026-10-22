@@ -47,7 +47,9 @@ cargo run --release -p briscola-sim -- --panel --deals 10000 --out tabella.md
 
 L'ultimo rapporto completo è in [bench/RAPPORTO.md](bench/RAPPORTO.md).
 
-**Controllo di regressione.** Su ogni pull request la CI gioca 3000 partite tra il motore nuovo e quello dell'ultima release (job *regressione*) e fallisce se il nuovo è significativamente più debole. Dopo ogni release va aggiunta la nuova versione come riferimento: una riga in `crates/sim/Cargo.toml` e una voce in `crates/sim/src/agents.rs` (vedi il commento sulla macro `legacy!`).
+**Quante partite servono.** `briscola-sim calibrate --deals 10000` fa giocare il motore contro se stesso: il risultato giusto è il 50%, e il numero di partite è sufficiente quando da lì in poi il punteggio resta entro un punto dal 50% e l'intervallo di confidenza è largo al più ±1 punto. Con meno partite anche due giocatori identici sembrano diversi.
+
+**Controllo di regressione.** Su ogni pull request la CI gioca 10.000 partite tra il motore nuovo e quello dell'ultima release (job *regressione*) e fallisce se il nuovo è significativamente più debole. Dopo ogni release va aggiunta la nuova versione come riferimento: una riga in `crates/sim/Cargo.toml` e una voce in `crates/sim/src/agents.rs` (vedi il commento sulla macro `legacy!`).
 
 Risultati del livello Difficile, 20.000 partite per avversario (dettagli in [bench/RISULTATI.md](bench/RISULTATI.md)):
 

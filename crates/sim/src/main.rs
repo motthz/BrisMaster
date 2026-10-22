@@ -8,7 +8,8 @@
 //!   briscola-sim --panel [--deals N] [--player SPEC] [--out FILE]
 //!
 //! SPEC: random | heuristic | aggressive | cautious | trumphappy | counter
-//!       | engine:MONDI[:EPSILON[:SOGLIA[:PESO_PUNTI]]] | ismcts:ITERAZIONI
+//!       | engine:MONDI[:EPSILON[:SOGLIA[:PESO_PUNTI]]] | classic:MONDI | ismcts:ITERAZIONI
+//!       | eng:CHIAVE=VALORE,...   (vedi make_player)
 
 use briscola_core::ai::*;
 use briscola_core::stats::{wilson95, Tally};
@@ -29,6 +30,32 @@ fn make_player(spec: &str) -> Box<dyn Player> {
         "counter" => Box::new(CounterPlayer),
         s if s.starts_with("ismcts:") => {
             Box::new(IsmctsPlayer { iterations: s[7..].parse().expect("iterazioni") })
+        }
+        // Motore della v0.1.1 con N mondi.
+        s if s.starts_with("classic:") => {
+            Box::new(EnginePlayer::new(EngineConfig::classic(s[8..].parse().expect("numero di mondi"))))
+        }
+        // Configurazione per chiavi, a partire dal motore della v0.1.1:
+        // eng:mondi=1000,eps=0,solve=8,rsolve=2,pol=open,tb=8,tm=2,lb=0,os=4
+        s if s.starts_with("eng:") => {
+            let mut cfg = EngineConfig::classic(1000);
+            for kv in s[4..].split(',').filter(|p| !p.is_empty()) {
+                let (k, v) = kv.split_once('=').expect("chiave=valore");
+                match k {
+                    "mondi" => cfg.samples = v.parse().expect("mondi"),
+                    "eps" => cfg.rollout_epsilon = v.parse().expect("eps"),
+                    "solve" => cfg.solve_deck_len = v.parse().expect("solve"),
+                    "peso" => cfg.points_weight = v.parse().expect("peso"),
+                    "rsolve" => cfg.rollout_solve = Some(v.parse().expect("rsolve")),
+                    "pol" => cfg.rollout_policy = (v == "open").then(RolloutParams::default),
+                    "tb" => cfg.rollout_policy.get_or_insert_with(Default::default).trump_base = v.parse().unwrap(),
+                    "tm" => cfg.rollout_policy.get_or_insert_with(Default::default).trump_mult = v.parse().unwrap(),
+                    "lb" => cfg.rollout_policy.get_or_insert_with(Default::default).lead_bonus = v.parse().unwrap(),
+                    "os" => cfg.rollout_policy.get_or_insert_with(Default::default).opp_spend = v.parse().unwrap(),
+                    other => panic!("opzione sconosciuta: {other}"),
+                }
+            }
+            Box::new(EnginePlayer::new(cfg))
         }
         s if s.starts_with("engine:") => {
             let parts: Vec<&str> = s[7..].split(':').collect();

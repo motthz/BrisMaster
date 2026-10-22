@@ -310,6 +310,77 @@ impl Player for IsmctsPlayer {
 }
 
 // ---------------------------------------------------------------------------
+// Politica di rollout "a carte scoperte": nei mondi campionati entrambe le mani sono
+// note, quindi chi apre può prevedere la risposta e scegliere l'apertura migliore.
+
+/// Costo di spendere una carta adesso invece di tenerla (vale solo per le briscole).
+#[inline]
+fn keep_cost(c: Card, trump: u8, p: &RolloutParams) -> i32 {
+    if suit(c) == trump {
+        p.trump_base + p.trump_mult * strength(c) as i32
+    } else {
+        0
+    }
+}
+
+/// Valore della presa per chi risponde con `c` alla carta `lead`.
+#[inline]
+fn follow_value(c: Card, lead: Card, trump: u8, p: &RolloutParams) -> i32 {
+    let pts = (points(lead) + points(c)) as i32 * 4;
+    let swing = if beats(c, lead, trump) { pts + p.lead_bonus } else { -pts };
+    swing - keep_cost(c, trump, p)
+}
+
+fn best_follow(hand: CardSet, lead: Card, trump: u8, p: &RolloutParams) -> Card {
+    hand.iter()
+        .max_by_key(|&c| (follow_value(c, lead, trump, p), std::cmp::Reverse(strength(c))))
+        .unwrap()
+}
+
+/// Parametri della politica di rollout a carte scoperte.
+#[derive(Clone, Copy, Debug)]
+pub struct RolloutParams {
+    pub trump_base: i32,
+    pub trump_mult: i32,
+    pub lead_bonus: i32,
+    /// Quanto conta (in quarti) far spendere briscole all'avversario.
+    pub opp_spend: i32,
+}
+
+impl Default for RolloutParams {
+    fn default() -> Self {
+        RolloutParams { trump_base: 8, trump_mult: 2, lead_bonus: 0, opp_spend: 4 }
+    }
+}
+
+/// Mossa a carte scoperte: usa anche la mano avversaria del mondo simulato.
+pub fn open_hand_move(g: &Game, p: &RolloutParams) -> Card {
+    let me = g.to_move() as usize;
+    let hand = g.hands[me];
+    let trump = g.trump;
+    match g.table {
+        Some(lead) => best_follow(hand, lead, trump, p),
+        None => {
+            let opp = g.hands[1 - me];
+            if opp.is_empty() {
+                return hand.iter().next().unwrap();
+            }
+            hand.iter()
+                .max_by_key(|&l| {
+                    let r = best_follow(opp, l, trump, p);
+                    let pts = (points(l) + points(r)) as i32 * 4;
+                    let swing = if beats(r, l, trump) { -pts - p.lead_bonus } else { pts };
+                    (
+                        swing - keep_cost(l, trump, p) + keep_cost(r, trump, p) * p.opp_spend / 4,
+                        std::cmp::Reverse(strength(l)),
+                    )
+                })
+                .unwrap()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Motore Monte Carlo determinizzato (PIMC) con risolutore esatto nel finale.
 
 #[derive(Clone, Copy, Debug)]
@@ -325,11 +396,40 @@ pub struct EngineConfig {
     /// Thread usati per simulare i mondi. 1 = tutto sul thread chiamante, con risultati
     /// riproducibili dal seme; i test massivi lo lasciano a 1 perché parallelizzano le partite.
     pub threads: usize,
+    /// Nei rollout, quando nel mazzo restano al più queste carte si smette di simulare
+    /// e si risolve il resto della partita con alfa-beta (`None` = rollout fino alla fine).
+    pub rollout_solve: Option<u8>,
+    /// Politica dei rollout: `None` = euristica classica, altrimenti a carte scoperte.
+    pub rollout_policy: Option<RolloutParams>,
 }
 
 impl EngineConfig {
+    /// Motore attuale: rollout a carte scoperte senza mosse casuali, finale esatto da 8
+    /// carte nel mazzo e rollout che si fermano a 2 carte per risolvere il resto.
     pub fn strength(samples: u32) -> EngineConfig {
-        EngineConfig { samples, solve_deck_len: 4, rollout_epsilon: 0.1, points_weight: 1.0 / 1200.0, threads: 1 }
+        EngineConfig {
+            samples,
+            solve_deck_len: 8,
+            rollout_epsilon: 0.0,
+            points_weight: 1.0 / 1200.0,
+            rollout_solve: Some(2),
+            rollout_policy: Some(RolloutParams::default()),
+            threads: 1,
+        }
+    }
+
+    /// Motore della v0.1.1: rollout euristici con il 10% di mosse casuali, finale esatto
+    /// da 4 carte. Resta come riferimento per i confronti.
+    pub fn classic(samples: u32) -> EngineConfig {
+        EngineConfig {
+            samples,
+            solve_deck_len: 4,
+            rollout_epsilon: 0.1,
+            points_weight: 1.0 / 1200.0,
+            rollout_solve: None,
+            rollout_policy: None,
+            threads: 1,
+        }
     }
 }
 
@@ -361,12 +461,26 @@ fn utility(pts: u8) -> f64 {
 }
 
 fn rollout(g: &mut Game, eps: f64, rng: &mut SmallRng) {
-    while !g.is_over() {
+    rollout_until(g, None, eps, None, rng);
+}
+
+/// Simula fino alla fine, o finché nel mazzo restano al più `deck_limit` carte, con la
+/// politica euristica (`policy = None`) o a carte scoperte.
+fn rollout_until(
+    g: &mut Game,
+    policy: Option<&RolloutParams>,
+    eps: f64,
+    deck_limit: Option<u8>,
+    rng: &mut SmallRng,
+) {
+    while !g.is_over() && deck_limit.map_or(true, |l| g.deck_len > l) {
         let p = g.to_move() as usize;
         let hand = g.hands[p];
         let c = if rng.gen_bool(eps) {
             let n = hand.len();
             hand.iter().nth(rng.gen_range(0..n as usize)).unwrap()
+        } else if let Some(params) = policy {
+            open_hand_move(g, params)
         } else {
             heuristic_move(hand, g.table, g.trump)
         };
@@ -492,8 +606,11 @@ fn simulate(obs: &Observation, moves: &[Card], cfg: &EngineConfig, samples: u32,
             for (i, &c) in moves.iter().enumerate() {
                 let mut g = world;
                 g.play(c);
-                rollout(&mut g, cfg.rollout_epsilon, rng);
-                sums.add(i, g.points[me as usize], cfg);
+                let policy = cfg.rollout_policy.as_ref();
+                rollout_until(&mut g, policy, cfg.rollout_epsilon, cfg.rollout_solve, rng);
+                let final_pts =
+                    if g.is_over() { g.points[me as usize] } else { solve(&g, me, i32::MIN, i32::MAX) as u8 };
+                sums.add(i, final_pts, cfg);
             }
         }
     }
@@ -612,6 +729,32 @@ mod tests {
             let me = rng.gen_range(0..2);
             assert_eq!(solve(&g, me, i32::MIN, i32::MAX), minimax(&g, me));
         }
+    }
+
+    #[test]
+    fn open_hand_policy_basics() {
+        let p = RolloutParams::default();
+        let mut order: Vec<Card> = (0..40).collect();
+        order.swap(0, 5); // briscola: Denari
+        let mut g = Game::from_order(&order, 0);
+        // Chi risponde a un Tre di Coppe con Due di Denari (briscola), Re e Quattro di Spade taglia.
+        g.hands = [CardSet::EMPTY; 2];
+        g.hands[0].insert(make(1, 2));
+        for c in [make(0, 1), make(2, 9), make(2, 3)] {
+            g.hands[1].insert(c);
+        }
+        g.play(make(1, 2));
+        assert_eq!(open_hand_move(&g, &p), make(0, 1));
+        // Chi apre non mette l'Asso di Coppe se l'avversario può tagliarlo: apre il liscio.
+        let mut g = Game::from_order(&order, 0);
+        g.hands = [CardSet::EMPTY; 2];
+        for c in [make(1, 0), make(2, 3)] {
+            g.hands[0].insert(c);
+        }
+        for c in [make(0, 1), make(3, 4)] {
+            g.hands[1].insert(c);
+        }
+        assert_eq!(open_hand_move(&g, &p), make(2, 3));
     }
 
     #[test]

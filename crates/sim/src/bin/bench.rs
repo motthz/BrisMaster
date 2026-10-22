@@ -3,6 +3,8 @@
 //! Uso:
 //!   bench [--positions N] [--samples MONDI] [--threads T] [--solve SOGLIA] [--seed X]
 //!
+//! Senza `--solve` si usa la soglia del motore predefinito.
+//!
 //! Le posizioni si ottengono giocando partite casuali con l'euristico; per ogni
 //! posizione si misura una chiamata a `evaluate` (la stessa usata dall'app per
 //! i consigli e per la mossa del computer). L'impronta finale cambia se cambiano
@@ -23,7 +25,6 @@ fn main() {
     let samples: u32 = get("--samples", "1000").parse().unwrap();
     let threads: usize = get("--threads", "1").parse().unwrap();
     let seed: u64 = get("--seed", "7").parse().unwrap();
-    let solve: u8 = get("--solve", "4").parse().unwrap();
 
     // Posizioni di prova distribuite su tutta la partita.
     let mut rng = SmallRng::seed_from_u64(seed);
@@ -44,8 +45,10 @@ fn main() {
 
     let mut cfg = EngineConfig::strength(samples);
     cfg.threads = threads;
-    cfg.solve_deck_len = solve;
-    let solved = format!("mazzo 1-{solve} (alfa-beta)");
+    if let Some(i) = args.iter().position(|a| a == "--solve") {
+        cfg.solve_deck_len = args[i + 1].parse().unwrap();
+    }
+    let solved = format!("mazzo 1-{} (alfa-beta)", cfg.solve_deck_len);
     let phases = ["rollout", solved.as_str(), "mazzo vuoto"];
     let mut times: [Vec<f64>; 3] = Default::default();
     let mut print: u64 = 0;

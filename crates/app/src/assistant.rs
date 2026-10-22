@@ -4,9 +4,7 @@ use crate::cards_ui::{self, BEST, CARD_SIZE, GOLD};
 use briscola_core::ai::{evaluate, EngineConfig, MoveEval};
 use briscola_core::cards::{self, Card, CardSet};
 use briscola_core::{Observation, Trick};
-use eframe::egui::{
-    self, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Vec2,
-};
+use eframe::egui::{self, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use std::sync::mpsc::{channel, Receiver};
@@ -156,23 +154,13 @@ impl Position {
             return None;
         };
         let trump_card = self.trump_card.unwrap();
-        let winner = if cards::beats(c, lead, cards::suit(trump_card)) {
-            p
-        } else {
-            self.leader
-        };
+        let winner = if cards::beats(c, lead, cards::suit(trump_card)) { p } else { self.leader };
         let pts = cards::points(lead) + cards::points(c);
         self.points[winner as usize] += pts;
         self.played.insert(lead);
         self.played.insert(c);
         self.tricks += 1;
-        let trick = Trick {
-            leader: self.leader,
-            lead,
-            follow: c,
-            winner,
-            points: pts,
-        };
+        let trick = Trick { leader: self.leader, lead, follow: c, winner, points: pts };
         self.table = None;
         self.leader = winner;
         if self.deck_len > 0 {
@@ -221,21 +209,12 @@ pub fn explain(obs: &Observation, evals: &[MoveEval]) -> Vec<String> {
             let pts = cards::points(t) + cards::points(c);
             if cards::beats(c, t, trump) {
                 if cards::suit(c) == trump && cards::suit(t) != trump {
-                    out.push(format!(
-                        "Tagli con la briscola: prendi {} e porti a casa {pts} punti.",
-                        cards::name(t)
-                    ));
+                    out.push(format!("Tagli con la briscola: prendi {} e porti a casa {pts} punti.", cards::name(t)));
                 } else {
-                    out.push(format!(
-                        "Prendi la presa con {}: incassi {pts} punti.",
-                        cards::name(c)
-                    ));
+                    out.push(format!("Prendi la presa con {}: incassi {pts} punti.", cards::name(c)));
                 }
             } else if pts == 0 {
-                out.push(
-                    "Lasci la presa: sul tavolo non ci sono punti, scarti senza perdere nulla."
-                        .into(),
-                );
+                out.push("Lasci la presa: sul tavolo non ci sono punti, scarti senza perdere nulla.".into());
             } else {
                 let could = obs.hand.iter().find(|&h| cards::beats(h, t, trump));
                 match could {
@@ -260,7 +239,8 @@ pub fn explain(obs: &Observation, evals: &[MoveEval]) -> Vec<String> {
             } else if p == 0 {
                 "Apri con un liscio: se l'avversario prende, guadagna poco o niente.".to_string()
             } else if p >= 10 {
-                "Apri con un carico: secondo le simulazioni l'avversario difficilmente lo prende o lo taglia.".to_string()
+                "Apri con un carico: secondo le simulazioni l'avversario difficilmente lo prende o lo taglia."
+                    .to_string()
             } else {
                 format!("Apri con una figura ({p} punti): rischio contenuto, tieni i lisci per dopo.")
             });
@@ -269,10 +249,7 @@ pub fn explain(obs: &Observation, evals: &[MoveEval]) -> Vec<String> {
     if let Some(second) = evals.get(1) {
         let d = best.win_prob - second.win_prob;
         if d < 0.015 {
-            out.push(format!(
-                "Scelta quasi indifferente: {} vale praticamente lo stesso.",
-                cards::name(second.card)
-            ));
+            out.push(format!("Scelta quasi indifferente: {} vale praticamente lo stesso.", cards::name(second.card)));
         } else if d >= 0.08 {
             out.push(format!(
                 "Scelta netta: la seconda opzione ({}) ha {:.0} punti percentuali in meno di vittoria.",
@@ -290,10 +267,7 @@ pub fn explain(obs: &Observation, evals: &[MoveEval]) -> Vec<String> {
     if obs.trump_card_owner == Some(1 - obs.me) {
         out_trumps.insert(obs.trump_card);
     }
-    let trumps: Vec<Card> = out_trumps
-        .iter()
-        .filter(|&x| cards::suit(x) == trump)
-        .collect();
+    let trumps: Vec<Card> = out_trumps.iter().filter(|&x| cards::suit(x) == trump).collect();
     let big: Vec<&str> = trumps
         .iter()
         .filter(|&&x| cards::points(x) >= 10)
@@ -306,10 +280,7 @@ pub fn explain(obs: &Observation, evals: &[MoveEval]) -> Vec<String> {
     out.push(line + ".");
     let mine = obs.points[obs.me as usize];
     if mine <= 60 {
-        out.push(format!(
-            "Hai {mine} punti: te ne mancano {} per arrivare a 61.",
-            61 - mine
-        ));
+        out.push(format!("Hai {mine} punti: te ne mancano {} per arrivare a 61.", 61 - mine));
     } else {
         out.push(format!("Hai già {mine} punti: la partita è vinta."));
     }
@@ -409,11 +380,7 @@ impl Assistant {
                 let mut rng = SmallRng::from_entropy();
                 let evals = evaluate(&obs, &EngineConfig::strength(samples), &mut rng);
                 let reasons = explain(&obs, &evals);
-                let _ = tx.send(Analysis {
-                    evals,
-                    reasons,
-                    samples,
-                });
+                let _ = tx.send(Analysis { evals, reasons, samples });
             });
             self.pending = Some(rx);
             ctx.request_repaint_after(std::time::Duration::from_millis(60));
@@ -422,10 +389,7 @@ impl Assistant {
 
     fn eval_of(&self, c: Card) -> Option<(usize, MoveEval)> {
         let a = self.analysis.as_ref()?;
-        a.evals
-            .iter()
-            .position(|e| e.card == c)
-            .map(|i| (i, a.evals[i]))
+        a.evals.iter().position(|e| e.card == c).map(|i| (i, a.evals[i]))
     }
 
     /// Area di sinistra: tavolo con briscola, mazzo, presa in corso e mano.
@@ -442,10 +406,7 @@ impl Assistant {
                     self.reset();
                 }
                 let undo = ui
-                    .add_enabled(
-                        !self.history.is_empty(),
-                        egui::Button::new("Annulla ultima azione"),
-                    )
+                    .add_enabled(!self.history.is_empty(), egui::Button::new("Annulla ultima azione"))
                     .on_hover_text("Ctrl+Z");
                 if undo.clicked() {
                     self.undo();
@@ -460,12 +421,9 @@ impl Assistant {
         // Avversario.
         ui.vertical_centered(|ui| {
             ui.label(
-                RichText::new(format!(
-                    "Avversario · {} carte in mano · {} punti",
-                    pos.opp_hand_len, pos.points[1]
-                ))
-                .size(15.0)
-                .color(Color32::from_white_alpha(200)),
+                RichText::new(format!("Avversario · {} carte in mano · {} punti", pos.opp_hand_len, pos.points[1]))
+                    .size(15.0)
+                    .color(Color32::from_white_alpha(200)),
             );
             ui.horizontal(|ui| {
                 ui.set_min_height(SMALL_CARD.y);
@@ -486,10 +444,7 @@ impl Assistant {
                 let (rect, _) = ui.allocate_exact_size(CARD_SIZE, Sense::hover());
                 match pos.trump_card {
                     Some(t) => {
-                        let look = cards_ui::Look {
-                            dim: pos.deck_len == 0,
-                            ..Default::default()
-                        };
+                        let look = cards_ui::Look { dim: pos.deck_len == 0, ..Default::default() };
                         cards_ui::paint_face(ui.painter(), rect, t, look);
                     }
                     None => cards_ui::paint_slot(ui.painter(), rect, "?"),
@@ -502,26 +457,17 @@ impl Assistant {
                 ui.label(RichText::new(deck).color(Color32::from_white_alpha(190)));
             });
             ui.add_space(30.0);
-            let (opp_c, my_c) = if pos.leader == ME {
-                (None, pos.table)
-            } else {
-                (pos.table, None)
-            };
-            for (label, c, waiting) in [
-                ("Avversario", opp_c, step == Step::OppMove),
-                ("Tu", my_c, step == Step::MyMove),
-            ] {
+            let (opp_c, my_c) = if pos.leader == ME { (None, pos.table) } else { (pos.table, None) };
+            for (label, c, waiting) in
+                [("Avversario", opp_c, step == Step::OppMove), ("Tu", my_c, step == Step::MyMove)]
+            {
                 ui.vertical(|ui| {
                     ui.label(RichText::new(label).color(Color32::from_white_alpha(200)));
                     let (rect, _) = ui.allocate_exact_size(CARD_SIZE, Sense::hover());
                     match c {
                         Some(c) => cards_ui::paint_face(ui.painter(), rect, c, Default::default()),
                         None => {
-                            cards_ui::paint_slot(
-                                ui.painter(),
-                                rect,
-                                if waiting { "tocca a te" } else { "" },
-                            );
+                            cards_ui::paint_slot(ui.painter(), rect, if waiting { "tocca a te" } else { "" });
                             if waiting {
                                 let t = ui.input(|i| i.time) as f32;
                                 let a = 0.5 + 0.5 * (t * 3.0).sin();
@@ -531,8 +477,7 @@ impl Assistant {
                                     Stroke::new(2.0, GOLD.gamma_multiply(0.4 + 0.6 * a)),
                                     StrokeKind::Inside,
                                 );
-                                ui.ctx()
-                                    .request_repaint_after(std::time::Duration::from_millis(40));
+                                ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
                             }
                         }
                     }
@@ -545,16 +490,8 @@ impl Assistant {
         });
         ui.add_space(6.0);
         if let Some(t) = self.tricks.last() {
-            let (mine, theirs) = if t.leader == ME {
-                (t.lead, t.follow)
-            } else {
-                (t.follow, t.lead)
-            };
-            let who = if t.winner == ME {
-                "hai preso tu"
-            } else {
-                "ha preso l'avversario"
-            };
+            let (mine, theirs) = if t.leader == ME { (t.lead, t.follow) } else { (t.follow, t.lead) };
+            let who = if t.winner == ME { "hai preso tu" } else { "ha preso l'avversario" };
             ui.vertical_centered(|ui| {
                 ui.label(
                     RichText::new(format!(
@@ -572,12 +509,7 @@ impl Assistant {
         // Mano, con le valutazioni del motore sotto ogni carta.
         let mut clicked = None;
         ui.vertical_centered(|ui| {
-            ui.label(
-                RichText::new("La tua mano")
-                    .size(16.0)
-                    .strong()
-                    .color(Color32::WHITE),
-            );
+            ui.label(RichText::new("La tua mano").size(16.0).strong().color(Color32::WHITE));
             ui.horizontal(|ui| {
                 ui.set_min_height(CARD_SIZE.y + 40.0);
                 let hand = pos.hand.to_vec();
@@ -616,102 +548,72 @@ impl Assistant {
     pub fn side_ui(&mut self, ui: &mut egui::Ui, samples: &mut u32) {
         self.poll(*samples, &ui.ctx().clone());
         let step = self.pos.step();
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                match step {
-                    Step::Trump => {
-                        title(
-                            ui,
-                            "Qual è la briscola?",
-                            "Indica la carta scoperta sotto il mazzo.",
-                        );
-                        self.picker_and_entry(ui);
-                    }
-                    Step::First => {
-                        title(
-                            ui,
-                            "Chi gioca per primo?",
-                            "Chi apre la prima presa della partita.",
-                        );
-                        ui.horizontal(|ui| {
-                            let big = |t: &str| {
-                                egui::Button::new(RichText::new(t).size(17.0))
-                                    .min_size(vec2(200.0, 44.0))
-                            };
-                            if ui.add(big("Comincio io")).clicked() {
-                                self.save();
-                                self.pos.set_first(ME);
-                                self.changed();
-                            }
-                            if ui.add(big("Comincia l'avversario")).clicked() {
-                                self.save();
-                                self.pos.set_first(OPP);
-                                self.changed();
-                            }
-                        });
-                    }
-                    Step::Draw(n) => {
-                        if self.pos.tricks == 0 {
-                            title(
-                                ui,
-                                "Le tue tre carte",
-                                &format!("Indica le carte che hai in mano: ne mancano {n}."),
-                            );
-                        } else {
-                            title(
-                                ui,
-                                "Che carta hai pescato?",
-                                "Il mazzo l'ha data a te dopo l'ultima presa.",
-                            );
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            match step {
+                Step::Trump => {
+                    title(ui, "Qual è la briscola?", "Indica la carta scoperta sotto il mazzo.");
+                    self.picker_and_entry(ui);
+                }
+                Step::First => {
+                    title(ui, "Chi gioca per primo?", "Chi apre la prima presa della partita.");
+                    ui.horizontal(|ui| {
+                        let big = |t: &str| egui::Button::new(RichText::new(t).size(17.0)).min_size(vec2(200.0, 44.0));
+                        if ui.add(big("Comincio io")).clicked() {
+                            self.save();
+                            self.pos.set_first(ME);
+                            self.changed();
                         }
-                        self.picker_and_entry(ui);
-                    }
-                    Step::OppMove => {
-                        let sub = if self.pos.table.is_some() {
-                            "Ha risposto alla tua carta."
-                        } else {
-                            "Apre lui questa presa."
-                        };
-                        title(ui, "Che carta ha giocato l'avversario?", sub);
-                        self.picker_and_entry(ui);
-                    }
-                    Step::MyMove => {
-                        self.advice(ui, samples);
-                        ui.add_space(8.0);
-                        ui.label(RichText::new("Oppure scrivi la carta che hai giocato:").weak());
-                        self.entry_field(ui);
-                    }
-                    Step::Over => {
-                        let mine = self.pos.points[ME as usize];
-                        let (t, col) = match mine {
-                            p if p > 60 => (format!("Hai vinto {mine} a {}!", 120 - mine), BEST),
-                            60 => ("Pareggio 60 a 60".to_string(), Color32::YELLOW),
-                            _ => (
-                                format!("Hai perso {mine} a {}", 120 - mine),
-                                Color32::LIGHT_RED,
-                            ),
-                        };
-                        ui.add_space(10.0);
-                        ui.label(RichText::new(t).size(28.0).strong().color(col));
-                        ui.add_space(8.0);
-                        if ui
-                            .button(RichText::new("Nuova partita").size(17.0))
-                            .clicked()
-                        {
-                            self.reset();
+                        if ui.add(big("Comincia l'avversario")).clicked() {
+                            self.save();
+                            self.pos.set_first(OPP);
+                            self.changed();
                         }
+                    });
+                }
+                Step::Draw(n) => {
+                    if self.pos.tricks == 0 {
+                        title(ui, "Le tue tre carte", &format!("Indica le carte che hai in mano: ne mancano {n}."));
+                    } else {
+                        title(ui, "Che carta hai pescato?", "Il mazzo l'ha data a te dopo l'ultima presa.");
+                    }
+                    self.picker_and_entry(ui);
+                }
+                Step::OppMove => {
+                    let sub =
+                        if self.pos.table.is_some() { "Ha risposto alla tua carta." } else { "Apre lui questa presa." };
+                    title(ui, "Che carta ha giocato l'avversario?", sub);
+                    self.picker_and_entry(ui);
+                }
+                Step::MyMove => {
+                    self.advice(ui, samples);
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Oppure scrivi la carta che hai giocato:").weak());
+                    self.entry_field(ui);
+                }
+                Step::Over => {
+                    let mine = self.pos.points[ME as usize];
+                    let (t, col) = match mine {
+                        p if p > 60 => (format!("Hai vinto {mine} a {}!", 120 - mine), BEST),
+                        60 => ("Pareggio 60 a 60".to_string(), Color32::YELLOW),
+                        _ => (format!("Hai perso {mine} a {}", 120 - mine), Color32::LIGHT_RED),
+                    };
+                    ui.add_space(10.0);
+                    ui.label(RichText::new(t).size(28.0).strong().color(col));
+                    ui.add_space(8.0);
+                    if ui.button(RichText::new("Nuova partita").size(17.0)).clicked() {
+                        self.reset();
                     }
                 }
-                ui.add_space(14.0);
-                ui.separator();
-                ui.heading("Carte uscite");
-                let mut gone = self.pos.played;
-                if let Some(t) = self.pos.table {
-                    gone.insert(t);
-                }
-                tracker(ui, gone, self.pos.hand);
-            });
+            }
+            ui.add_space(14.0);
+            ui.separator();
+            ui.heading("Carte uscite");
+            let mut gone = self.pos.played;
+            if let Some(t) = self.pos.table {
+                gone.insert(t);
+            }
+            tracker(ui, gone, self.pos.hand);
+        });
     }
 
     fn picker_and_entry(&mut self, ui: &mut egui::Ui) {
@@ -738,13 +640,11 @@ impl Assistant {
                 match cards_ui::parse_card(&self.entry) {
                     Some(c) if self.enter(c) => {}
                     Some(c) => {
-                        self.entry_error =
-                            Some(format!("{} non è possibile adesso", cards::name(c)));
+                        self.entry_error = Some(format!("{} non è possibile adesso", cards::name(c)));
                         self.focus_entry = true;
                     }
                     None => {
-                        self.entry_error =
-                            Some("Carta non riconosciuta: scrivi valore e seme, es. 3c".into());
+                        self.entry_error = Some("Carta non riconosciuta: scrivi valore e seme, es. 3c".into());
                         self.focus_entry = true;
                     }
                 }
@@ -753,11 +653,7 @@ impl Assistant {
         if let Some(e) = &self.entry_error {
             ui.label(RichText::new(e).color(Color32::LIGHT_RED));
         }
-        ui.label(
-            RichText::new("Valori: A 2 3 4 5 6 7 F C R · Semi: d c s b · Ctrl+Z annulla")
-                .small()
-                .weak(),
-        );
+        ui.label(RichText::new("Valori: A 2 3 4 5 6 7 F C R · Semi: d c s b · Ctrl+Z annulla").small().weak());
     }
 
     fn advice(&mut self, ui: &mut egui::Ui, samples: &mut u32) {
@@ -800,12 +696,7 @@ impl Assistant {
                     ui.add_space(8.0);
                     ui.vertical(|ui| {
                         ui.label(RichText::new("Gioca").color(Color32::from_white_alpha(180)));
-                        ui.label(
-                            RichText::new(cards::name(best.card))
-                                .size(24.0)
-                                .strong()
-                                .color(Color32::WHITE),
-                        );
+                        ui.label(RichText::new(cards::name(best.card)).size(24.0).strong().color(Color32::WHITE));
                         ui.label(
                             RichText::new(format!(
                                 "Vittoria {:.0}% · punti attesi {:.0}",
@@ -835,15 +726,7 @@ impl Assistant {
                 ui.painter().rect_filled(rect, 4.0, Color32::from_gray(50));
                 let mut fill = rect;
                 fill.set_width(rect.width() * e.win_prob as f32);
-                ui.painter().rect_filled(
-                    fill,
-                    4.0,
-                    if i == 0 {
-                        BEST
-                    } else {
-                        Color32::from_gray(150)
-                    },
-                );
+                ui.painter().rect_filled(fill, 4.0, if i == 0 { BEST } else { Color32::from_gray(150) });
                 ui.label(format!("{:>3.0}%", e.win_prob * 100.0));
                 ui.label(RichText::new(format!("{:.0} pt", e.exp_points)).weak());
             });
@@ -885,10 +768,7 @@ fn steps_bar(ui: &mut egui::Ui, step: Step, tricks: u8) {
         Step::Draw(_) if tricks == 0 => 2,
         _ => 3,
     };
-    for (i, name) in ["Briscola", "Chi inizia", "Mano iniziale", "Partita"]
-        .iter()
-        .enumerate()
-    {
+    for (i, name) in ["Briscola", "Chi inizia", "Mano iniziale", "Partita"].iter().enumerate() {
         let done = i < current;
         let active = i == current;
         let (fill, text) = if active {
@@ -896,121 +776,72 @@ fn steps_bar(ui: &mut egui::Ui, step: Step, tricks: u8) {
         } else if done {
             (Color32::from_rgb(40, 110, 70), Color32::WHITE)
         } else {
-            (
-                Color32::from_black_alpha(60),
-                Color32::from_white_alpha(150),
-            )
+            (Color32::from_black_alpha(60), Color32::from_white_alpha(150))
         };
         let label = format!("{} {}", i + 1, name);
-        egui::Frame::new()
-            .fill(fill)
-            .corner_radius(12.0)
-            .inner_margin(vec2(10.0, 4.0))
-            .show(ui, |ui| {
-                ui.label(RichText::new(label).color(text).strong());
-            });
+        egui::Frame::new().fill(fill).corner_radius(12.0).inner_margin(vec2(10.0, 4.0)).show(ui, |ui| {
+            ui.label(RichText::new(label).color(text).strong());
+        });
     }
 }
 
 pub fn score_box(ui: &mut egui::Ui, points: [u8; 2], tricks: u8, opp: &str) {
-    egui::Frame::new()
-        .fill(Color32::from_black_alpha(70))
-        .corner_radius(10.0)
-        .inner_margin(12.0)
-        .show(ui, |ui| {
-            ui.set_width(160.0);
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new(format!("Tu  {}", points[0]))
-                        .size(24.0)
-                        .strong()
-                        .color(Color32::WHITE),
-                );
-                ui.label(
-                    RichText::new(format!("{opp}  {}", points[1]))
-                        .size(18.0)
-                        .color(Color32::from_white_alpha(200)),
-                );
-                ui.label(
-                    RichText::new(format!("Presa {} di 20", (tricks + 1).min(20)))
-                        .color(Color32::from_white_alpha(150)),
-                );
-                let (rect, _) = ui.allocate_exact_size(vec2(150.0, 8.0), Sense::hover());
-                ui.painter().rect_filled(rect, 4.0, Color32::from_gray(60));
-                let mut mine = rect;
-                mine.set_width(rect.width() * points[0] as f32 / 120.0);
-                ui.painter().rect_filled(mine, 4.0, BEST);
-                let x = rect.left() + rect.width() * 61.0 / 120.0;
-                ui.painter()
-                    .vline(x, rect.expand(3.0).y_range(), Stroke::new(1.5, GOLD));
-            });
+    egui::Frame::new().fill(Color32::from_black_alpha(70)).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
+        ui.set_width(160.0);
+        ui.vertical(|ui| {
+            ui.label(RichText::new(format!("Tu  {}", points[0])).size(24.0).strong().color(Color32::WHITE));
+            ui.label(RichText::new(format!("{opp}  {}", points[1])).size(18.0).color(Color32::from_white_alpha(200)));
+            ui.label(
+                RichText::new(format!("Presa {} di 20", (tricks + 1).min(20))).color(Color32::from_white_alpha(150)),
+            );
+            let (rect, _) = ui.allocate_exact_size(vec2(150.0, 8.0), Sense::hover());
+            ui.painter().rect_filled(rect, 4.0, Color32::from_gray(60));
+            let mut mine = rect;
+            mine.set_width(rect.width() * points[0] as f32 / 120.0);
+            ui.painter().rect_filled(mine, 4.0, BEST);
+            let x = rect.left() + rect.width() * 61.0 / 120.0;
+            ui.painter().vline(x, rect.expand(3.0).y_range(), Stroke::new(1.5, GOLD));
         });
+    });
 }
 
 /// Etichetta sotto una carta della mano con la probabilità di vittoria.
 pub fn badge(ui: &mut egui::Ui, best: bool, e: MoveEval) {
     let text = format!("{:.0}%", e.win_prob * 100.0);
-    let (fill, col) = if best {
-        (BEST, Color32::from_rgb(10, 40, 20))
-    } else {
-        (Color32::from_black_alpha(90), Color32::WHITE)
-    };
+    let (fill, col) =
+        if best { (BEST, Color32::from_rgb(10, 40, 20)) } else { (Color32::from_black_alpha(90), Color32::WHITE) };
     let w = CARD_SIZE.x;
     let (rect, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
     let pill = Rect::from_center_size(rect.center(), vec2(64.0, 20.0));
     ui.painter().rect_filled(pill, 10.0, fill);
-    ui.painter().text(
-        pill.center(),
-        Align2::CENTER_CENTER,
-        text,
-        FontId::proportional(14.0),
-        col,
-    );
-    ui.label(
-        RichText::new(format!("{:.0} punti attesi", e.exp_points))
-            .small()
-            .color(Color32::from_white_alpha(170)),
-    );
+    ui.painter().text(pill.center(), Align2::CENTER_CENTER, text, FontId::proportional(14.0), col);
+    ui.label(RichText::new(format!("{:.0} punti attesi", e.exp_points)).small().color(Color32::from_white_alpha(170)));
 }
 
 /// Griglia delle carte uscite: barrate se uscite, evidenziate se in mano.
 pub fn tracker(ui: &mut egui::Ui, gone: CardSet, mine: CardSet) {
-    egui::Grid::new("tracker")
-        .min_col_width(20.0)
-        .spacing([6.0, 4.0])
-        .show(ui, |ui| {
-            for s in 0..4u8 {
-                let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
-                cards_ui::paint_suit(ui.painter(), r.center(), 18.0, s);
-                for k in cards_ui::RANK_ORDER {
-                    let c = cards::make(s, k);
-                    let txt = RichText::new(cards::RANK_SHORT[k as usize])
-                        .monospace()
-                        .size(15.0);
-                    let txt = if gone.contains(c) {
-                        txt.strikethrough().color(Color32::from_gray(90))
-                    } else if mine.contains(c) {
-                        txt.color(Color32::BLACK)
-                            .background_color(Color32::LIGHT_BLUE)
-                    } else {
-                        txt.color(cards_ui::suit_color_light(s)).strong()
-                    };
-                    ui.label(txt);
-                }
-                ui.end_row();
+    egui::Grid::new("tracker").min_col_width(20.0).spacing([6.0, 4.0]).show(ui, |ui| {
+        for s in 0..4u8 {
+            let (r, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
+            cards_ui::paint_suit(ui.painter(), r.center(), 18.0, s);
+            for k in cards_ui::RANK_ORDER {
+                let c = cards::make(s, k);
+                let txt = RichText::new(cards::RANK_SHORT[k as usize]).monospace().size(15.0);
+                let txt = if gone.contains(c) {
+                    txt.strikethrough().color(Color32::from_gray(90))
+                } else if mine.contains(c) {
+                    txt.color(Color32::BLACK).background_color(Color32::LIGHT_BLUE)
+                } else {
+                    txt.color(cards_ui::suit_color_light(s)).strong()
+                };
+                ui.label(txt);
             }
-        });
-    let remaining: u32 = CardSet::FULL
-        .minus(gone)
-        .iter()
-        .map(|c| cards::points(c) as u32)
-        .sum();
+            ui.end_row();
+        }
+    });
+    let remaining: u32 = CardSet::FULL.minus(gone).iter().map(|c| cards::points(c) as u32).sum();
     ui.label(format!("Punti ancora in gioco: {remaining}"));
-    ui.label(
-        RichText::new("Barrate = uscite, evidenziate = in mano a te")
-            .weak()
-            .small(),
-    );
+    ui.label(RichText::new("Barrate = uscite, evidenziate = in mano a te").weak().small());
 }
 
 #[cfg(test)]
@@ -1068,10 +899,7 @@ mod tests {
         let mut a = Position::default();
         a.enter(cards::make(0, 0));
         a.set_first(ME);
-        assert!(
-            a.enter(cards::make(0, 0)).is_none(),
-            "la briscola scoperta non si pesca"
-        );
+        assert!(a.enter(cards::make(0, 0)).is_none(), "la briscola scoperta non si pesca");
         assert!(a.enter(cards::make(1, 0)).is_some());
         assert!(a.enter(cards::make(1, 0)).is_none(), "carta già in mano");
     }
@@ -1088,11 +916,7 @@ mod tests {
         let obs = a.observation();
         let mut rng = SmallRng::seed_from_u64(1);
         let evals = evaluate(&obs, &EngineConfig::strength(300), &mut rng);
-        assert_eq!(
-            evals[0].card,
-            cards::make(1, 0),
-            "l'Asso di Coppe prende il Tre"
-        );
+        assert_eq!(evals[0].card, cards::make(1, 0), "l'Asso di Coppe prende il Tre");
         let r = explain(&obs, &evals);
         assert!(r[0].starts_with("Prendi la presa"), "{r:?}");
     }

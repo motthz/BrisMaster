@@ -13,9 +13,5 @@ fn main() -> eframe::Result {
             .with_min_inner_size([1080.0, 700.0]),
         ..Default::default()
     };
-    eframe::run_native(
-        "BrisMaster",
-        options,
-        Box::new(|cc| Ok(Box::new(app::BrisApp::new(cc)))),
-    )
+    eframe::run_native("BrisMaster", options, Box::new(|cc| Ok(Box::new(app::BrisApp::new(cc)))))
 }

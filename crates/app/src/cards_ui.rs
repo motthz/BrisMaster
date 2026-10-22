@@ -2,8 +2,8 @@
 
 use briscola_core::cards::{self, Card, CardSet};
 use eframe::egui::{
-    self, epaint::Shadow, pos2, vec2, Align2, Color32, FontId, Mesh, Painter, Pos2, Rect, Sense,
-    Stroke, StrokeKind, Vec2,
+    self, epaint::Shadow, pos2, vec2, Align2, Color32, FontId, Mesh, Painter, Pos2, Rect, Sense, Stroke, StrokeKind,
+    Vec2,
 };
 
 pub const CARD_SIZE: Vec2 = Vec2::new(96.0, 148.0);
@@ -43,16 +43,8 @@ pub fn paint_suit(p: &Painter, c: Pos2, d: f32, suit: u8) {
         0 => {
             // Denari: moneta d'oro con il centro rosso.
             p.circle_filled(c, 0.46 * d, Color32::from_rgb(232, 182, 48));
-            p.circle_stroke(
-                c,
-                0.46 * d,
-                Stroke::new(0.06 * d, Color32::from_rgb(150, 100, 15)),
-            );
-            p.circle_stroke(
-                c,
-                0.30 * d,
-                Stroke::new(0.04 * d, Color32::from_rgb(170, 115, 20)),
-            );
+            p.circle_stroke(c, 0.46 * d, Stroke::new(0.06 * d, Color32::from_rgb(150, 100, 15)));
+            p.circle_stroke(c, 0.30 * d, Stroke::new(0.04 * d, Color32::from_rgb(170, 115, 20)));
             p.circle_filled(c, 0.13 * d, Color32::from_rgb(190, 50, 40));
         }
         1 => {
@@ -65,47 +57,18 @@ pub fn paint_suit(p: &Painter, c: Pos2, d: f32, suit: u8) {
                 })
                 .collect();
             p.add(egui::Shape::convex_polygon(bowl, red, Stroke::NONE));
-            p.rect_filled(
-                Rect::from_min_max(at(-0.43, -0.42), at(0.43, -0.33)),
-                0.03 * d,
-                GOLD,
-            );
+            p.rect_filled(Rect::from_min_max(at(-0.43, -0.42), at(0.43, -0.33)), 0.03 * d, GOLD);
             p.rect_filled(Rect::from_min_max(at(-0.05, 0.0), at(0.05, 0.32)), 0.0, red);
             p.circle_filled(at(0.0, 0.16), 0.08 * d, GOLD);
-            p.rect_filled(
-                Rect::from_min_max(at(-0.26, 0.30), at(0.26, 0.42)),
-                0.05 * d,
-                red,
-            );
+            p.rect_filled(Rect::from_min_max(at(-0.26, 0.30), at(0.26, 0.42)), 0.05 * d, red);
         }
         2 => {
             // Spade: lama d'acciaio, elsa d'oro.
-            let blade = vec![
-                at(0.0, -0.50),
-                at(0.08, -0.36),
-                at(0.08, 0.16),
-                at(-0.08, 0.16),
-                at(-0.08, -0.36),
-            ];
-            p.add(egui::Shape::convex_polygon(
-                blade,
-                Color32::from_rgb(70, 112, 200),
-                Stroke::NONE,
-            ));
-            p.line_segment(
-                [at(0.0, -0.40), at(0.0, 0.14)],
-                Stroke::new(0.025 * d, Color32::from_rgb(190, 210, 245)),
-            );
-            p.rect_filled(
-                Rect::from_min_max(at(-0.27, 0.15), at(0.27, 0.23)),
-                0.03 * d,
-                GOLD,
-            );
-            p.rect_filled(
-                Rect::from_min_max(at(-0.045, 0.23), at(0.045, 0.40)),
-                0.0,
-                Color32::from_rgb(110, 70, 40),
-            );
+            let blade = vec![at(0.0, -0.50), at(0.08, -0.36), at(0.08, 0.16), at(-0.08, 0.16), at(-0.08, -0.36)];
+            p.add(egui::Shape::convex_polygon(blade, Color32::from_rgb(70, 112, 200), Stroke::NONE));
+            p.line_segment([at(0.0, -0.40), at(0.0, 0.14)], Stroke::new(0.025 * d, Color32::from_rgb(190, 210, 245)));
+            p.rect_filled(Rect::from_min_max(at(-0.27, 0.15), at(0.27, 0.23)), 0.03 * d, GOLD);
+            p.rect_filled(Rect::from_min_max(at(-0.045, 0.23), at(0.045, 0.40)), 0.0, Color32::from_rgb(110, 70, 40));
             p.circle_filled(at(0.0, 0.44), 0.065 * d, GOLD);
         }
         _ => {
@@ -117,11 +80,7 @@ pub fn paint_suit(p: &Painter, c: Pos2, d: f32, suit: u8) {
             p.circle_filled(b, 0.14 * d, green);
             for t in [0.25f32, 0.5, 0.75] {
                 let k = a + (b - a) * t;
-                p.circle_filled(
-                    k + vec2(0.06 * d, 0.0),
-                    0.04 * d,
-                    Color32::from_rgb(25, 80, 35),
-                );
+                p.circle_filled(k + vec2(0.06 * d, 0.0), 0.04 * d, Color32::from_rgb(25, 80, 35));
             }
         }
     }
@@ -133,30 +92,9 @@ fn pips(n: u8) -> &'static [(f32, f32)] {
         2 => &[(0.0, -0.6), (0.0, 0.6)],
         3 => &[(0.0, -0.72), (0.0, 0.0), (0.0, 0.72)],
         4 => &[(-0.5, -0.6), (0.5, -0.6), (-0.5, 0.6), (0.5, 0.6)],
-        5 => &[
-            (-0.5, -0.65),
-            (0.5, -0.65),
-            (0.0, 0.0),
-            (-0.5, 0.65),
-            (0.5, 0.65),
-        ],
-        6 => &[
-            (-0.5, -0.72),
-            (0.5, -0.72),
-            (-0.5, 0.0),
-            (0.5, 0.0),
-            (-0.5, 0.72),
-            (0.5, 0.72),
-        ],
-        _ => &[
-            (-0.5, -0.72),
-            (0.5, -0.72),
-            (0.0, -0.36),
-            (-0.5, 0.0),
-            (0.5, 0.0),
-            (-0.5, 0.72),
-            (0.5, 0.72),
-        ],
+        5 => &[(-0.5, -0.65), (0.5, -0.65), (0.0, 0.0), (-0.5, 0.65), (0.5, 0.65)],
+        6 => &[(-0.5, -0.72), (0.5, -0.72), (-0.5, 0.0), (0.5, 0.0), (-0.5, 0.72), (0.5, 0.72)],
+        _ => &[(-0.5, -0.72), (0.5, -0.72), (0.0, -0.36), (-0.5, 0.0), (0.5, 0.0), (-0.5, 0.72), (0.5, 0.72)],
     }
 }
 
@@ -177,63 +115,28 @@ pub fn paint_face(p: &Painter, rect: Rect, c: Card, look: Look) {
     if look.dim {
         p.multiply_opacity(0.45);
     }
-    let rect = if look.lifted {
-        rect.translate(vec2(0.0, -6.0))
-    } else {
-        rect
-    };
+    let rect = if look.lifted { rect.translate(vec2(0.0, -6.0)) } else { rect };
     let h = rect.height();
     let r = 0.07 * h;
-    let shadow = Shadow {
-        offset: [2, 4],
-        blur: 10,
-        spread: 0,
-        color: Color32::from_black_alpha(110),
-    };
+    let shadow = Shadow { offset: [2, 4], blur: 10, spread: 0, color: Color32::from_black_alpha(110) };
     p.add(shadow.as_shape(rect, r));
     p.rect_filled(rect, r, PAPER);
     let (s, k) = (cards::suit(c), cards::rank(c));
     let col = suit_color(s);
-    p.rect_stroke(
-        rect.shrink(0.035 * h),
-        0.05 * h,
-        Stroke::new(1.0, col.gamma_multiply(0.6)),
-        StrokeKind::Inside,
-    );
+    p.rect_stroke(rect.shrink(0.035 * h), 0.05 * h, Stroke::new(1.0, col.gamma_multiply(0.6)), StrokeKind::Inside);
 
     // Indici agli angoli.
     let rank = cards::RANK_SHORT[k as usize];
     let font = FontId::proportional(0.14 * h);
-    p.text(
-        rect.left_top() + vec2(0.1 * h, 0.035 * h),
-        Align2::CENTER_TOP,
-        rank,
-        font.clone(),
-        col,
-    );
-    p.text(
-        rect.right_bottom() - vec2(0.1 * h, 0.035 * h),
-        Align2::CENTER_BOTTOM,
-        rank,
-        font,
-        col,
-    );
+    p.text(rect.left_top() + vec2(0.1 * h, 0.035 * h), Align2::CENTER_TOP, rank, font.clone(), col);
+    p.text(rect.right_bottom() - vec2(0.1 * h, 0.035 * h), Align2::CENTER_BOTTOM, rank, font, col);
 
     // Punti della carta in alto a destra.
     let pts = cards::points(c);
     if pts > 0 {
-        let pill = Rect::from_center_size(
-            rect.right_top() + vec2(-0.16 * h, 0.11 * h),
-            vec2(0.2 * h, 0.12 * h),
-        );
+        let pill = Rect::from_center_size(rect.right_top() + vec2(-0.16 * h, 0.11 * h), vec2(0.2 * h, 0.12 * h));
         p.rect_filled(pill, 0.06 * h, GOLD);
-        p.text(
-            pill.center(),
-            Align2::CENTER_CENTER,
-            pts.to_string(),
-            FontId::proportional(0.085 * h),
-            INK,
-        );
+        p.text(pill.center(), Align2::CENTER_CENTER, pts.to_string(), FontId::proportional(0.085 * h), INK);
     }
 
     // Centro della carta.
@@ -273,12 +176,7 @@ pub fn paint_face(p: &Painter, rect: Rect, c: Card, look: Look) {
         }
     }
     if let Some(g) = look.glow {
-        p.rect_stroke(
-            rect.expand(2.0),
-            r + 2.0,
-            Stroke::new(4.0, g),
-            StrokeKind::Outside,
-        );
+        p.rect_stroke(rect.expand(2.0), r + 2.0, Stroke::new(4.0, g), StrokeKind::Outside);
     }
 }
 
@@ -286,12 +184,7 @@ pub fn paint_face(p: &Painter, rect: Rect, c: Card, look: Look) {
 pub fn paint_back(p: &Painter, rect: Rect) {
     let h = rect.height();
     let r = 0.07 * h;
-    let shadow = Shadow {
-        offset: [2, 4],
-        blur: 10,
-        spread: 0,
-        color: Color32::from_black_alpha(110),
-    };
+    let shadow = Shadow { offset: [2, 4], blur: 10, spread: 0, color: Color32::from_black_alpha(110) };
     p.add(shadow.as_shape(rect, r));
     p.rect_filled(rect, r, Color32::from_rgb(128, 28, 40));
     let inner = rect.shrink(0.06 * h);
@@ -300,76 +193,33 @@ pub fn paint_back(p: &Painter, rect: Rect) {
     let step = 0.07 * h;
     let mut x = inner.left() - inner.height();
     while x < inner.right() {
-        clip.line_segment(
-            [
-                pos2(x, inner.bottom()),
-                pos2(x + inner.height(), inner.top()),
-            ],
-            line,
-        );
-        clip.line_segment(
-            [
-                pos2(x, inner.top()),
-                pos2(x + inner.height(), inner.bottom()),
-            ],
-            line,
-        );
+        clip.line_segment([pos2(x, inner.bottom()), pos2(x + inner.height(), inner.top())], line);
+        clip.line_segment([pos2(x, inner.top()), pos2(x + inner.height(), inner.bottom())], line);
         x += step;
     }
     p.rect_stroke(inner, 0.04 * h, Stroke::new(1.5, GOLD), StrokeKind::Inside);
     p.circle_filled(rect.center(), 0.16 * h, Color32::from_rgb(128, 28, 40));
     p.circle_stroke(rect.center(), 0.16 * h, Stroke::new(1.5, GOLD));
-    p.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        "BM",
-        FontId::proportional(0.12 * h),
-        GOLD,
-    );
+    p.text(rect.center(), Align2::CENTER_CENTER, "BM", FontId::proportional(0.12 * h), GOLD);
 }
 
 /// Spazio vuoto dove andrà una carta.
 pub fn paint_slot(p: &Painter, rect: Rect, label: &str) {
     let h = rect.height();
     p.rect_filled(rect, 0.07 * h, Color32::from_black_alpha(40));
-    p.rect_stroke(
-        rect,
-        0.07 * h,
-        Stroke::new(1.5, Color32::from_white_alpha(50)),
-        StrokeKind::Inside,
-    );
+    p.rect_stroke(rect, 0.07 * h, Stroke::new(1.5, Color32::from_white_alpha(50)), StrokeKind::Inside);
     if !label.is_empty() {
-        p.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            label,
-            FontId::proportional(13.0),
-            Color32::from_white_alpha(90),
-        );
+        p.text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.0), Color32::from_white_alpha(90));
     }
 }
 
 /// Carta interattiva (faccia o dorso) di dimensione `size`.
-pub fn card(
-    ui: &mut egui::Ui,
-    c: Option<Card>,
-    size: Vec2,
-    glow: Option<Color32>,
-    clickable: bool,
-) -> egui::Response {
-    let sense = if clickable {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
+pub fn card(ui: &mut egui::Ui, c: Option<Card>, size: Vec2, glow: Option<Color32>, clickable: bool) -> egui::Response {
+    let sense = if clickable { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     match c {
         Some(c) => {
-            let look = Look {
-                glow,
-                dim: false,
-                lifted: clickable && resp.hovered(),
-            };
+            let look = Look { glow, dim: false, lifted: clickable && resp.hovered() };
             paint_face(ui.painter(), rect, c, look);
         }
         None => paint_back(ui.painter(), rect),
@@ -389,17 +239,9 @@ pub fn paint_mini(p: &Painter, rect: Rect, c: Card, enabled: bool, hovered: bool
     if !enabled {
         p.multiply_opacity(0.22);
     }
-    let rect = if hovered {
-        rect.translate(vec2(0.0, -3.0))
-    } else {
-        rect
-    };
+    let rect = if hovered { rect.translate(vec2(0.0, -3.0)) } else { rect };
     p.rect_filled(rect, 0.1 * h, PAPER);
-    let border = if hovered {
-        Stroke::new(2.5, BEST)
-    } else {
-        Stroke::new(1.0, suit_color(s))
-    };
+    let border = if hovered { Stroke::new(2.5, BEST) } else { Stroke::new(1.0, suit_color(s)) };
     p.rect_stroke(rect, 0.1 * h, border, StrokeKind::Inside);
     p.text(
         rect.center_top() + vec2(0.0, 0.05 * h),
@@ -424,17 +266,9 @@ pub fn picker(ui: &mut egui::Ui, id: &str, allowed: CardSet) -> Option<Card> {
             for k in RANK_ORDER {
                 let c = cards::make(s, k);
                 let ok = allowed.contains(c);
-                let (rect, resp) = ui.allocate_exact_size(
-                    MINI_SIZE,
-                    if ok { Sense::click() } else { Sense::hover() },
-                );
+                let (rect, resp) = ui.allocate_exact_size(MINI_SIZE, if ok { Sense::click() } else { Sense::hover() });
                 paint_mini(ui.painter(), rect, c, ok, ok && resp.hovered());
-                if ok
-                    && resp
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(cards::name(c))
-                        .clicked()
-                {
+                if ok && resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(cards::name(c)).clicked() {
                     chosen = Some(c);
                 }
             }
@@ -454,21 +288,13 @@ pub fn paint_felt(p: &Painter, rect: Rect) {
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(1, 2, 3);
     p.add(mesh);
-    p.rect_stroke(
-        rect,
-        0.0,
-        Stroke::new(1.0, Color32::from_rgb(40, 120, 85)),
-        StrokeKind::Inside,
-    );
+    p.rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::from_rgb(40, 120, 85)), StrokeKind::Inside);
 }
 
 /// Riconosce una carta scritta a tastiera: "3c", "AD", "R s", "asso di coppe", "cavallo bastoni".
 pub fn parse_card(text: &str) -> Option<Card> {
     let t = text.trim().to_lowercase();
-    let words: Vec<&str> = t
-        .split_whitespace()
-        .filter(|w| *w != "di" && *w != "de")
-        .collect();
+    let words: Vec<&str> = t.split_whitespace().filter(|w| *w != "di" && *w != "de").collect();
     let (rank_s, suit_s): (String, String) = match words.as_slice() {
         [one] => {
             let mut chars: Vec<char> = one.chars().collect();

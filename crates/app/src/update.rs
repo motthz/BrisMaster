@@ -48,11 +48,7 @@ fn agent() -> ureq::Agent {
 /// Restituisce la release più recente se è più nuova della versione in uso.
 pub fn check() -> Result<Option<Release>, String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let resp = match agent()
-        .get(&url)
-        .set("Accept", "application/vnd.github+json")
-        .call()
-    {
+    let resp = match agent().get(&url).set("Accept", "application/vnd.github+json").call() {
         Ok(r) => r,
         // Nessuna release ancora pubblicata.
         Err(ureq::Error::Status(404, _)) => return Ok(None),
@@ -81,16 +77,12 @@ pub fn check() -> Result<Option<Release>, String> {
 }
 
 pub fn parse_version(tag: &str) -> Result<semver::Version, String> {
-    semver::Version::parse(tag.trim_start_matches(['v', 'V']))
-        .map_err(|e| format!("tag {tag}: {e}"))
+    semver::Version::parse(tag.trim_start_matches(['v', 'V'])).map_err(|e| format!("tag {tag}: {e}"))
 }
 
 /// Scarica la nuova versione, sostituisce l'eseguibile in uso e la avvia.
 pub fn install(rel: &Release) -> Result<(), String> {
-    let resp = agent()
-        .get(&rel.asset_url)
-        .call()
-        .map_err(|e| format!("download non riuscito: {e}"))?;
+    let resp = agent().get(&rel.asset_url).call().map_err(|e| format!("download non riuscito: {e}"))?;
     let mut bytes = Vec::new();
     resp.into_reader()
         .take(200 * 1024 * 1024)
@@ -103,10 +95,8 @@ pub fn install(rel: &Release) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or("cartella dell'eseguibile non trovata")?;
     let tmp = dir.join(format!(".BrisMaster-{}.exe.new", rel.version));
-    std::fs::write(&tmp, &bytes)
-        .map_err(|e| format!("impossibile scrivere {}: {e}", tmp.display()))?;
-    let result =
-        self_replace::self_replace(&tmp).map_err(|e| format!("sostituzione non riuscita: {e}"));
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("impossibile scrivere {}: {e}", tmp.display()))?;
+    let result = self_replace::self_replace(&tmp).map_err(|e| format!("sostituzione non riuscita: {e}"));
     let _ = std::fs::remove_file(&tmp);
     result?;
     std::process::Command::new(&exe)

@@ -98,11 +98,7 @@ struct ReviewItem {
 
 impl ReviewItem {
     fn chosen(&self) -> MoveEval {
-        *self
-            .evals
-            .iter()
-            .find(|e| e.card == self.decision.played)
-            .unwrap()
+        *self.evals.iter().find(|e| e.card == self.decision.played).unwrap()
     }
     /// Probabilità di vittoria persa rispetto alla mossa migliore.
     fn loss(&self) -> f64 {
@@ -156,32 +152,20 @@ impl Match {
 
     fn human_play(&mut self, c: Card, now: f64) {
         let obs = Observation::of(&self.game, HUMAN);
-        self.decisions.push(Decision {
-            obs,
-            played: c,
-            trick_no: self.tricks.len() + 1,
-        });
+        self.decisions.push(Decision { obs, played: c, trick_no: self.tricks.len() + 1 });
         let t = self.game.play(c);
         self.after_play(t, now);
     }
 
     fn start_review(&mut self) {
-        let decisions: Vec<Decision> = self
-            .decisions
-            .iter()
-            .copied()
-            .filter(|d| d.obs.hand.len() > 1)
-            .collect();
+        let decisions: Vec<Decision> = self.decisions.iter().copied().filter(|d| d.obs.hand.len() > 1).collect();
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             let mut rng = SmallRng::from_entropy();
             let cfg = EngineConfig::strength(REVIEW_SAMPLES);
             let items = decisions
                 .into_iter()
-                .map(|d| ReviewItem {
-                    evals: evaluate(&d.obs, &cfg, &mut rng),
-                    decision: d,
-                })
+                .map(|d| ReviewItem { evals: evaluate(&d.obs, &cfg, &mut rng), decision: d })
                 .collect();
             let _ = tx.send(items);
         });
@@ -208,19 +192,13 @@ pub struct BrisApp {
 
 impl BrisApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let settings: Settings = cc
-            .storage
-            .and_then(|s| eframe::get_value(s, "settings"))
-            .unwrap_or_default();
+        let settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, "settings")).unwrap_or_default();
         let mut style = (*cc.egui_ctx.global_style()).clone();
         style.visuals = egui::Visuals::dark();
         style.visuals.panel_fill = Color32::from_rgb(20, 24, 22);
-        for (ts, size) in [
-            (TextStyle::Body, 15.0),
-            (TextStyle::Button, 15.0),
-            (TextStyle::Heading, 20.0),
-            (TextStyle::Small, 12.0),
-        ] {
+        for (ts, size) in
+            [(TextStyle::Body, 15.0), (TextStyle::Button, 15.0), (TextStyle::Heading, 20.0), (TextStyle::Small, 12.0)]
+        {
             if let Some(f) = style.text_styles.get_mut(&ts) {
                 *f = FontId::proportional(size);
             }
@@ -250,11 +228,7 @@ impl BrisApp {
 
     fn new_game(&mut self) {
         // Si alterna chi apre la prima presa.
-        let first = if self.games_started % 2 == 0 {
-            HUMAN
-        } else {
-            AI
-        };
+        let first = if self.games_started % 2 == 0 { HUMAN } else { AI };
         self.games_started += 1;
         self.current = Match::new(self.settings.difficulty, first);
     }
@@ -323,11 +297,7 @@ impl BrisApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         } else if self.settings.training && m.hint.is_none() && m.game.legal_moves().len() > 1 {
             let obs = Observation::of(&m.game, HUMAN);
-            m.hint = Some(evaluate(
-                &obs,
-                &EngineConfig::strength(HINT_SAMPLES),
-                &mut m.rng,
-            ));
+            m.hint = Some(evaluate(&obs, &EngineConfig::strength(HINT_SAMPLES), &mut m.rng));
         }
     }
 
@@ -335,19 +305,10 @@ impl BrisApp {
         ui.horizontal(|ui| {
             ui.heading(RichText::new("BrisMaster").strong().color(cards_ui::GOLD));
             ui.separator();
-            for (m, label) in [
-                (Mode::Gioca, "Gioca contro il motore"),
-                (Mode::Assistente, "Assistente"),
-            ] {
+            for (m, label) in [(Mode::Gioca, "Gioca contro il motore"), (Mode::Assistente, "Assistente")] {
                 let sel = self.settings.mode == m;
                 let text = RichText::new(label).size(16.0);
-                if ui
-                    .add(egui::Button::selectable(
-                        sel,
-                        if sel { text.strong() } else { text },
-                    ))
-                    .clicked()
-                {
+                if ui.add(egui::Button::selectable(sel, if sel { text.strong() } else { text })).clicked() {
                     self.settings.mode = m;
                 }
             }
@@ -396,11 +357,7 @@ impl BrisApp {
             }
             UpdateState::Available(rel) => {
                 let btn = ui.button(RichText::new(format!("Installa v{}", rel.version)).strong());
-                let btn = if rel.notes.is_empty() {
-                    btn
-                } else {
-                    btn.on_hover_text(&rel.notes)
-                };
+                let btn = if rel.notes.is_empty() { btn } else { btn.on_hover_text(&rel.notes) };
                 if btn.clicked() {
                     action = Some(1);
                 }
@@ -415,8 +372,7 @@ impl BrisApp {
                 if ui.small_button("Riprova").clicked() {
                     action = Some(0);
                 }
-                ui.label(RichText::new("Aggiornamento non riuscito").color(Color32::LIGHT_RED))
-                    .on_hover_text(e);
+                ui.label(RichText::new("Aggiornamento non riuscito").color(Color32::LIGHT_RED)).on_hover_text(e);
             }
         }
         match action {
@@ -440,11 +396,7 @@ impl BrisApp {
     fn side_panel(&mut self, ui: &mut egui::Ui) {
         let g = &self.current.game;
         ui.heading("Carte uscite");
-        ui.label(
-            RichText::new("Allenati a contarle anche senza guardare!")
-                .weak()
-                .small(),
-        );
+        ui.label(RichText::new("Allenati a contarle anche senza guardare!").weak().small());
         ui.add_space(4.0);
         let mut gone = g.played;
         if let Some(t) = g.table {
@@ -492,11 +444,7 @@ impl BrisApp {
 
         ui.add_space(10.0);
         ui.vertical_centered(|ui| {
-            ui.label(
-                RichText::new(format!("Computer · {}", m.difficulty.label()))
-                    .size(16.0)
-                    .color(white(210)),
-            );
+            ui.label(RichText::new(format!("Computer · {}", m.difficulty.label())).size(16.0).color(white(210)));
             ui.horizontal(|ui| {
                 // Altezza fissa, così il tavolo non si sposta quando l'avversario finisce le carte.
                 ui.set_min_height(CARD_SIZE.y);
@@ -513,10 +461,7 @@ impl BrisApp {
             ui.vertical(|ui| {
                 ui.label(RichText::new("Briscola").color(cards_ui::GOLD).strong());
                 let (rect, _) = ui.allocate_exact_size(CARD_SIZE, Sense::hover());
-                let look = cards_ui::Look {
-                    dim: g.deck_len == 0,
-                    ..Default::default()
-                };
+                let look = cards_ui::Look { dim: g.deck_len == 0, ..Default::default() };
                 cards_ui::paint_face(ui.painter(), rect, g.trump_card, look);
                 let deck = match (g.deck_len, g.trump_card_owner) {
                     (0, Some(HUMAN)) => "Mazzo finito · briscola tua".to_string(),
@@ -528,16 +473,8 @@ impl BrisApp {
             ui.add_space(40.0);
             let (a, b, caption) = match m.shown_trick {
                 Some((t, _)) => {
-                    let (h, c) = if t.leader == HUMAN {
-                        (t.lead, t.follow)
-                    } else {
-                        (t.follow, t.lead)
-                    };
-                    let who = if t.winner == HUMAN {
-                        "Prendi tu"
-                    } else {
-                        "Prende il computer"
-                    };
+                    let (h, c) = if t.leader == HUMAN { (t.lead, t.follow) } else { (t.follow, t.lead) };
+                    let who = if t.winner == HUMAN { "Prendi tu" } else { "Prende il computer" };
                     (Some(h), Some(c), format!("{who} · {} punti", t.points))
                 }
                 None => {
@@ -567,12 +504,7 @@ impl BrisApp {
             ui.add_space(16.0);
             ui.vertical(|ui| {
                 ui.add_space(70.0);
-                ui.label(
-                    RichText::new(caption)
-                        .size(19.0)
-                        .strong()
-                        .color(Color32::WHITE),
-                );
+                ui.label(RichText::new(caption).size(19.0).strong().color(Color32::WHITE));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 ui.add_space(24.0);
@@ -622,24 +554,15 @@ impl BrisApp {
         let m = &self.current;
         let mine = m.game.points[HUMAN as usize];
         let (title, color) = match mine {
-            p if p > 60 => (
-                format!("Hai vinto {mine} a {}!", 120 - mine),
-                Color32::LIGHT_GREEN,
-            ),
+            p if p > 60 => (format!("Hai vinto {mine} a {}!", 120 - mine), Color32::LIGHT_GREEN),
             60 => ("Pareggio 60 a 60".to_string(), Color32::YELLOW),
-            _ => (
-                format!("Hai perso {mine} a {}", 120 - mine),
-                Color32::LIGHT_RED,
-            ),
+            _ => (format!("Hai perso {mine} a {}", 120 - mine), Color32::LIGHT_RED),
         };
         let mut again = false;
         ui.vertical_centered(|ui| {
             ui.add_space(10.0);
             ui.label(RichText::new(title).size(30.0).strong().color(color));
-            if ui
-                .button(RichText::new("Gioca ancora").size(18.0))
-                .clicked()
-            {
+            if ui.button(RichText::new("Gioca ancora").size(18.0)).clicked() {
                 again = true;
             }
         });
@@ -654,10 +577,7 @@ impl BrisApp {
             }
             Some(items) => {
                 let errors = items.iter().filter(|i| i.loss() >= 0.06).count();
-                let inaccuracies = items
-                    .iter()
-                    .filter(|i| (0.02..0.06).contains(&i.loss()))
-                    .count();
+                let inaccuracies = items.iter().filter(|i| (0.02..0.06).contains(&i.loss())).count();
                 let good = items.len() - errors - inaccuracies;
                 ui.label(format!(
                     "Mosse ottime: {good} · imprecisioni: {inaccuracies} · errori: {errors} (su {} scelte non obbligate)",
@@ -689,10 +609,7 @@ impl BrisApp {
                             None => "aprendo la presa".to_string(),
                         };
                         ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                RichText::new(format!("Presa {:>2}", it.decision.trick_no))
-                                    .monospace(),
-                            );
+                            ui.label(RichText::new(format!("Presa {:>2}", it.decision.trick_no)).monospace());
                             ui.label(RichText::new(tag).color(col).strong());
                             ui.label(format!(
                                 "{ctx}: hai giocato {} (vittoria {:.0}%)",
@@ -734,51 +651,37 @@ impl eframe::App for BrisApp {
             self.top_bar(ui);
             ui.add_space(6.0);
         });
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
-            .show(ui, |ui| {
-                // Tavolo verde a sinistra, pannello informativo a destra.
-                let full = ui.available_rect_before_wrap();
-                let side_w = match self.settings.mode {
-                    Mode::Gioca => 300.0,
-                    Mode::Assistente => (full.width() * 0.4).clamp(440.0, 560.0),
-                };
-                let split = full.max.x - side_w;
-                let left = Rect::from_min_max(full.min, egui::pos2(split, full.max.y));
-                let right = Rect::from_min_max(
-                    egui::pos2(split + 14.0, full.min.y + 10.0),
-                    full.max - egui::vec2(10.0, 0.0),
-                );
-                cards_ui::paint_felt(ui.painter(), left);
-                ui.painter().vline(
-                    split,
-                    full.y_range(),
-                    Stroke::new(1.0, Color32::from_gray(60)),
-                );
-                match self.settings.mode {
-                    Mode::Gioca => {
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| {
-                            self.side_panel(ui)
-                        });
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| {
-                            if self.current.game.is_over() && self.current.shown_trick.is_none() {
-                                self.game_over(ui);
-                            } else {
-                                self.table(ui, now);
-                            }
-                        });
-                    }
-                    Mode::Assistente => {
-                        let samples = &mut self.settings.assist_samples;
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| {
-                            self.assistant.side_ui(ui, samples)
-                        });
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| {
-                            self.assistant.table_ui(ui)
-                        });
-                    }
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
+            // Tavolo verde a sinistra, pannello informativo a destra.
+            let full = ui.available_rect_before_wrap();
+            let side_w = match self.settings.mode {
+                Mode::Gioca => 300.0,
+                Mode::Assistente => (full.width() * 0.4).clamp(440.0, 560.0),
+            };
+            let split = full.max.x - side_w;
+            let left = Rect::from_min_max(full.min, egui::pos2(split, full.max.y));
+            let right =
+                Rect::from_min_max(egui::pos2(split + 14.0, full.min.y + 10.0), full.max - egui::vec2(10.0, 0.0));
+            cards_ui::paint_felt(ui.painter(), left);
+            ui.painter().vline(split, full.y_range(), Stroke::new(1.0, Color32::from_gray(60)));
+            match self.settings.mode {
+                Mode::Gioca => {
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| self.side_panel(ui));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| {
+                        if self.current.game.is_over() && self.current.shown_trick.is_none() {
+                            self.game_over(ui);
+                        } else {
+                            self.table(ui, now);
+                        }
+                    });
                 }
-            });
+                Mode::Assistente => {
+                    let samples = &mut self.settings.assist_samples;
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| self.assistant.side_ui(ui, samples));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| self.assistant.table_ui(ui));
+                }
+            }
+        });
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

@@ -34,12 +34,20 @@ Il motore vede solo quello che vedrebbe un giocatore: le simulazioni non sbircia
 
 ## Test massivi
 
-Il programma `briscola-sim` gioca migliaia di partite tra il motore e avversari di riferimento. Ogni mazzo si gioca due volte a posti invertiti, così la fortuna delle carte si compensa. Le percentuali sono accompagnate dall'intervallo di confidenza al 95% (Wilson).
+Il programma `briscola-sim` gioca decine di migliaia di partite tra il motore e altri giocatori. Ogni mazzo si gioca due volte a posti invertiti, così la fortuna delle carte si compensa. Ogni risultato ha il suo intervallo di confidenza al 95%, calcolato sulle coppie di partite dello stesso mazzo.
 
 ```
+# rapporto completo: 17 stili di avversario, contro se stesso, contro la versione precedente
+cargo run --release -p briscola-sim -- report --deals 5000 --out bench/RAPPORTO.md
+# un solo confronto, anche con una versione rilasciata
+cargo run --release -p briscola-sim -- --player engine:1000 --opponent v0.1.1/engine:1000 --deals 5000
+# pannello (aggiungi --extended per tutti gli stili)
 cargo run --release -p briscola-sim -- --panel --deals 10000 --out tabella.md
-cargo run --release -p briscola-sim -- --player engine:1000 --opponent ismcts:2000 --deals 5000
 ```
+
+L'ultimo rapporto completo è in [bench/RAPPORTO.md](bench/RAPPORTO.md).
+
+**Controllo di regressione.** Su ogni pull request la CI gioca 3000 partite tra il motore nuovo e quello dell'ultima release (job *regressione*) e fallisce se il nuovo è significativamente più debole. Dopo ogni release va aggiunta la nuova versione come riferimento: una riga in `crates/sim/Cargo.toml` e una voce in `crates/sim/src/agents.rs` (vedi il commento sulla macro `legacy!`).
 
 Risultati del livello Difficile, 20.000 partite per avversario (dettagli in [bench/RISULTATI.md](bench/RISULTATI.md)):
 

@@ -1,0 +1,154 @@
+//! Chi siede al tavolo: i giocatori della versione attuale e quelli delle versioni rilasciate.
+//!
+//! SPEC: random | heuristic | aggressive | cautious | trumphappy | counter
+//!       | followsuit | loadleader | notrump
+//!       | engine:MONDI[:EPSILON[:SOGLIA[:PESO_PUNTI]]] | ismcts:ITERAZIONI
+//!       | noisy:ERRORE:SPEC            (es. noisy:0.25:heuristic)
+//!       | vX.Y.Z/SPEC                  (versione rilasciata, es. v0.1.1/engine:1000)
+
+use crate::opponents::*;
+use briscola_core::ai::*;
+use briscola_core::cards::Card;
+use briscola_core::{Game, Observation};
+use rand::rngs::SmallRng;
+
+/// Un giocatore visto dal banco di prova. Le versioni precedenti hanno tipi propri,
+/// quindi tengono una copia della partita nel proprio formato e ricevono ogni carta giocata.
+pub trait Agent: Send {
+    fn name(&self) -> String;
+    /// Inizio partita: ordine del mazzo e chi apre (stesso formato in tutte le versioni).
+    fn start(&mut self, _order: &[Card], _first: u8) {}
+    fn choose(&mut self, g: &Game, me: u8, rng: &mut SmallRng) -> Card;
+    /// Ogni carta giocata, da chiunque, nell'ordine.
+    fn observe(&mut self, _c: Card) {}
+}
+
+struct Current(Box<dyn Player>);
+
+impl Agent for Current {
+    fn name(&self) -> String {
+        self.0.name()
+    }
+    fn choose(&mut self, g: &Game, me: u8, rng: &mut SmallRng) -> Card {
+        self.0.choose(&Observation::of(g, me), rng)
+    }
+}
+
+pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
+    let num = |s: &str, what: &str| s.parse::<f64>().map_err(|_| format!("{what} non valido in '{spec}'"));
+    Ok(match spec {
+        "random" => Box::new(RandomPlayer),
+        "heuristic" => Box::new(HeuristicPlayer),
+        "aggressive" => Box::new(AggressivePlayer),
+        "cautious" => Box::new(CautiousPlayer),
+        "trumphappy" => Box::new(TrumpHappyPlayer),
+        "counter" => Box::new(CounterPlayer),
+        "followsuit" => Box::new(FollowSuitPlayer),
+        "loadleader" => Box::new(LoadLeaderPlayer),
+        "notrump" => Box::new(NoTrumpPlayer),
+        s if s.starts_with("ismcts:") => {
+            Box::new(IsmctsPlayer { iterations: num(&s[7..], "numero di iterazioni")? as u32 })
+        }
+        s if s.starts_with("engine:") => {
+            let parts: Vec<&str> = s[7..].split(':').collect();
+            let mut cfg = EngineConfig::strength(num(parts[0], "numero di mondi")? as u32);
+            if let Some(e) = parts.get(1) {
+                cfg.rollout_epsilon = num(e, "epsilon")?;
+            }
+            if let Some(d) = parts.get(2) {
+                cfg.solve_deck_len = num(d, "soglia del risolutore")? as u8;
+            }
+            if let Some(w) = parts.get(3) {
+                cfg.points_weight = num(w, "peso dei punti")?;
+            }
+            Box::new(EnginePlayer::new(cfg))
+        }
+        s if s.starts_with("noisy:") => {
+            let (err, base) = s[6..].split_once(':').ok_or(format!("serve noisy:ERRORE:SPEC, non '{s}'"))?;
+            Box::new(Noisy { base: make_player(base)?, error: num(err, "errore")? })
+        }
+        other => return Err(format!("giocatore sconosciuto: {other}")),
+    })
+}
+
+/// Crea un giocatore da SPEC, anche di una versione rilasciata (`vX.Y.Z/SPEC`).
+pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
+    if let Some((ver, rest)) = spec.split_once('/') {
+        return match ver {
+            "v0.1.0" | "v0.1.1" => v0_1_1::make(rest),
+            _ => Err(format!(
+                "versione non disponibile: {ver} (disponibili: {})",
+                RELEASED.join(", ")
+            )),
+        };
+    }
+    Ok(Box::new(Current(make_player(spec)?)))
+}
+
+/// Versioni rilasciate con cui si può confrontare il motore (la più recente per ultima).
+/// v0.1.0 e v0.1.1 hanno lo stesso motore.
+pub const RELEASED: &[&str] = &["v0.1.1"];
+
+/// Genera l'adattatore per una versione rilasciata del crate `briscola-core`.
+/// Per aggiungere una versione: dipendenza in Cargo.toml, `legacy!`, voce in `make_agent` e `RELEASED`.
+macro_rules! legacy {
+    ($module:ident, $krate:ident, $tag:literal) => {
+        mod $module {
+            use super::Agent;
+            use briscola_core::cards::Card;
+            use briscola_core::Game;
+            use rand::rngs::SmallRng;
+            use $krate as old;
+
+            pub struct Legacy {
+                player: Box<dyn old::ai::Player>,
+                game: Option<old::Game>,
+            }
+
+            pub fn make(spec: &str) -> Result<Box<dyn Agent>, String> {
+                use old::ai::*;
+                let n = |s: &str| s.parse::<u32>().map_err(|_| format!("numero non valido in '{spec}'"));
+                let player: Box<dyn Player> = match spec {
+                    "heuristic" => Box::new(HeuristicPlayer),
+                    s if s.starts_with("engine:") => Box::new(EnginePlayer::new(EngineConfig::strength(n(&s[7..])?))),
+                    s if s.starts_with("ismcts:") => Box::new(IsmctsPlayer { iterations: n(&s[7..])? }),
+                    _ => return Err(format!("{}: disponibili heuristic, engine:N, ismcts:N", $tag)),
+                };
+                Ok(Box::new(Legacy { player, game: None }))
+            }
+
+            impl Agent for Legacy {
+                fn name(&self) -> String {
+                    format!("{} [{}]", self.player.name(), $tag)
+                }
+                fn start(&mut self, order: &[Card], first: u8) {
+                    self.game = Some(old::Game::from_order(order, first));
+                }
+                fn choose(&mut self, g: &Game, me: u8, rng: &mut SmallRng) -> Card {
+                    let mine = self.game.as_ref().expect("partita non iniziata");
+                    debug_assert_eq!(mine.hands[me as usize].0, g.hands[me as usize].0, "copia della partita non allineata");
+                    self.player.choose(&old::Observation::of(mine, me), rng)
+                }
+                fn observe(&mut self, c: Card) {
+                    self.game.as_mut().expect("partita non iniziata").play(c);
+                }
+            }
+        }
+    };
+}
+
+legacy!(v0_1_1, core_v0_1_1, "v0.1.1");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn specs_parse() {
+        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "followsuit"] {
+            assert!(make_agent(s).is_ok(), "{s}");
+        }
+        assert!(make_agent("v9.9.9/engine:20").is_err());
+        assert!(make_agent("boh").is_err());
+    }
+}

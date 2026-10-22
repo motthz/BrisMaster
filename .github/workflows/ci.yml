@@ -16,3 +16,14 @@ jobs:
         run: cargo test --workspace --release
       - name: Build app
         run: cargo build --release -p brismaster
+
+  # Il motore della pull request contro quello dell'ultima release, sugli stessi mazzi.
+  # Fallisce se la nuova versione è significativamente più debole (IC 95% tutto sotto il 50%).
+  regressione:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Confronto con l'ultima release (livello Difficile)
+        run: cargo run --release -p briscola-sim -- gate --player engine:1000 --deals 1500 --seed 20261022 --summary "$GITHUB_STEP_SUMMARY"

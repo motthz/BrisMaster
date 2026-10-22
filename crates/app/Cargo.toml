@@ -1,0 +1,15 @@
+[package]
+name = "brismaster"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+briscola-core = { path = "../core" }
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "persistence", "x11", "wayland"] }
+rand = { version = "0.8", features = ["small_rng"] }
+self-replace = "1.5.0"
+semver = "1.0.28"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+ureq = { version = "2", features = ["json", "native-certs"] }

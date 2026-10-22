@@ -1,0 +1,45 @@
+name: Release
+
+# Pubblicare una nuova versione:
+#   1. aggiornare `version` in Cargo.toml (es. 0.2.0)
+#   2. git tag v0.2.0 && git push origin v0.2.0
+# Le app già installate trovano la release e si aggiornano da sole.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Controlla che il tag corrisponda alla versione
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Il tag $GITHUB_REF_NAME non corrisponde alla versione $version in Cargo.toml"
+            exit 1
+          fi
+      - name: Test
+        run: cargo test --workspace --release
+      - name: Build
+        run: cargo build --release -p brismaster
+      - name: Prepara i file
+        shell: bash
+        run: |
+          cp target/release/brismaster.exe BrisMaster.exe
+          sha256sum BrisMaster.exe > BrisMaster.exe.sha256
+      - name: Pubblica la release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            BrisMaster.exe
+            BrisMaster.exe.sha256
+          generate_release_notes: true

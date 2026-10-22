@@ -18,6 +18,13 @@ const AI: u8 = 1;
 const HINT_SAMPLES: u32 = 800;
 const REVIEW_SAMPLES: u32 = 2000;
 
+/// Configurazione del motore per l'app: i mondi si dividono su tutti i core del PC.
+pub(crate) fn engine_cfg(samples: u32) -> EngineConfig {
+    let mut cfg = EngineConfig::strength(samples);
+    cfg.threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    cfg
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 enum Difficulty {
     Facile,
@@ -41,8 +48,8 @@ impl Difficulty {
     fn player(self) -> Box<dyn Player> {
         match self {
             Difficulty::Facile => Box::new(HeuristicPlayer),
-            Difficulty::Medio => Box::new(EnginePlayer::new(EngineConfig::strength(150))),
-            Difficulty::Difficile => Box::new(EnginePlayer::new(EngineConfig::strength(1000))),
+            Difficulty::Medio => Box::new(EnginePlayer::new(engine_cfg(150))),
+            Difficulty::Difficile => Box::new(EnginePlayer::new(engine_cfg(1000))),
         }
     }
 }
@@ -162,7 +169,7 @@ impl Match {
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             let mut rng = SmallRng::from_entropy();
-            let cfg = EngineConfig::strength(REVIEW_SAMPLES);
+            let cfg = engine_cfg(REVIEW_SAMPLES);
             let items = decisions
                 .into_iter()
                 .map(|d| ReviewItem { evals: evaluate(&d.obs, &cfg, &mut rng), decision: d })
@@ -297,7 +304,7 @@ impl BrisApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         } else if self.settings.training && m.hint.is_none() && m.game.legal_moves().len() > 1 {
             let obs = Observation::of(&m.game, HUMAN);
-            m.hint = Some(evaluate(&obs, &EngineConfig::strength(HINT_SAMPLES), &mut m.rng));
+            m.hint = Some(evaluate(&obs, &engine_cfg(HINT_SAMPLES), &mut m.rng));
         }
     }
 

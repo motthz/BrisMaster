@@ -322,11 +322,14 @@ pub struct EngineConfig {
     pub rollout_epsilon: f64,
     /// Peso dei punti rispetto alla vittoria nella valutazione (1 = un punto vale una partita).
     pub points_weight: f64,
+    /// Thread usati per simulare i mondi. 1 = tutto sul thread chiamante, con risultati
+    /// riproducibili dal seme; i test massivi lo lasciano a 1 perché parallelizzano le partite.
+    pub threads: usize,
 }
 
 impl EngineConfig {
     pub fn strength(samples: u32) -> EngineConfig {
-        EngineConfig { samples, solve_deck_len: 4, rollout_epsilon: 0.1, points_weight: 1.0 / 1200.0 }
+        EngineConfig { samples, solve_deck_len: 4, rollout_epsilon: 0.1, points_weight: 1.0 / 1200.0, threads: 1 }
     }
 }
 
@@ -376,73 +379,163 @@ fn solve(g: &Game, me: u8, mut alpha: i32, mut beta: i32) -> i32 {
     if g.is_over() {
         return g.points[me as usize] as i32;
     }
+    // Limiti certi: i punti già presi e quelli ancora in gioco.
+    let lo = g.points[me as usize] as i32;
+    let hi = 120 - g.points[1 - me as usize] as i32;
+    if lo >= beta {
+        return lo;
+    }
+    if hi <= alpha {
+        return hi;
+    }
     let p = g.to_move();
     let maximizing = p == me;
     // Ordinamento: prima le carte con più punti (tagli più frequenti).
-    let mut moves: Vec<Card> = g.legal_moves().to_vec();
-    moves.sort_by_key(|&c| std::cmp::Reverse(points(c) * 4 + strength(c)));
-    if maximizing {
-        let mut best = i32::MIN;
-        for c in moves {
-            let mut n = *g;
-            n.play(c);
-            let v = solve(&n, me, alpha, beta);
+    // Al più 3 carte in mano: si ordina su un array, senza allocare.
+    let mut moves = [0 as Card; 3];
+    let mut n = 0;
+    for c in g.legal_moves().iter() {
+        let key = points(c) * 4 + strength(c);
+        let mut j = n;
+        while j > 0 && points(moves[j - 1]) * 4 + strength(moves[j - 1]) < key {
+            moves[j] = moves[j - 1];
+            j -= 1;
+        }
+        moves[j] = c;
+        n += 1;
+    }
+    let mut best = if maximizing { i32::MIN } else { i32::MAX };
+    for &c in &moves[..n] {
+        let mut next = *g;
+        next.play(c);
+        let v = solve(&next, me, alpha, beta);
+        if maximizing {
             best = best.max(v);
             alpha = alpha.max(v);
-            if alpha >= beta {
-                break;
-            }
-        }
-        best
-    } else {
-        let mut best = i32::MAX;
-        for c in moves {
-            let mut n = *g;
-            n.play(c);
-            let v = solve(&n, me, alpha, beta);
+        } else {
             best = best.min(v);
             beta = beta.min(v);
-            if alpha >= beta {
-                break;
+        }
+        if alpha >= beta {
+            break;
+        }
+    }
+    best
+}
+
+/// Somme dei risultati per ogni mossa candidata (al più 3), su un gruppo di mondi.
+#[derive(Clone, Copy, Default)]
+struct Sums {
+    util: [f64; 3],
+    wins: [f64; 3],
+    pts: [f64; 3],
+}
+
+impl Sums {
+    fn add(&mut self, i: usize, final_pts: u8, cfg: &EngineConfig) {
+        self.util[i] += result(final_pts) + final_pts as f64 * cfg.points_weight;
+        self.wins[i] += result(final_pts);
+        self.pts[i] += final_pts as f64;
+    }
+
+    fn merge(&mut self, o: &Sums) {
+        for i in 0..3 {
+            self.util[i] += o.util[i];
+            self.wins[i] += o.wins[i];
+            self.pts[i] += o.pts[i];
+        }
+    }
+}
+
+/// Identifica un mondo del finale: mano avversaria e ordine del mazzo coperto.
+/// `None` se il mazzo è troppo lungo per stare nella chiave.
+fn world_key(g: &Game, opp: u8) -> Option<u128> {
+    if g.deck_len > 15 {
+        return None;
+    }
+    let mut k = g.hands[opp as usize].0 as u128;
+    for &c in &g.deck[1..g.deck_len.max(1) as usize] {
+        k = k << 6 | c as u128;
+    }
+    Some(k)
+}
+
+/// Gioca `samples` mondi e somma i risultati di ogni mossa.
+fn simulate(obs: &Observation, moves: &[Card], cfg: &EngineConfig, samples: u32, rng: &mut SmallRng) -> Sums {
+    let me = obs.me;
+    let exact = obs.deck_len <= cfg.solve_deck_len;
+    let mut sums = Sums::default();
+    // Nel finale i mondi distinti sono pochi (al più 120 con 4 carte nel mazzo) e il
+    // risolutore è deterministico: ogni mondo già visto si riprende dalla memoria.
+    let mut memo: std::collections::HashMap<u128, [u8; 3]> = Default::default();
+    for _ in 0..samples {
+        // Lo stesso mondo per tutte le mosse: confronto a parità di carte.
+        let world = obs.determinize(rng);
+        if exact {
+            let solve_all = || {
+                let mut finals = [0u8; 3];
+                for (i, &c) in moves.iter().enumerate() {
+                    let mut g = world;
+                    g.play(c);
+                    finals[i] = solve(&g, me, i32::MIN, i32::MAX) as u8;
+                }
+                finals
+            };
+            let finals = match world_key(&world, 1 - me) {
+                Some(k) => *memo.entry(k).or_insert_with(solve_all),
+                None => solve_all(),
+            };
+            for i in 0..moves.len() {
+                sums.add(i, finals[i], cfg);
+            }
+        } else {
+            for (i, &c) in moves.iter().enumerate() {
+                let mut g = world;
+                g.play(c);
+                rollout(&mut g, cfg.rollout_epsilon, rng);
+                sums.add(i, g.points[me as usize], cfg);
             }
         }
-        best
     }
+    sums
 }
 
 /// Valuta tutte le mosse legali dal punto di vista di chi deve muovere.
 pub fn evaluate(obs: &Observation, cfg: &EngineConfig, rng: &mut SmallRng) -> Vec<MoveEval> {
     let moves = obs.hand.to_vec();
-    let me = obs.me;
-    let mut util = vec![0.0f64; moves.len()];
-    let mut wins = vec![0.0f64; moves.len()];
-    let mut pts = vec![0.0f64; moves.len()];
     // Se il mazzo è vuoto le mani sono note: basta un solo mondo.
     let samples = if obs.deck_len == 0 { 1 } else { cfg.samples.max(1) };
+    // Nel finale (risolutore + memoria) il lavoro è già minimo: i thread non servono.
     let exact = obs.deck_len <= cfg.solve_deck_len;
-    for _ in 0..samples {
-        // Lo stesso mondo per tutte le mosse: confronto a parità di carte.
-        let world = obs.determinize(rng);
-        for (i, &c) in moves.iter().enumerate() {
-            let mut g = world;
-            g.play(c);
-            let final_pts = if exact {
-                solve(&g, me, i32::MIN, i32::MAX) as u8
-            } else {
-                rollout(&mut g, cfg.rollout_epsilon, rng);
-                g.points[me as usize]
-            };
-            util[i] += result(final_pts) + final_pts as f64 * cfg.points_weight;
-            wins[i] += result(final_pts);
-            pts[i] += final_pts as f64;
-        }
-    }
+    let threads = if exact { 1 } else { (cfg.threads.max(1) as u32).min(samples / 64).max(1) };
+    let sums = if threads == 1 {
+        simulate(obs, &moves, cfg, samples, rng)
+    } else {
+        // Mondi divisi tra i thread, ognuno col proprio generatore derivato da `rng`.
+        let seeds: Vec<u64> = (0..threads).map(|_| rng.gen()).collect();
+        std::thread::scope(|s| {
+            let handles: Vec<_> = seeds
+                .iter()
+                .enumerate()
+                .map(|(t, &seed)| {
+                    let share = samples / threads + u32::from((t as u32) < samples % threads);
+                    let moves = &moves;
+                    s.spawn(move || simulate(obs, moves, cfg, share, &mut SmallRng::seed_from_u64(seed)))
+                })
+                .collect();
+            let mut total = Sums::default();
+            for h in handles {
+                total.merge(&h.join().expect("thread del motore"));
+            }
+            total
+        })
+    };
     let n = samples as f64;
     let mut out: Vec<(f64, MoveEval)> = moves
         .iter()
         .enumerate()
         .map(|(i, &c)| {
-            (util[i] / n, MoveEval { card: c, win_prob: wins[i] / n, exp_points: pts[i] / n })
+            (sums.util[i] / n, MoveEval { card: c, win_prob: sums.wins[i] / n, exp_points: sums.pts[i] / n })
         })
         .collect();
     out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
@@ -491,5 +584,45 @@ mod tests {
         let evals = evaluate(&obs, &EngineConfig::strength(100), &mut rng);
         assert_eq!(evals.len(), 3);
         assert!(evals[0].win_prob >= evals[2].win_prob);
+    }
+
+    /// Minimax senza tagli né ordinamento, come riferimento.
+    fn minimax(g: &Game, me: u8) -> i32 {
+        if g.is_over() {
+            return g.points[me as usize] as i32;
+        }
+        let vals = g.legal_moves().iter().map(|c| {
+            let mut n = *g;
+            n.play(c);
+            minimax(&n, me)
+        });
+        if g.to_move() == me { vals.max().unwrap() } else { vals.min().unwrap() }
+    }
+
+    #[test]
+    fn solver_matches_minimax() {
+        let mut rng = SmallRng::seed_from_u64(11);
+        for _ in 0..300 {
+            let mut g = Game::new(&mut rng, 0);
+            let steps = rng.gen_range(28..38);
+            for _ in 0..steps {
+                let m = g.legal_moves().to_vec();
+                g.play(m[rng.gen_range(0..m.len())]);
+            }
+            let me = rng.gen_range(0..2);
+            assert_eq!(solve(&g, me, i32::MIN, i32::MAX), minimax(&g, me));
+        }
+    }
+
+    #[test]
+    fn threaded_evaluation_is_complete() {
+        let mut rng = SmallRng::seed_from_u64(5);
+        let g = Game::new(&mut rng, 0);
+        let obs = Observation::of(&g, 0);
+        let mut cfg = EngineConfig::strength(1000);
+        cfg.threads = 4;
+        let evals = evaluate(&obs, &cfg, &mut rng);
+        assert_eq!(evals.len(), 3);
+        assert!(evals.iter().all(|e| (0.0..=1.0).contains(&e.win_prob) && e.exp_points <= 120.0));
     }
 }

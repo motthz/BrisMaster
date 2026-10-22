@@ -3,8 +3,13 @@ name = "briscola-sim"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "briscola-sim"
 
 [dependencies]
 briscola-core = { path = "../core" }
 rand = { version = "0.8", features = ["small_rng"] }
 rayon = "1.10"
+
+# Versioni rilasciate del motore, per i confronti con le versioni precedenti.
+# Per aggiungerne una: nuova riga con il tag e la macro `legacy!` in `src/agents.rs`.
+core_v0_1_1 = { package = "briscola-core", git = "https://github.com/motthz/brismaster", tag = "v0.1.1" }

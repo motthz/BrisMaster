@@ -160,33 +160,33 @@ dependencies = [
 [[package]]
 name = "briscola-core"
 version = "0.1.1"
-dependencies = [
- "rand",
-]
-
-[[package]]
-name = "briscola-core"
-version = "0.1.1"
 source = "git+https://github.com/motthz/brismaster?tag=v0.1.1#3c575e533275b03a6a2bd59aa6e572f70381f225"
 dependencies = [
  "rand",
 ]
 
 [[package]]
+name = "briscola-core"
+version = "0.2.0"
+dependencies = [
+ "rand",
+]
+
+[[package]]
 name = "briscola-sim"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "briscola-core 0.1.1",
- "briscola-core 0.1.1 (git+https://github.com/motthz/brismaster?tag=v0.1.1)",
+ "briscola-core 0.2.0",
  "rand",
  "rayon",
 ]
 
 [[package]]
 name = "brismaster"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
- "briscola-core 0.1.1",
+ "briscola-core 0.2.0",
  "eframe",
  "rand",
  "self-replace",

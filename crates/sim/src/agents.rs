@@ -23,15 +23,32 @@ pub trait Agent: Send {
     fn observe(&mut self, _c: Card) {}
 }
 
-struct Current(Box<dyn Player>);
+struct Current(Box<dyn Player>, String);
 
 impl Agent for Current {
     fn name(&self) -> String {
-        self.0.name()
+        format!("{}{}", self.0.name(), self.1)
     }
     fn choose(&mut self, g: &Game, me: u8, rng: &mut SmallRng) -> Card {
         self.0.choose(&Observation::of(g, me), rng)
     }
+}
+
+/// Le varianti del motore hanno lo stesso nome: si aggiungono i parametri diversi dal normale.
+fn variant_suffix(spec: &str) -> String {
+    let Some(rest) = spec.strip_prefix("engine:") else { return String::new() };
+    let parts: Vec<&str> = rest.split(':').collect();
+    let mut out = String::new();
+    if let Some(e) = parts.get(1).and_then(|e| e.parse::<f64>().ok()) {
+        out += &format!(" · simulazioni con {:.0}% di mosse casuali", e * 100.0);
+    }
+    if let Some(d) = parts.get(2) {
+        out += &format!(" · finale esatto da {d} carte nel mazzo");
+    }
+    if parts.get(3).is_some() {
+        out += &format!(" · peso dei punti {}", parts[3]);
+    }
+    out
 }
 
 pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
@@ -82,7 +99,7 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
             )),
         };
     }
-    Ok(Box::new(Current(make_player(spec)?)))
+    Ok(Box::new(Current(make_player(spec)?, variant_suffix(spec))))
 }
 
 /// Versioni rilasciate con cui si può confrontare il motore (la più recente per ultima).

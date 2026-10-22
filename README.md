@@ -56,6 +56,6 @@ Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro
 ## Pubblicare una nuova versione
 
 1. Aggiorna `version` in `Cargo.toml` (per esempio `0.2.0`).
-2. `git tag v0.2.0 && git push origin v0.2.0`
+2. Fai push su `main`.
 
-GitHub Actions compila `BrisMaster.exe` su Windows e lo pubblica nella release; le app già installate si aggiornano da sole.
+GitHub Actions compila `BrisMaster.exe` su Windows, crea il tag `v0.2.0` e pubblica la release; le app già installate si aggiornano da sole. Il workflow si può anche lanciare a mano da *Actions → Release → Run workflow*.

@@ -1,13 +1,15 @@
 name: Release
 
-# Pubblicare una nuova versione:
-#   1. aggiornare `version` in Cargo.toml (es. 0.2.0)
-#   2. git tag v0.2.0 && git push origin v0.2.0
-# Le app già installate trovano la release e si aggiornano da sole.
+# Pubblicare una nuova versione: aggiornare `version` in Cargo.toml (es. 0.2.0)
+# e fare push su main. Se la release v0.2.0 non esiste ancora, questo workflow
+# compila BrisMaster.exe su Windows, crea il tag e pubblica la release.
+# Le app già installate la trovano all'avvio e si aggiornano da sole.
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: ["Cargo.toml"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,28 +19,43 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Controlla che il tag corrisponda alla versione
+        with:
+          fetch-depth: 0
+      - name: Leggi la versione
+        id: ver
         shell: bash
         run: |
           version=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Il tag $GITHUB_REF_NAME non corrisponde alla versione $version in Cargo.toml"
-            exit 1
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "La release v$version esiste già, niente da fare."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.ver.outputs.exists == 'false'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.ver.outputs.exists == 'false'
       - name: Test
+        if: steps.ver.outputs.exists == 'false'
         run: cargo test --workspace --release
       - name: Build
+        if: steps.ver.outputs.exists == 'false'
         run: cargo build --release -p brismaster
       - name: Prepara i file
+        if: steps.ver.outputs.exists == 'false'
         shell: bash
         run: |
           cp target/release/brismaster.exe BrisMaster.exe
           sha256sum BrisMaster.exe > BrisMaster.exe.sha256
       - name: Pubblica la release
+        if: steps.ver.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: BrisMaster ${{ steps.ver.outputs.tag }}
           files: |
             BrisMaster.exe
             BrisMaster.exe.sha256

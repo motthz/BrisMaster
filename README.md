@@ -51,18 +51,16 @@ L'ultimo rapporto completo è in [bench/RAPPORTO.md](bench/RAPPORTO.md).
 
 **Controllo di regressione.** Su ogni pull request la CI gioca 10.000 partite tra il motore nuovo e quello dell'ultima release (job *regressione*) e fallisce se il nuovo è significativamente più debole. Dopo ogni release va aggiunta la nuova versione come riferimento: una riga in `crates/sim/Cargo.toml` e una voce in `crates/sim/src/agents.rs` (vedi il commento sulla macro `legacy!`).
 
-Risultati del livello Difficile, 20.000 partite per avversario (dettagli in [bench/RISULTATI.md](bench/RISULTATI.md)):
+Risultati del livello Difficile (v0.1.1), 10.000 partite per avversario, 260.000 in tutto. Punteggio: vittoria 1, pareggio ½; il 50% è la parità. Tabelle complete in [bench/RAPPORTO.md](bench/RAPPORTO.md).
 
-| Avversario | % vittorie | IC 95% |
-|---|---:|---|
-| Casuale | 92,5% | 92,2 – 92,9 |
-| Euristico | 70,5% | 69,9 – 71,1 |
-| Aggressivo | 73,5% | 72,9 – 74,1 |
-| Risparmiatore | 72,5% | 71,9 – 73,1 |
-| Briscolone | 74,8% | 74,2 – 75,4 |
-| Contacarte | 67,3% | 66,7 – 68,0 |
-| ISMCTS (2000 iterazioni) | 54,1% | 53,4 – 54,8 |
-| Motore livello Medio | 53,8% | 53,1 – 54,5 |
+| Avversari | Punteggio |
+|---|---:|
+| Stili umani (casuale, euristico, aggressivo, risparmiatore, briscolone, contacarte, principiante, rispondi di seme, butta-carichi, mai briscola) | 68% – 93% |
+| Motore più debole e ISMCTS fino a 2000 iterazioni | 55% – 60% |
+| ISMCTS 5000, 10.000 e 20.000 iterazioni | 54,4%, 53,3%, 51,5% |
+| Varianti del motore stesso e versione precedente | 48% – 51% |
+
+13 avversari su 24 sono sopra il 55% con certezza statistica.
 
 Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro avversari deboli o medi il motore vince nettamente più della metà delle partite, ma contro un giocatore forte quanto lui nessun algoritmo può garantire più del 50%: due copie dello stesso motore vincono per forza il 50% a testa.
 

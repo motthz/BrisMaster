@@ -271,8 +271,8 @@ fn report(player: &str, deals: u64, self_deals: u64, seed: u64) -> String {
     ).unwrap();
     writeln!(
         sec1,
-        "Chi apre la prima presa vince il {} delle partite (IC {} – {}), chi risponde il {}: \
-         il posto conta poco, ed è comunque compensato dal duplicato.\n",
+        "Chi apre la prima presa vince il {} delle partite (IC {} – {}), chi risponde il {}. \
+         Qualunque vantaggio dia il posto, il duplicato lo compensa: ogni mazzo si gioca da entrambi i posti.\n",
         pct(opener), pct(olo), pct(ohi), pct(responder)
     ).unwrap();
     writeln!(

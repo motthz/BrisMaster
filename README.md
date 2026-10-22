@@ -29,8 +29,8 @@ Gli aggiornamenti sono automatici: all'avvio l'app controlla le release di quest
 Il motore usa il **Monte Carlo determinizzato** (PIMC):
 
 1. Dalle carte che conosce (la propria mano, la briscola, le carte uscite) genera centinaia di distribuzioni possibili delle carte coperte.
-2. In ogni distribuzione prova ciascuna carta della mano e simula il resto della partita.
-3. Quando nel mazzo restano quattro carte o meno risolve la partita in modo esatto con alfa-beta.
+2. In ogni distribuzione prova ciascuna carta della mano e simula il resto della partita. Nelle simulazioni entrambi i giocatori vedono le carte di quella distribuzione: chi apre prevede la risposta, chi risponde prende quando conviene e non spreca le briscole. Quando nel mazzo restano due carte la simulazione si ferma e il resto si risolve in modo esatto.
+3. Quando nel mazzo restano otto carte o meno risolve ogni distribuzione in modo esatto con alfa-beta.
 4. Gioca la carta con la probabilità di vittoria più alta (a parità, quella con più punti attesi).
 
 Il motore vede solo quello che vedrebbe un giocatore: le simulazioni non sbirciano mai la mano avversaria.
@@ -54,7 +54,7 @@ L'ultimo rapporto completo è in [bench/RAPPORTO.md](bench/RAPPORTO.md).
 
 **Controllo di regressione.** Su ogni pull request la CI gioca 10.000 partite tra il motore nuovo e quello dell'ultima release (job *regressione*) e fallisce se il nuovo è significativamente più debole. Dopo ogni release va aggiunta la nuova versione come riferimento: una riga in `crates/sim/Cargo.toml` e una voce in `crates/sim/src/agents.rs` (vedi il commento sulla macro `legacy!`).
 
-Risultati del livello Difficile (v0.1.1), 10.000 partite per avversario, 260.000 in tutto. Punteggio: vittoria 1, pareggio ½; il 50% è la parità. Tabelle complete in [bench/RAPPORTO.md](bench/RAPPORTO.md).
+Rapporto completo sulla v0.1.1 (livello Difficile), 10.000 partite per avversario, 260.000 in tutto. Punteggio: vittoria 1, pareggio ½; il 50% è la parità. Tabelle complete in [bench/RAPPORTO.md](bench/RAPPORTO.md).
 
 | Avversari | Punteggio |
 |---|---:|
@@ -64,6 +64,20 @@ Risultati del livello Difficile (v0.1.1), 10.000 partite per avversario, 260.000
 | Varianti del motore stesso e versione precedente | 48% – 51% |
 
 13 avversari su 24 sono sopra il 55% con certezza statistica.
+
+Motore attuale, livello Difficile, 4.000 partite per avversario, tra parentesi la v0.1.1 (dettagli in [bench/RISULTATI.md](bench/RISULTATI.md)):
+
+| Avversario | % vittorie | IC 95% |
+|---|---:|---|
+| Casuale | 94,4% (92,5) | 93,6 – 95,0 |
+| Euristico | 70,2% (70,5) | 68,8 – 71,6 |
+| Aggressivo | 80,7% (73,5) | 79,4 – 81,8 |
+| Risparmiatore | 73,2% (72,5) | 71,8 – 74,5 |
+| Briscolone | 75,3% (74,8) | 74,0 – 76,7 |
+| Contacarte | 67,3% (67,3) | 65,8 – 68,7 |
+| ISMCTS (2000 iterazioni) | 58,7% (54,1) | 57,2 – 60,2 |
+| Motore livello Medio | 52,6% (53,8) | 51,0 – 54,1 |
+| Motore della v0.1.1 (Difficile) | 52,6% su 20.000 partite | 51,9 – 53,3 |
 
 Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro avversari deboli o medi il motore vince nettamente più della metà delle partite, ma contro un giocatore forte quanto lui nessun algoritmo può garantire più del 50%: due copie dello stesso motore vincono per forza il 50% a testa.
 

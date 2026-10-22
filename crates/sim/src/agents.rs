@@ -3,6 +3,8 @@
 //! SPEC: random | heuristic | aggressive | cautious | trumphappy | counter
 //!       | followsuit | loadleader | notrump
 //!       | engine:MONDI[:EPSILON[:SOGLIA[:PESO_PUNTI]]] | ismcts:ITERAZIONI
+//!       | classic:MONDI                (motore della v0.1.1 compilato con la versione attuale)
+//!       | eng:CHIAVE=VALORE,...        (varianti del motore attuale, vedi make_player)
 //!       | noisy:ERRORE:SPEC            (es. noisy:0.25:heuristic)
 //!       | vX.Y.Z/SPEC                  (versione rilasciata, es. v0.1.1/engine:1000)
 
@@ -51,6 +53,10 @@ fn variant_suffix(spec: &str) -> String {
     out
 }
 
+fn policy(cfg: &mut EngineConfig) -> &mut RolloutParams {
+    cfg.rollout_policy.get_or_insert_with(Default::default)
+}
+
 pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
     let num = |s: &str, what: &str| s.parse::<f64>().map_err(|_| format!("{what} non valido in '{spec}'"));
     Ok(match spec {
@@ -77,6 +83,31 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
             }
             if let Some(w) = parts.get(3) {
                 cfg.points_weight = num(w, "peso dei punti")?;
+            }
+            Box::new(EnginePlayer::new(cfg))
+        }
+        s if s.starts_with("classic:") => {
+            Box::new(EnginePlayer::new(EngineConfig::classic(num(&s[8..], "numero di mondi")? as u32)))
+        }
+        // Varianti per chiavi, a partire dal motore attuale:
+        // eng:mondi=1000,eps=0,solve=8,rsolve=2,pol=open,tb=8,tm=2,lb=0,os=4 (rsolve=no, pol=heuristic)
+        s if s.starts_with("eng:") => {
+            let mut cfg = EngineConfig::strength(1000);
+            for kv in s[4..].split(',').filter(|p| !p.is_empty()) {
+                let (k, v) = kv.split_once('=').ok_or(format!("serve chiave=valore, non '{kv}'"))?;
+                match k {
+                    "mondi" => cfg.samples = num(v, "mondi")? as u32,
+                    "eps" => cfg.rollout_epsilon = num(v, "eps")?,
+                    "solve" => cfg.solve_deck_len = num(v, "solve")? as u8,
+                    "peso" => cfg.points_weight = num(v, "peso")?,
+                    "rsolve" => cfg.rollout_solve = if v == "no" { None } else { Some(num(v, "rsolve")? as u8) },
+                    "pol" => cfg.rollout_policy = (v == "open").then(Default::default),
+                    "tb" => policy(&mut cfg).trump_base = num(v, "tb")? as i32,
+                    "tm" => policy(&mut cfg).trump_mult = num(v, "tm")? as i32,
+                    "lb" => policy(&mut cfg).lead_bonus = num(v, "lb")? as i32,
+                    "os" => policy(&mut cfg).opp_spend = num(v, "os")? as i32,
+                    other => return Err(format!("opzione sconosciuta: {other}")),
+                }
             }
             Box::new(EnginePlayer::new(cfg))
         }

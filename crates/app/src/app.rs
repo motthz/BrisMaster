@@ -19,7 +19,7 @@ const HINT_SAMPLES: u32 = 800;
 const REVIEW_SAMPLES: u32 = 2000;
 
 /// Configurazione del motore per l'app: i mondi si dividono su tutti i core del PC.
-fn engine_cfg(samples: u32) -> EngineConfig {
+pub(crate) fn engine_cfg(samples: u32) -> EngineConfig {
     let mut cfg = EngineConfig::strength(samples);
     cfg.threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     cfg

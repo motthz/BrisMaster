@@ -378,7 +378,7 @@ impl Assistant {
             let (tx, rx) = channel();
             std::thread::spawn(move || {
                 let mut rng = SmallRng::from_entropy();
-                let evals = evaluate(&obs, &EngineConfig::strength(samples), &mut rng);
+                let evals = evaluate(&obs, &crate::app::engine_cfg(samples), &mut rng);
                 let reasons = explain(&obs, &evals);
                 let _ = tx.send(Analysis { evals, reasons, samples });
             });

@@ -36,6 +36,25 @@ impl MatchStats {
         self
     }
 
+    /// Una riga di testo per mazzo, per salvare i risultati su file.
+    pub fn to_line(&self) -> String {
+        let t = &self.tally;
+        format!("{} {} {} {} {} {} {}", t.wins, t.draws, t.losses, t.points_for, self.seat_wins[0], self.seat_wins[1], self.sum)
+    }
+
+    pub fn from_line(line: &str) -> Option<MatchStats> {
+        let f: Vec<&str> = line.split(' ').collect();
+        let n = |i: usize| f.get(i)?.parse::<u64>().ok();
+        let sum: f64 = f.get(6)?.parse().ok()?;
+        Some(MatchStats {
+            tally: Tally { wins: n(0)?, draws: n(1)?, losses: n(2)?, points_for: n(3)? },
+            seat_wins: [n(4)?, n(5)?],
+            deals: 1,
+            sum,
+            sum_sq: sum * sum,
+        })
+    }
+
     /// Punteggio medio: vittoria 1, pareggio 0,5, sconfitta 0. Il 50% è la parità.
     pub fn score(&self) -> f64 {
         self.sum / self.deals as f64
@@ -83,6 +102,7 @@ fn play(order: &[Card], agents: &mut [Box<dyn Agent>; 2], rng: &mut SmallRng) ->
 
 /// `deals` mazzi in duplicato tra `player` e `opponent`. Stesso seme, stessi mazzi:
 /// due giocatori diversi contro lo stesso avversario vedono le stesse carte.
+#[cfg(test)]
 pub fn run_match(player: &str, opponent: &str, deals: u64, seed: u64) -> Result<MatchStats, String> {
     Ok(run_deals(player, opponent, deals, seed)?.into_iter().fold(MatchStats::default(), MatchStats::merge))
 }

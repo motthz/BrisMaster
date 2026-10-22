@@ -16,7 +16,7 @@ mod agents;
 mod arena;
 mod opponents;
 
-use arena::{describe, prefixes, run_deals, run_match, MatchStats};
+use arena::{describe, prefixes, run_deals, MatchStats};
 use briscola_core::stats::wilson95;
 use std::fmt::Write as _;
 use std::process::ExitCode;
@@ -79,12 +79,37 @@ fn table_row(name: &str, s: &MatchStats) -> String {
     )
 }
 
-fn run(player: &str, opponent: &str, deals: u64, seed: u64) -> MatchStats {
-    let start = Instant::now();
-    let s = run_match(player, opponent, deals, seed).unwrap_or_else(|e| {
+/// Risultati per mazzo. Con la variabile BRISCOLA_SIM_CACHE (una cartella) ogni confronto finito
+/// viene salvato, così un rapporto lungo interrotto riparte da dove era arrivato.
+fn deals_cached(player: &str, opponent: &str, deals: u64, seed: u64) -> Vec<MatchStats> {
+    let path = std::env::var("BRISCOLA_SIM_CACHE").ok().map(|dir| {
+        let key: String = format!("{player}_{opponent}_{deals}_{seed}")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '_' })
+            .collect();
+        std::path::Path::new(&dir).join(key)
+    });
+    if let Some(text) = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+        let parsed: Option<Vec<MatchStats>> = text.lines().map(MatchStats::from_line).collect();
+        if let Some(v) = parsed.filter(|v| v.len() as u64 == deals) {
+            return v;
+        }
+    }
+    let v = run_deals(player, opponent, deals, seed).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2)
     });
+    if let Some(p) = path {
+        let _ = std::fs::create_dir_all(p.parent().unwrap());
+        let text: String = v.iter().map(|s| s.to_line() + "\n").collect();
+        let _ = std::fs::write(p, text);
+    }
+    v
+}
+
+fn run(player: &str, opponent: &str, deals: u64, seed: u64) -> MatchStats {
+    let start = Instant::now();
+    let s = deals_cached(player, opponent, deals, seed).into_iter().fold(MatchStats::default(), MatchStats::merge);
     eprintln!("  {} contro {}: {}  ({:.0}s)", describe(player), describe(opponent), pct(s.score()), start.elapsed().as_secs_f64());
     s
 }
@@ -219,10 +244,7 @@ fn report(player: &str, deals: u64, self_deals: u64, seed: u64) -> String {
     // 1. Contro se stesso e numero di partite.
     let mut sec1 = String::new();
     writeln!(sec1, "## 1. Contro se stesso: quante partite servono\n").unwrap();
-    let per_deal = run_deals(player, player, self_deals, seed).unwrap_or_else(|e| {
-        eprintln!("{e}");
-        std::process::exit(2)
-    });
+    let per_deal = deals_cached(player, player, self_deals, seed);
     eprintln!("  contro se stesso: fatto");
     games += self_deals * 2;
     let selfp = per_deal.iter().copied().fold(MatchStats::default(), MatchStats::merge);
@@ -367,10 +389,7 @@ fn main() -> ExitCode {
         }
         Some("calibrate") => {
             // Motore contro se stesso fino a `--deals` mazzi: quante partite servono per dati affidabili.
-            let per_deal = run_deals(&player, &player, deals, seed).unwrap_or_else(|e| {
-                eprintln!("{e}");
-                std::process::exit(2)
-            });
+            let per_deal = deals_cached(&player, &player, deals, seed);
             let mut md = format!("{} contro se stesso, fino a {deals} mazzi in duplicato\n\n", describe(&player));
             match convergence(&per_deal, MARGIN, &mut md) {
                 Some(n) => writeln!(md, "\nServono almeno {n} mazzi ({} partite).", n * 2).unwrap(),

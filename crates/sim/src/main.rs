@@ -1,154 +1,443 @@
-//! Banco di prova: migliaia di partite tra il motore e avversari di riferimento.
+//! Banco di prova: decine di migliaia di partite tra il motore e altri giocatori.
 //!
 //! Ogni mazzo viene giocato due volte a posti invertiti ("duplicato"),
 //! così la fortuna delle carte si compensa e il confronto è più preciso.
 //!
 //! Uso:
 //!   briscola-sim [--deals N] [--player SPEC] [--opponent SPEC] [--seed X]
-//!   briscola-sim --panel [--deals N] [--player SPEC] [--out FILE]
+//!   briscola-sim --panel [--extended | --strong] [--deals N] [--player SPEC] [--out FILE]
+//!   briscola-sim gate [--player SPEC] [--baseline SPEC] [--deals N] [--summary FILE]
+//!   briscola-sim calibrate [--player SPEC] [--deals N]
+//!   briscola-sim report [--player SPEC] [--deals N] [--self-deals N] [--out FILE]
 //!
-//! SPEC: random | heuristic | aggressive | cautious | trumphappy | counter
-//!       | engine:MONDI[:EPSILON[:SOGLIA[:PESO_PUNTI]]] | classic:MONDI | ismcts:ITERAZIONI
-//!       | eng:CHIAVE=VALORE,...   (vedi make_player)
+//! SPEC: vedi `agents.rs` (es. engine:1000, ismcts:2000, noisy:0.25:heuristic, v0.1.1/engine:1000).
 
-use briscola_core::ai::*;
-use briscola_core::stats::{wilson95, Tally};
-use briscola_core::*;
-use rand::rngs::SmallRng;
-use rand::SeedableRng;
-use rayon::prelude::*;
+mod agents;
+mod arena;
+mod opponents;
+
+use arena::{describe, prefixes, run_deals, MatchStats};
+use briscola_core::stats::wilson95;
 use std::fmt::Write as _;
+use std::process::ExitCode;
 use std::time::Instant;
 
-fn make_player(spec: &str) -> Box<dyn Player> {
-    match spec {
-        "random" => Box::new(RandomPlayer),
-        "heuristic" => Box::new(HeuristicPlayer),
-        "aggressive" => Box::new(AggressivePlayer),
-        "cautious" => Box::new(CautiousPlayer),
-        "trumphappy" => Box::new(TrumpHappyPlayer),
-        "counter" => Box::new(CounterPlayer),
-        s if s.starts_with("ismcts:") => {
-            Box::new(IsmctsPlayer { iterations: s[7..].parse().expect("iterazioni") })
-        }
-        // Motore della v0.1.1 con N mondi.
-        s if s.starts_with("classic:") => {
-            Box::new(EnginePlayer::new(EngineConfig::classic(s[8..].parse().expect("numero di mondi"))))
-        }
-        // Configurazione per chiavi, a partire dal motore della v0.1.1:
-        // eng:mondi=1000,eps=0,solve=8,rsolve=2,pol=open,tb=8,tm=2,lb=0,os=4
-        s if s.starts_with("eng:") => {
-            let mut cfg = EngineConfig::classic(1000);
-            for kv in s[4..].split(',').filter(|p| !p.is_empty()) {
-                let (k, v) = kv.split_once('=').expect("chiave=valore");
-                match k {
-                    "mondi" => cfg.samples = v.parse().expect("mondi"),
-                    "eps" => cfg.rollout_epsilon = v.parse().expect("eps"),
-                    "solve" => cfg.solve_deck_len = v.parse().expect("solve"),
-                    "peso" => cfg.points_weight = v.parse().expect("peso"),
-                    "rsolve" => cfg.rollout_solve = Some(v.parse().expect("rsolve")),
-                    "pol" => cfg.rollout_policy = (v == "open").then(RolloutParams::default),
-                    "tb" => cfg.rollout_policy.get_or_insert_with(Default::default).trump_base = v.parse().unwrap(),
-                    "tm" => cfg.rollout_policy.get_or_insert_with(Default::default).trump_mult = v.parse().unwrap(),
-                    "lb" => cfg.rollout_policy.get_or_insert_with(Default::default).lead_bonus = v.parse().unwrap(),
-                    "os" => cfg.rollout_policy.get_or_insert_with(Default::default).opp_spend = v.parse().unwrap(),
-                    other => panic!("opzione sconosciuta: {other}"),
-                }
-            }
-            Box::new(EnginePlayer::new(cfg))
-        }
-        s if s.starts_with("engine:") => {
-            let parts: Vec<&str> = s[7..].split(':').collect();
-            let mut cfg = EngineConfig::strength(parts[0].parse().expect("numero di mondi"));
-            if let Some(e) = parts.get(1) {
-                cfg.rollout_epsilon = e.parse().expect("epsilon");
-            }
-            if let Some(d) = parts.get(2) {
-                cfg.solve_deck_len = d.parse().expect("soglia risolutore");
-            }
-            if let Some(w) = parts.get(3) {
-                cfg.points_weight = w.parse().expect("peso dei punti");
-            }
-            Box::new(EnginePlayer::new(cfg))
-        }
-        other => panic!("giocatore sconosciuto: {other}"),
+/// Margine del criterio sul numero di partite: ±1 punto percentuale.
+const MARGIN: f64 = 0.01;
+
+/// Il pannello storico di 8 avversari (quello di bench/RISULTATI.md).
+const PANEL: &[(&str, &str)] = &[
+    ("random", "Carta a caso"),
+    ("heuristic", "Regole pratiche da bar: liscia quando non c'è niente da prendere, prende i carichi con la briscola più piccola"),
+    ("aggressive", "Prova sempre a prendere, apre con le carte forti"),
+    ("cautious", "Tiene le briscole fino alla fine, prende solo quando costa poco"),
+    ("trumphappy", "Usa la briscola appena ci sono punti in tavola, apre di briscola"),
+    ("counter", "Conta le carte uscite, apre i carichi quando sono sicuri e gioca il finale in modo perfetto"),
+    ("ismcts:2000", "Ricerca ad albero Monte Carlo: algoritmo di famiglia diversa, forte"),
+    ("engine:150", "Lo stesso motore con meno simulazioni (livello Medio dell'app)"),
+];
+
+/// Avversari aggiuntivi: errori tipici delle persone e algoritmi a forze diverse.
+const EXTRA: &[(&str, &str)] = &[
+    ("noisy:0.3:heuristic", "Principiante: regole da bar, ma una mossa su tre è a caso"),
+    ("followsuit", "Crede di dover rispondere al seme, come in altri giochi di carte"),
+    ("loadleader", "Apre con Assi e Tre per fare punti subito, senza contare le briscole"),
+    ("notrump", "Non usa mai la briscola finché c'è il mazzo"),
+    ("noisy:0.1:engine:400", "Giocatore forte ma distratto: motore a 400 simulazioni che sbaglia una mossa su dieci"),
+    ("engine:50", "Motore con 50 simulazioni"),
+    ("engine:400", "Motore con 400 simulazioni"),
+    ("ismcts:500", "ISMCTS con 500 iterazioni"),
+    ("ismcts:5000", "ISMCTS con 5000 iterazioni, l'avversario algoritmico più forte"),
+];
+
+/// Gli avversari più forti: ricerca ad albero con molte iterazioni e varianti potenziate del motore.
+const STRONG: &[(&str, &str)] = &[
+    ("ismcts:10000", "ISMCTS con 10.000 iterazioni"),
+    ("ismcts:20000", "ISMCTS con 20.000 iterazioni"),
+    ("engine:3000", "Lo stesso motore con il triplo delle simulazioni"),
+    ("engine:1000:0.0", "Lo stesso motore con simulazioni senza mosse casuali"),
+    ("engine:1000:0.3", "Lo stesso motore con simulazioni più varie (30% di mosse casuali)"),
+    ("engine:1000:0.1:6", "Lo stesso motore che calcola il finale esatto già con 6 carte nel mazzo"),
+];
+
+fn pct(x: f64) -> String {
+    format!("{:.1}%", x * 100.0).replace('.', ",")
+}
+
+fn table_header(md: &mut String) {
+    writeln!(md, "| Avversario | Partite | V / P / S | % vittorie | Punteggio | IC 95% | Elo | Punti medi |").unwrap();
+    writeln!(md, "|---|---:|---:|---:|---:|---|---:|---:|").unwrap();
+}
+
+fn table_row(name: &str, s: &MatchStats) -> String {
+    let t = &s.tally;
+    let (lo, hi) = s.score_ci95();
+    format!(
+        "| {name} | {} | {} / {} / {} | {} | **{}** | {} – {} | {:+.0} | {} |",
+        t.games(), t.wins, t.draws, t.losses, pct(t.win_rate()), pct(s.score()),
+        pct(lo), pct(hi), s.elo(), format!("{:.1}", t.avg_points()).replace('.', ",")
+    )
+}
+
+/// Risultati per mazzo. Con la variabile BRISCOLA_SIM_CACHE (una cartella) si salvano
+/// a blocchi di mazzi, così un rapporto lungo interrotto riparte da dove era arrivato.
+fn deals_cached(player: &str, opponent: &str, deals: u64, seed: u64) -> Vec<MatchStats> {
+    const CHUNK: u64 = 250;
+    let play = |r: std::ops::Range<u64>| {
+        run_deals(player, opponent, r, seed).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(2)
+        })
+    };
+    let Ok(dir) = std::env::var("BRISCOLA_SIM_CACHE") else { return play(0..deals) };
+    let mut out = Vec::with_capacity(deals as usize);
+    for start in (0..deals).step_by(CHUNK as usize) {
+        let end = (start + CHUNK).min(deals);
+        let key: String = format!("{player}_{opponent}_{seed}_{start}-{end}")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+            .collect();
+        let path = std::path::Path::new(&dir).join(key);
+        let cached: Option<Vec<MatchStats>> = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| t.lines().map(MatchStats::from_line).collect::<Option<Vec<_>>>())
+            .filter(|v| v.len() as u64 == end - start);
+        let chunk = cached.unwrap_or_else(|| {
+            let v = play(start..end);
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(&path, v.iter().map(|s| s.to_line() + "\n").collect::<String>());
+            v
+        });
+        out.extend(chunk);
+    }
+    out
+}
+
+fn run(player: &str, opponent: &str, deals: u64, seed: u64) -> MatchStats {
+    let start = Instant::now();
+    let s = deals_cached(player, opponent, deals, seed).into_iter().fold(MatchStats::default(), MatchStats::merge);
+    eprintln!("  {} contro {}: {}  ({:.0}s)", describe(player), describe(opponent), pct(s.score()), start.elapsed().as_secs_f64());
+    s
+}
+
+fn today() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    // Data civile dal numero di giorni (algoritmo di H. Hinnant).
+    let z = secs / 86400 + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    format!("{y}-{m:02}-{d:02}")
+}
+
+fn commit() -> String {
+    std::env::var("GITHUB_SHA").ok().or_else(|| {
+        let out = std::process::Command::new("git").args(["rev-parse", "HEAD"]).output().ok()?;
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    })
+    .map(|s| s.chars().take(7).collect())
+    .unwrap_or_else(|| "?".into())
+}
+
+fn latest_release() -> String {
+    agents::RELEASED.last().unwrap().to_string()
+}
+
+/// Confronto con la versione rilasciata: fallisce se la versione attuale è
+/// significativamente più debole (limite alto dell'IC sotto il 50%).
+fn gate(player: &str, baseline: &str, deals: u64, seed: u64, summary: Option<&str>) -> ExitCode {
+    let s = run(player, baseline, deals, seed);
+    let (lo, hi) = s.score_ci95();
+    let verdict = if hi < 0.5 {
+        "❌ **Regressione**: la versione attuale è significativamente più debole."
+    } else if lo > 0.5 {
+        "✅ **Miglioramento**: la versione attuale è significativamente più forte."
+    } else {
+        "✅ **Nessuna differenza significativa**: la versione attuale non è più debole."
+    };
+    let mut md = String::new();
+    writeln!(md, "### Confronto con la versione rilasciata\n").unwrap();
+    writeln!(md, "{} contro {}, {} mazzi in duplicato ({} partite), seme {seed}.\n", describe(player), describe(baseline), deals, deals * 2).unwrap();
+    table_header(&mut md);
+    writeln!(md, "{}\n", table_row(&describe(baseline), &s)).unwrap();
+    writeln!(md, "{verdict}").unwrap();
+    println!("{md}");
+    if let Some(path) = summary {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).expect("riepilogo");
+        f.write_all(md.as_bytes()).expect("riepilogo");
+    }
+    if hi < 0.5 { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+/// Criterio per il numero di partite: due copie dello stesso motore devono dare il 50%.
+/// Con pochi mazzi il risultato oscilla; il numero giusto è il primo da cui in poi il punteggio
+/// resta entro `margin` dal 50% e anche l'IC 95% è largo al più ±`margin`. Restituisce i mazzi necessari.
+fn convergence(per_deal: &[MatchStats], margin: f64, md: &mut String) -> Option<u64> {
+    let total = per_deal.len() as u64;
+    let mut checkpoints: Vec<u64> = [50, 100, 250, 500, 1000, 1500, 2000, 3000, 4000, 5000, 7500, 10000, 15000, 20000, 30000, 50000]
+        .into_iter()
+        .filter(|&n| n < total)
+        .collect();
+    checkpoints.push(total);
+    let stats = prefixes(per_deal, &checkpoints);
+    let ok: Vec<bool> = stats
+        .iter()
+        .map(|s| {
+            let (lo, hi) = s.score_ci95();
+            (s.score() - 0.5).abs() <= margin && (hi - lo) / 2.0 <= margin
+        })
+        .collect();
+    // Il primo punto da cui il criterio vale fino alla fine.
+    let first = (0..ok.len()).find(|&i| ok[i..].iter().all(|&b| b));
+    writeln!(md, "| Mazzi | Partite | Punteggio | IC 95% | Distanza dal 50% | Criterio |").unwrap();
+    writeln!(md, "|---:|---:|---:|---|---:|:---:|").unwrap();
+    for (i, (n, s)) in checkpoints.iter().zip(&stats).enumerate() {
+        let (lo, hi) = s.score_ci95();
+        let mark = if Some(i) == first { "✅ da qui" } else if first.is_some_and(|f| i > f) { "✅" } else { "—" };
+        writeln!(
+            md,
+            "| {n} | {} | {} | {} – {} | {} punti | {mark} |",
+            n * 2, pct(s.score()), pct(lo), pct(hi), format!("{:.1}", (s.score() - 0.5).abs() * 100.0).replace('.', ",")
+        ).unwrap();
+    }
+    first.map(|i| checkpoints[i])
+}
+
+/// Obiettivo dichiarato: almeno il 55% di punteggio contro ogni avversario.
+const TARGET: f64 = 0.55;
+
+fn target_mark(s: &MatchStats) -> &'static str {
+    let (lo, hi) = s.score_ci95();
+    if lo > TARGET {
+        "✅ sopra il 55%"
+    } else if hi < TARGET {
+        "❌ sotto il 55%"
+    } else {
+        "≈ al limite"
     }
 }
 
-fn run_match(player: &str, opponent: &str, deals: u64, seed: u64) -> Tally {
-    (0..deals)
-        .into_par_iter()
-        .map(|d| {
-            let mut tally = Tally::default();
-            let mut deal_rng = SmallRng::seed_from_u64(seed ^ d.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-            let base = Game::new(&mut deal_rng, 0);
-            // Stesso mazzo, posti scambiati: il giocatore siede prima al posto 0 e poi al posto 1.
-            for seat in 0..2u8 {
-                let mut me = make_player(player);
-                let mut opp = make_player(opponent);
-                let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(d * 2 + seat as u64));
-                let pts = if seat == 0 {
-                    play_game(base, &mut [me.as_mut(), opp.as_mut()], &mut rng)
-                } else {
-                    play_game(base, &mut [opp.as_mut(), me.as_mut()], &mut rng)
-                };
-                tally.add(pts[seat as usize]);
-            }
-            tally
-        })
-        .reduce(Tally::default, |mut a, b| {
-            a.merge(&b);
-            a
-        })
+/// Pannello che restituisce anche i risultati, per il riepilogo.
+fn panel_rows(player: &str, opponents: &[(&str, &str)], deals: u64, seed: u64, md: &mut String) -> Vec<(String, MatchStats)> {
+    table_header(md);
+    let mut out = Vec::new();
+    for (opp, _) in opponents {
+        let s = run(player, opp, deals, seed);
+        writeln!(md, "{}", table_row(&describe(opp), &s)).unwrap();
+        out.push((describe(opp), s));
+    }
+    writeln!(md, "\n| Avversario | Come gioca |\n|---|---|").unwrap();
+    for (spec, how) in opponents {
+        writeln!(md, "| {} | {how} |", describe(spec)).unwrap();
+    }
+    out
 }
 
-fn describe(spec: &str) -> String {
-    make_player(spec).name()
+/// Rapporto completo: contro se stesso, tanti stili, avversari forti, versione precedente.
+fn report(player: &str, deals: u64, self_deals: u64, seed: u64) -> String {
+    let start = Instant::now();
+    let name = describe(player);
+    let base = format!("{}/{player}", latest_release());
+    let mut games = 0u64;
+    let mut all_rows: Vec<(String, MatchStats)> = Vec::new();
+
+    // 1. Contro se stesso e numero di partite.
+    let mut sec1 = String::new();
+    writeln!(sec1, "## 1. Contro se stesso: quante partite servono\n").unwrap();
+    let per_deal = deals_cached(player, player, self_deals, seed);
+    eprintln!("  contro se stesso: fatto");
+    games += self_deals * 2;
+    let selfp = per_deal.iter().copied().fold(MatchStats::default(), MatchStats::merge);
+    let (lo, hi) = selfp.score_ci95();
+    table_header(&mut sec1);
+    writeln!(sec1, "{}\n", table_row(&format!("{name} (copia)"), &selfp)).unwrap();
+    let opener = selfp.seat_wins[0] as f64 / self_deals as f64;
+    let (olo, ohi) = wilson95(selfp.seat_wins[0] as f64, self_deals as f64);
+    let responder = selfp.seat_wins[1] as f64 / self_deals as f64;
+    writeln!(
+        sec1,
+        "Punteggio {} (IC {} – {}): due copie dello stesso motore si dividono le partite a metà. \
+         Non è un difetto: in duplicato ogni mazzo viene giocato da entrambe le copie da entrambi i posti, \
+         quindi per simmetria nessuna delle due può fare meglio del 50%. Vale per qualsiasi programma: \
+         contro un avversario forte quanto lui nessuno può superare il 50%. \
+         Questo test serve a controllare che il banco di prova sia equo e a stabilire quante partite servono.\n",
+        pct(selfp.score()), pct(lo), pct(hi)
+    ).unwrap();
+    writeln!(
+        sec1,
+        "Chi apre la prima presa vince il {} delle partite (IC {} – {}), chi risponde il {}. \
+         Qualunque vantaggio dia il posto, il duplicato lo compensa: ogni mazzo si gioca da entrambi i posti.\n",
+        pct(opener), pct(olo), pct(ohi), pct(responder)
+    ).unwrap();
+    writeln!(
+        sec1,
+        "**Quante partite servono.** Si gioca il motore contro se stesso aumentando le partite, \
+         finché il punteggio resta stabilmente vicino al 50% (entro {m:.0} punto percentuale) e l'intervallo di confidenza \
+         è largo al più ±{m:.0} punto. Con meno partite il caso pesa troppo: anche due giocatori identici sembrano diversi.\n",
+        m = MARGIN * 100.0
+    ).unwrap();
+    let needed = convergence(&per_deal, MARGIN, &mut sec1);
+    match needed {
+        Some(n) => writeln!(
+            sec1,
+            "\nServono almeno **{n} mazzi ({} partite)** per confronto. Questo rapporto ne usa {deals} ({} partite) per riga{}.\n",
+            n * 2, deals * 2,
+            if n <= deals { ": le differenze di più di un punto percentuale non sono dovute al caso" } else { ": non bastano, rilancialo con più mazzi" }
+        ).unwrap(),
+        None => writeln!(sec1, "\nCon {self_deals} mazzi il criterio non è ancora soddisfatto: servono più partite.\n").unwrap(),
+    }
+
+    // 2. Tanti stili di gioco.
+    let mut sec2 = String::new();
+    writeln!(sec2, "## 2. Contro tanti stili di gioco\n").unwrap();
+    let styles: Vec<(&str, &str)> = PANEL.iter().chain(EXTRA).copied().collect();
+    all_rows.extend(panel_rows(player, &styles, deals, seed, &mut sec2));
+    games += styles.len() as u64 * deals * 2;
+
+    // 3. Gli avversari più forti che sappiamo costruire.
+    let mut sec3 = String::new();
+    writeln!(sec3, "\n## 3. Contro gli avversari più forti\n").unwrap();
+    writeln!(
+        sec3,
+        "Gli avversari più difficili che il banco di prova sa costruire: ricerca ad albero con molte più iterazioni, \
+         e varianti del motore stesso con più simulazioni o un finale calcolato prima. Contro le varianti di se stesso \
+         il motore parte vicino al 50% per costruzione: superarle del 55% richiede un motore nettamente migliore, non solo più calcolo.\n"
+    ).unwrap();
+    all_rows.extend(panel_rows(player, STRONG, deals, seed, &mut sec3));
+    games += STRONG.len() as u64 * deals * 2;
+
+    // 4. Versione precedente.
+    let mut sec4 = String::new();
+    writeln!(sec4, "\n## 4. Contro la versione precedente\n").unwrap();
+    let old = run(player, &base, deals, seed);
+    games += deals * 2;
+    let (lo, hi) = old.score_ci95();
+    table_header(&mut sec4);
+    writeln!(sec4, "{}\n", table_row(&describe(&base), &old)).unwrap();
+    all_rows.push((describe(&base), old));
+    let verdict = if hi < 0.5 {
+        "la versione attuale è **più debole** della precedente: è una regressione."
+    } else if lo > 0.5 {
+        "la versione attuale è **più forte** della precedente."
+    } else {
+        "nessuna differenza significativa tra le due versioni."
+    };
+    writeln!(sec4, "Contro {}: {verdict}", describe(&base)).unwrap();
+    writeln!(
+        sec4,
+        "La stessa prova gira in automatico su ogni pull request (job *regressione* in `.github/workflows/ci.yml`) \
+         e blocca le modifiche che rendono il motore significativamente più debole della release {}.\n",
+        latest_release()
+    ).unwrap();
+
+    // Intestazione e riepilogo sull'obiettivo del 55%.
+    let mut md = String::new();
+    writeln!(md, "# Rapporto dei test massivi\n").unwrap();
+    writeln!(md, "Motore provato: **{name}** (`{player}`), commit `{}`, {}.", commit(), today()).unwrap();
+    writeln!(md, "Ogni riga: {deals} mazzi giocati due volte a posti invertiti ({} partite), seme `{seed}`. Gli stessi mazzi per tutti gli avversari.\n", deals * 2).unwrap();
+    writeln!(md, "## Riepilogo: obiettivo 55% contro ogni avversario\n").unwrap();
+    let above = all_rows.iter().filter(|(_, s)| s.score_ci95().0 > TARGET).count();
+    writeln!(
+        md,
+        "Sopra il 55% con certezza statistica (intero IC 95% sopra il 55%): **{above} avversari su {}**. \
+         Il motore contro se stesso è escluso: lì il 50% è il risultato esatto per costruzione.\n",
+        all_rows.len()
+    ).unwrap();
+    writeln!(md, "| Avversario | Punteggio | IC 95% | Obiettivo |\n|---|---:|---|---|").unwrap();
+    let mut sorted = all_rows.clone();
+    sorted.sort_by(|a, b| a.1.score().partial_cmp(&b.1.score()).unwrap());
+    for (n, s) in &sorted {
+        let (lo, hi) = s.score_ci95();
+        writeln!(md, "| {n} | {} | {} – {} | {} |", pct(s.score()), pct(lo), pct(hi), target_mark(s)).unwrap();
+    }
+    writeln!(md, "\nCome leggere le colonne:\n").unwrap();
+    writeln!(md, "- **% vittorie**: partite vinte (i pareggi 60-60 non contano).").unwrap();
+    writeln!(md, "- **Punteggio**: vittoria 1, pareggio ½, sconfitta 0. Il 50% è la parità: sopra il 50% il motore è più forte.").unwrap();
+    writeln!(md, "- **IC 95%**: intervallo di confidenza del punteggio, calcolato sulle coppie di partite dello stesso mazzo. Se è tutto sopra il 50%, il vantaggio non è dovuto al caso.").unwrap();
+    writeln!(md, "- **Elo**: la stessa differenza di forza espressa in punti Elo (+35 ≈ 55%, +100 ≈ 64% di punteggio).\n").unwrap();
+    md.push_str(&sec1);
+    md.push_str(&sec2);
+    md.push_str(&sec3);
+    md.push_str(&sec4);
+    writeln!(md, "## Come riprodurlo\n").unwrap();
+    writeln!(md, "```\ncargo run --release -p briscola-sim -- report --player {player} --deals {deals} --self-deals {self_deals} --seed {seed} --out bench/RAPPORTO.md\n```\n").unwrap();
+    writeln!(md, "{games} partite in tutto, {:.0} minuti su questa macchina.", start.elapsed().as_secs_f64() / 60.0).unwrap();
+    md
 }
 
-fn main() {
+fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let get = |k: &str, d: &str| -> String {
         args.iter().position(|a| a == k).map(|i| args[i + 1].clone()).unwrap_or(d.to_string())
     };
-    let deals: u64 = get("--deals", "5000").parse().unwrap();
-    let seed: u64 = get("--seed", "2026").parse().unwrap();
+    let has = |k: &str| args.iter().any(|a| a == k);
+    let deals: u64 = get("--deals", "5000").parse().expect("--deals");
+    let seed: u64 = get("--seed", "2026").parse().expect("--seed");
     let player = get("--player", "engine:1000");
+    let out = args.iter().position(|a| a == "--out").map(|i| args[i + 1].clone());
+    let write_out = |md: &str| {
+        if let Some(path) = &out {
+            std::fs::write(path, md).expect("scrittura risultati");
+        }
+    };
 
-    if args.iter().any(|a| a == "--panel") {
-        let opponents = [
-            "random", "heuristic", "aggressive", "cautious", "trumphappy", "counter",
-            "ismcts:2000", "engine:150",
-        ];
-        let mut md = String::new();
-        writeln!(md, "| Avversario | Partite | Vinte | Pari | Perse | % vittorie | IC 95% | Punti medi |").unwrap();
-        writeln!(md, "|---|---:|---:|---:|---:|---:|---|---:|").unwrap();
+    match args.get(1).map(String::as_str) {
+        Some("gate") => {
+            let baseline = get("--baseline", &format!("{}/{player}", latest_release()));
+            let summary = args.iter().position(|a| a == "--summary").map(|i| args[i + 1].clone());
+            return gate(&player, &baseline, deals, seed, summary.as_deref());
+        }
+        Some("calibrate") => {
+            // Motore contro se stesso fino a `--deals` mazzi: quante partite servono per dati affidabili.
+            let per_deal = deals_cached(&player, &player, deals, seed);
+            let mut md = format!("{} contro se stesso, fino a {deals} mazzi in duplicato\n\n", describe(&player));
+            match convergence(&per_deal, MARGIN, &mut md) {
+                Some(n) => writeln!(md, "\nServono almeno {n} mazzi ({} partite).", n * 2).unwrap(),
+                None => writeln!(md, "\nCriterio non raggiunto con {deals} mazzi: aumenta --deals.").unwrap(),
+            }
+            println!("{md}");
+            write_out(&md);
+            return ExitCode::SUCCESS;
+        }
+        Some("report") => {
+            let self_deals: u64 = get("--self-deals", "10000").parse().expect("--self-deals");
+            let md = report(&player, deals, self_deals, seed);
+            println!("{md}");
+            write_out(&md);
+            return ExitCode::SUCCESS;
+        }
+        _ => {}
+    }
+
+    if has("--panel") {
+        let opponents: Vec<(&str, &str)> = if has("--strong") {
+            STRONG.to_vec()
+        } else if has("--extended") {
+            PANEL.iter().chain(EXTRA).chain(STRONG).copied().collect()
+        } else {
+            PANEL.to_vec()
+        };
         println!("{} contro il pannello di avversari, {} partite ciascuno", describe(&player), deals * 2);
-        for opp in opponents {
-            let start = Instant::now();
-            let t = run_match(&player, opp, deals, seed);
-            let (lo, hi) = wilson95(t.wins as f64, t.games() as f64);
-            let row = format!(
-                "| {} | {} | {} | {} | {} | **{:.1}%** | {:.1}% – {:.1}% | {:.1} |",
-                describe(opp), t.games(), t.wins, t.draws, t.losses,
-                t.win_rate() * 100.0, lo * 100.0, hi * 100.0, t.avg_points()
-            );
-            println!("{row}   ({:.0}s)", start.elapsed().as_secs_f64());
-            writeln!(md, "{row}").unwrap();
-        }
-        if let Some(i) = args.iter().position(|a| a == "--out") {
-            std::fs::write(&args[i + 1], md).expect("scrittura risultati");
-        }
-        return;
+        let mut md = String::new();
+        panel_rows(&player, &opponents, deals, seed, &mut md);
+        println!("{md}");
+        write_out(&md);
+        return ExitCode::SUCCESS;
     }
 
     let opponent = get("--opponent", "heuristic");
     let start = Instant::now();
-    let total = run_match(&player, &opponent, deals, seed);
+    let s = run(&player, &opponent, deals, seed);
+    let total = s.tally;
     let n = total.games() as f64;
     let (lo, hi) = wilson95(total.wins as f64, n);
-    let decided = (total.wins + total.losses) as f64;
-    let (dlo, dhi) = wilson95(total.wins as f64, decided);
+    let (slo, shi) = s.score_ci95();
     println!("{} contro {}", describe(&player), describe(&opponent));
     println!("Partite: {} ({} mazzi in duplicato), seme {seed}", total.games(), deals);
     println!("Vittorie {} | Pareggi {} | Sconfitte {}", total.wins, total.draws, total.losses);
@@ -157,9 +446,10 @@ fn main() {
         total.win_rate() * 100.0, lo * 100.0, hi * 100.0
     );
     println!(
-        "Vittorie sulle partite decise: {:.2}%  (IC 95%: {:.2}% - {:.2}%)",
-        total.decisive_win_rate() * 100.0, dlo * 100.0, dhi * 100.0
+        "Punteggio (pareggio = ½): {:.2}%  (IC 95% sui mazzi: {:.2}% - {:.2}%, Elo {:+.0})",
+        s.score() * 100.0, slo * 100.0, shi * 100.0, s.elo()
     );
     println!("Punti medi del giocatore: {:.2} / 120", total.avg_points());
     println!("Tempo: {:.1}s", start.elapsed().as_secs_f64());
+    ExitCode::SUCCESS
 }

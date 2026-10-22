@@ -159,14 +159,14 @@ dependencies = [
 
 [[package]]
 name = "briscola-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rand",
 ]
 
 [[package]]
 name = "briscola-sim"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "briscola-core",
  "rand",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "brismaster"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "briscola-core",
  "eframe",

@@ -37,11 +37,22 @@ Il motore vede solo quello che vedrebbe un giocatore: le simulazioni non sbircia
 Il programma `briscola-sim` gioca migliaia di partite tra il motore e avversari di riferimento. Ogni mazzo si gioca due volte a posti invertiti, così la fortuna delle carte si compensa. Le percentuali sono accompagnate dall'intervallo di confidenza al 95% (Wilson).
 
 ```
-cargo run --release -p briscola-sim -- --panel --deals 10000 --out bench/RISULTATI.md
+cargo run --release -p briscola-sim -- --panel --deals 10000 --out tabella.md
 cargo run --release -p briscola-sim -- --player engine:1000 --opponent ismcts:2000 --deals 5000
 ```
 
-I risultati più recenti sono in [bench/RISULTATI.md](bench/RISULTATI.md).
+Risultati del livello Difficile, 20.000 partite per avversario (dettagli in [bench/RISULTATI.md](bench/RISULTATI.md)):
+
+| Avversario | % vittorie | IC 95% |
+|---|---:|---|
+| Casuale | 92,5% | 92,2 – 92,9 |
+| Euristico | 70,5% | 69,9 – 71,1 |
+| Aggressivo | 73,5% | 72,9 – 74,1 |
+| Risparmiatore | 72,5% | 71,9 – 73,1 |
+| Briscolone | 74,8% | 74,2 – 75,4 |
+| Contacarte | 67,3% | 66,7 – 68,0 |
+| ISMCTS (2000 iterazioni) | 54,1% | 53,4 – 54,8 |
+| Motore livello Medio | 53,8% | 53,1 – 54,5 |
 
 Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro avversari deboli o medi il motore vince nettamente più della metà delle partite, ma contro un giocatore forte quanto lui nessun algoritmo può garantire più del 50%: due copie dello stesso motore vincono per forza il 50% a testa.
 

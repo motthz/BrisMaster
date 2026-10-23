@@ -2,6 +2,7 @@
 
 mod app;
 mod assistant;
+mod blackjack;
 mod cards_ui;
 mod update;
 

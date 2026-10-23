@@ -3,6 +3,7 @@
 
 use crate::assistant::{self, Assistant};
 use crate::cards_ui::{self, BEST, CARD_SIZE};
+use crate::settemezzo_ui::{self, SetteMezzo};
 use crate::update::{self, Release};
 use briscola_core::ai::{evaluate, EngineConfig, EnginePlayer, HeuristicPlayer, MoveEval, Player};
 use briscola_core::cards::{self, Card};
@@ -65,6 +66,7 @@ struct Record {
 enum Mode {
     Gioca,
     Assistente,
+    SetteMezzo,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -76,6 +78,7 @@ struct Settings {
     record: Record,
     mode: Mode,
     assist_samples: u32,
+    settemezzo: settemezzo_ui::Prefs,
 }
 
 impl Default for Settings {
@@ -87,6 +90,7 @@ impl Default for Settings {
             record: Record::default(),
             mode: Mode::Gioca,
             assist_samples: 2000,
+            settemezzo: settemezzo_ui::Prefs::default(),
         }
     }
 }
@@ -195,6 +199,7 @@ pub struct BrisApp {
     games_started: u32,
     update: UpdateState,
     assistant: Assistant,
+    settemezzo: SetteMezzo,
 }
 
 impl BrisApp {
@@ -212,12 +217,14 @@ impl BrisApp {
         }
         style.spacing.button_padding = egui::vec2(10.0, 5.0);
         cc.egui_ctx.set_global_style(style);
+        let settemezzo = SetteMezzo::new(&settings.settemezzo);
         let mut app = BrisApp {
             current: Match::new(settings.difficulty, HUMAN),
             settings,
             games_started: 1,
             update: UpdateState::Idle,
             assistant: Assistant::default(),
+            settemezzo,
         };
         if app.settings.auto_update {
             app.check_updates();
@@ -312,7 +319,11 @@ impl BrisApp {
         ui.horizontal(|ui| {
             ui.heading(RichText::new("BrisMaster").strong().color(cards_ui::GOLD));
             ui.separator();
-            for (m, label) in [(Mode::Gioca, "Gioca contro il motore"), (Mode::Assistente, "Assistente")] {
+            for (m, label) in [
+                (Mode::Gioca, "Gioca contro il motore"),
+                (Mode::Assistente, "Assistente"),
+                (Mode::SetteMezzo, "Sette e mezzo"),
+            ] {
                 let sel = self.settings.mode == m;
                 let text = RichText::new(label).size(16.0);
                 if ui.add(egui::Button::selectable(sel, if sel { text.strong() } else { text })).clicked() {
@@ -320,8 +331,10 @@ impl BrisApp {
                 }
             }
             ui.separator();
-            if self.settings.mode == Mode::Gioca {
-                self.game_controls(ui);
+            match self.settings.mode {
+                Mode::Gioca => self.game_controls(ui),
+                Mode::SetteMezzo => self.settemezzo.top_controls(ui, &mut self.settings.settemezzo),
+                Mode::Assistente => {}
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.update_widget(ui);
@@ -664,6 +677,7 @@ impl eframe::App for BrisApp {
             let side_w = match self.settings.mode {
                 Mode::Gioca => 300.0,
                 Mode::Assistente => (full.width() * 0.4).clamp(440.0, 560.0),
+                Mode::SetteMezzo => (full.width() * 0.4).clamp(510.0, 580.0),
             };
             let split = full.max.x - side_w;
             let left = Rect::from_min_max(full.min, egui::pos2(split, full.max.y));
@@ -686,6 +700,11 @@ impl eframe::App for BrisApp {
                     let samples = &mut self.settings.assist_samples;
                     ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| self.assistant.side_ui(ui, samples));
                     ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| self.assistant.table_ui(ui));
+                }
+                Mode::SetteMezzo => {
+                    let (sm, prefs) = (&mut self.settemezzo, &mut self.settings.settemezzo);
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| sm.side_ui(ui, prefs));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| sm.table_ui(ui, prefs));
                 }
             }
         });

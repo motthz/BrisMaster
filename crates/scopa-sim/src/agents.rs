@@ -81,7 +81,7 @@ pub fn describe(spec: &str) -> String {
             let mut n = p.name();
             if let Some(rest) = spec.strip_prefix("engine:") {
                 let parts: Vec<&str> = rest.split(':').collect();
-                if let Some(e) = parts.get(1) {
+                if let Some(e) = parts.get(1).filter(|e| e.parse::<f64>().unwrap_or(0.0) > 0.0) {
                     n += &format!(" · rollout con {:.0}% di mosse casuali", e.parse::<f64>().unwrap_or(0.0) * 100.0);
                 }
                 match parts.get(2) {

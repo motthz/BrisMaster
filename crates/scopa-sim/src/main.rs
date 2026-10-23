@@ -9,7 +9,7 @@
 //!   scopa-sim report [--player SPEC] [--deals N] [--self-deals N] [--out FILE]
 //!   scopa-sim dist [--player SPEC] [--hands N]   (distribuzione dei punti per smazzata)
 //!
-//! SPEC: vedi `agents.rs` (es. engine:200, ismcts:2000, noisy:0.3:heuristic).
+//! SPEC: vedi `agents.rs` (es. engine:400, ismcts:2000, noisy:0.3:heuristic).
 
 mod agents;
 mod arena;
@@ -46,9 +46,11 @@ const STYLES: &[(&str, &str)] = &[
 const STRONG: &[(&str, &str)] = &[
     ("ismcts:1000", "Ricerca ad albero Monte Carlo (famiglia diversa dal motore), 1000 iterazioni"),
     ("ismcts:5000", "ISMCTS con 5000 iterazioni"),
-    ("engine:30", "Lo stesso motore con 30 mondi (livello Medio dell'app)"),
-    ("noisy:0.1:engine:200", "Motore forte ma distratto: sbaglia una mossa su dieci"),
-    ("engine:200:0:diff", "Lo stesso motore che gioca per la differenza punti della smazzata e non per la partita"),
+    ("tree:1000,pol=greedy", "Ricerca ad albero potenziata con il finale esatto e il valore della partita"),
+    ("engine:100", "Lo stesso motore con 100 mondi"),
+    ("engine:1000", "Lo stesso motore con 1000 mondi (più del doppio del calcolo)"),
+    ("noisy:0.1:engine:400", "Lo stesso motore ma distratto: sbaglia una mossa su dieci"),
+    ("engine:400:0:diff", "Lo stesso motore che gioca per la differenza punti della smazzata e non per la partita"),
 ];
 
 fn pct(x: f64) -> String {
@@ -400,7 +402,7 @@ fn main() -> ExitCode {
     let has = |k: &str| args.iter().any(|a| a == k);
     let deals: u64 = get("--deals", "4000").parse().expect("--deals");
     let seed: u64 = get("--seed", "2026").parse().expect("--seed");
-    let player = get("--player", "engine:200");
+    let player = get("--player", "engine:400");
     let out = args.iter().position(|a| a == "--out").map(|i| args[i + 1].clone());
     let write_out = |md: &str| {
         if let Some(path) = &out {

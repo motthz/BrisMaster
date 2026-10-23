@@ -36,10 +36,7 @@ pub struct Rules {
 
 impl Default for Rules {
     fn default() -> Self {
-        Rules {
-            matta: true,
-            reale_paga: 2,
-        }
+        Rules { matta: true, reale_paga: 2 }
     }
 }
 
@@ -109,10 +106,7 @@ impl Deck {
     /// 4 bit per classe: 36 bit.
     #[inline]
     pub fn pack(&self) -> u64 {
-        self.n
-            .iter()
-            .enumerate()
-            .fold(0, |k, (i, &x)| k | (x as u64) << (4 * i))
+        self.n.iter().enumerate().fold(0, |k, (i, &x)| k | (x as u64) << (4 * i))
     }
 }
 
@@ -126,31 +120,18 @@ pub struct Hand {
 }
 
 impl Hand {
-    pub const EMPTY: Hand = Hand {
-        sum: 0,
-        matta: false,
-        cards: 0,
-    };
+    pub const EMPTY: Hand = Hand { sum: 0, matta: false, cards: 0 };
 
     pub fn of(rules: &Rules, cs: impl IntoIterator<Item = Card>) -> Hand {
-        cs.into_iter()
-            .fold(Hand::EMPTY, |h, c| h.add(rules.class_of(c)))
+        cs.into_iter().fold(Hand::EMPTY, |h, c| h.add(rules.class_of(c)))
     }
 
     #[inline]
     pub fn add(self, class: usize) -> Hand {
         if class == MATTA {
-            Hand {
-                matta: true,
-                cards: self.cards + 1,
-                ..self
-            }
+            Hand { matta: true, cards: self.cards + 1, ..self }
         } else {
-            Hand {
-                sum: self.sum + half_points(class),
-                cards: self.cards + 1,
-                ..self
-            }
+            Hand { sum: self.sum + half_points(class), cards: self.cards + 1, ..self }
         }
     }
 

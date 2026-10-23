@@ -49,11 +49,7 @@ impl Giocatore {
             Strategia::OttimaleContro(b) => Some(Solver::new(rules, b)),
             _ => None,
         };
-        Giocatore {
-            strategia,
-            solver,
-            rules,
-        }
+        Giocatore { strategia, solver, rules }
     }
 
     /// Probabilità di chiedere carta.
@@ -63,13 +59,7 @@ impl Giocatore {
             Strategia::Casuale => 0.5,
             _ => {
                 let rules = self.rules;
-                if self
-                    .solver
-                    .as_mut()
-                    .unwrap()
-                    .advise(d, hc, up)
-                    .should_hit(&rules)
-                {
+                if self.solver.as_mut().unwrap().advise(d, hc, up).should_hit(&rules) {
                     1.0
                 } else {
                     0.0
@@ -104,11 +94,7 @@ pub fn play_hand(
     // Il giocatore vede solo le sue carte.
     let mut d = rules.full_deck().without(hc);
     loop {
-        let q = if next < order.len() {
-            player.hit_prob(&d, hc, up)
-        } else {
-            0.0
-        };
+        let q = if next < order.len() { player.hit_prob(&d, hc, up) } else { 0.0 };
         if q <= 0.0 || (q < 1.0 && !rng.gen_bool(q)) {
             break;
         }
@@ -205,13 +191,7 @@ impl SimStats {
 
 /// Gioca `hands` mani per ogni strategia contro `banco`, usando gli stessi mazzi per tutte
 /// (numeri casuali comuni). La prima strategia è il riferimento per le differenze.
-pub fn simulate(
-    rules: Rules,
-    banco: Banco,
-    strategie: &[Strategia],
-    hands: u64,
-    seed: u64,
-) -> Vec<SimStats> {
+pub fn simulate(rules: Rules, banco: Banco, strategie: &[Strategia], hands: u64, seed: u64) -> Vec<SimStats> {
     use rayon::prelude::*;
     const CHUNK: u64 = 10_000;
     let chunks = hands.div_ceil(CHUNK);
@@ -219,10 +199,7 @@ pub fn simulate(
         .into_par_iter()
         .map_init(
             || {
-                let players: Vec<Giocatore> = strategie
-                    .iter()
-                    .map(|&s| Giocatore::new(s, rules, banco))
-                    .collect();
+                let players: Vec<Giocatore> = strategie.iter().map(|&s| Giocatore::new(s, rules, banco)).collect();
                 (players, BancoBrain::new(rules, banco))
             },
             |(players, brain), chunk| {
@@ -268,26 +245,16 @@ mod tests {
     fn simulazione_coerente_con_il_calcolo_esatto() {
         let rules = Rules::default();
         for banco in [Banco::Soglia(11), Banco::Esperto] {
-            let strategie = [
-                Strategia::Ottimale,
-                Strategia::Soglia(10),
-                Strategia::Casuale,
-            ];
+            let strategie = [Strategia::Ottimale, Strategia::Soglia(10), Strategia::Casuale];
             let sim = simulate(rules, banco, &strategie, 200_000, 7);
             let mut solver = Solver::new(rules, banco);
             let deck = rules.full_deck();
             for (s, st) in strategie.iter().zip(&sim) {
                 let mut g = Giocatore::new(*s, rules, banco);
-                let exact = solver
-                    .evaluate(&deck, &mut |d, hc, up| g.hit_prob(d, hc, up))
-                    .ev(&rules);
+                let exact = solver.evaluate(&deck, &mut |d, hc, up| g.hit_prob(d, hc, up)).ev(&rules);
                 // Margine largo (4 deviazioni standard) per non avere falsi allarmi.
                 let tol = 2.0 * st.profit.half95();
-                assert!(
-                    (st.profit.mean - exact).abs() < tol,
-                    "{banco:?} {s:?}: sim {} esatto {exact}",
-                    st.profit.mean
-                );
+                assert!((st.profit.mean - exact).abs() < tol, "{banco:?} {s:?}: sim {} esatto {exact}", st.profit.mean);
             }
         }
     }

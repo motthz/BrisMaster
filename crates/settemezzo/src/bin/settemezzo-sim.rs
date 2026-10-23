@@ -36,12 +36,7 @@ fn exact(rules: Rules, banco: Banco, s: Strategia) -> Dist {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    let arg = |name: &str| {
-        args.iter()
-            .position(|a| a == name)
-            .and_then(|i| args.get(i + 1))
-            .cloned()
-    };
+    let arg = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     let hands: u64 = arg("--hands").map_or(1_000_000, |s| s.parse().expect("--hands"));
     let seed: u64 = arg("--seed").map_or(20261023, |s| s.parse().expect("--seed"));
     let out = arg("--out");
@@ -123,18 +118,9 @@ fn main() -> ExitCode {
                 "—".to_string()
             } else {
                 let dh = st.diff.half95();
-                format!(
-                    "{} ({} – {})",
-                    pct(-st.diff.mean),
-                    pct(-st.diff.mean - dh),
-                    pct(-st.diff.mean + dh)
-                )
+                format!("{} ({} – {})", pct(-st.diff.mean), pct(-st.diff.mean - dh), pct(-st.diff.mean + dh))
             };
-            let name = if *s == Strategia::Ottimale {
-                format!("**{}**", s.label())
-            } else {
-                s.label()
-            };
+            let name = if *s == Strategia::Ottimale { format!("**{}**", s.label()) } else { s.label() };
             writeln!(
                 md,
                 "| {name} | **{}** | {} | {} | {} | {} | {} ± {} | {} | {diff} |",
@@ -150,21 +136,12 @@ fn main() -> ExitCode {
             .unwrap();
         }
         let (bn, bv) = best_naive.unwrap();
-        writeln!(
-            md,
-            "\n{} mani per strategia simulate in {:.0} s.\n",
-            hands, secs
-        )
-        .unwrap();
+        writeln!(md, "\n{} mani per strategia simulate in {:.0} s.\n", hands, secs).unwrap();
         summary.push((banco, opt_ev, bn, bv));
         eprintln!("{} fatto in {:.0} s", banco.label(), secs);
     }
 
-    writeln!(
-        md,
-        "## Robustezza: strategia pensata per un banco, giocata contro un altro\n"
-    )
-    .unwrap();
+    writeln!(md, "## Robustezza: strategia pensata per un banco, giocata contro un altro\n").unwrap();
     write!(md, "| Strategia pensata per ↓ / banco reale → |").unwrap();
     for b in Banco::ALL {
         write!(md, " {} |", b.label()).unwrap();
@@ -173,11 +150,7 @@ fn main() -> ExitCode {
     for pensata in Banco::ALL {
         write!(md, "| {} |", pensata.label()).unwrap();
         for reale in Banco::ALL {
-            let s = if pensata == reale {
-                Strategia::Ottimale
-            } else {
-                Strategia::OttimaleContro(pensata)
-            };
+            let s = if pensata == reale { Strategia::Ottimale } else { Strategia::OttimaleContro(pensata) };
             let v = exact(rules, reale, s).ev(&rules);
             if pensata == reale {
                 write!(md, " **{}** |", pct(v)).unwrap();
@@ -187,53 +160,16 @@ fn main() -> ExitCode {
         }
         writeln!(md).unwrap();
     }
-    writeln!(
-        md,
-        "\nIn grassetto la strategia giusta per quel banco, il massimo della colonna.\n"
-    )
-    .unwrap();
+    writeln!(md, "\nIn grassetto la strategia giusta per quel banco, il massimo della colonna.\n").unwrap();
 
-    writeln!(
-        md,
-        "## Varianti di regole (valori esatti, strategia ottimale)\n"
-    )
-    .unwrap();
-    writeln!(
-        md,
-        "| Regole | {} |",
-        Banco::ALL.map(|b| b.label()).join(" | ")
-    )
-    .unwrap();
+    writeln!(md, "## Varianti di regole (valori esatti, strategia ottimale)\n").unwrap();
+    writeln!(md, "| Regole | {} |", Banco::ALL.map(|b| b.label()).join(" | ")).unwrap();
     writeln!(md, "|---|{}", "---:|".repeat(Banco::ALL.len())).unwrap();
     for (label, r) in [
-        (
-            "Con matta, reale pagato doppio (quelle sopra)",
-            Rules {
-                matta: true,
-                reale_paga: 2,
-            },
-        ),
-        (
-            "Con matta, reale pagato semplice",
-            Rules {
-                matta: true,
-                reale_paga: 1,
-            },
-        ),
-        (
-            "Senza matta, reale pagato doppio",
-            Rules {
-                matta: false,
-                reale_paga: 2,
-            },
-        ),
-        (
-            "Senza matta, reale pagato semplice",
-            Rules {
-                matta: false,
-                reale_paga: 1,
-            },
-        ),
+        ("Con matta, reale pagato doppio (quelle sopra)", Rules { matta: true, reale_paga: 2 }),
+        ("Con matta, reale pagato semplice", Rules { matta: true, reale_paga: 1 }),
+        ("Senza matta, reale pagato doppio", Rules { matta: false, reale_paga: 2 }),
+        ("Senza matta, reale pagato semplice", Rules { matta: false, reale_paga: 1 }),
     ] {
         write!(md, "| {label} |").unwrap();
         for b in Banco::ALL {
@@ -244,23 +180,10 @@ fn main() -> ExitCode {
     }
 
     writeln!(md, "\n## In sintesi\n").unwrap();
-    writeln!(
-        md,
-        "| Banco | Ottimale | Migliore strategia a soglia fissa | Guadagno dell'ottimale |"
-    )
-    .unwrap();
+    writeln!(md, "| Banco | Ottimale | Migliore strategia a soglia fissa | Guadagno dell'ottimale |").unwrap();
     writeln!(md, "|---|---:|---|---:|").unwrap();
     for (b, o, s, v) in &summary {
-        writeln!(
-            md,
-            "| {} | {} | {}: {} | {} |",
-            b.label(),
-            pct(*o),
-            s.label(),
-            pct(*v),
-            pct(o - v)
-        )
-        .unwrap();
+        writeln!(md, "| {} | {} | {}: {} | {} |", b.label(), pct(*o), s.label(), pct(*v), pct(o - v)).unwrap();
     }
     writeln!(
         md,

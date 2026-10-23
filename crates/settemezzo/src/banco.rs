@@ -17,12 +17,7 @@ pub enum Banco {
 }
 
 impl Banco {
-    pub const ALL: [Banco; 4] = [
-        Banco::Soglia(10),
-        Banco::Soglia(11),
-        Banco::Soglia(12),
-        Banco::Esperto,
-    ];
+    pub const ALL: [Banco; 4] = [Banco::Soglia(10), Banco::Soglia(11), Banco::Soglia(12), Banco::Esperto];
 
     pub fn label(self) -> String {
         match self {
@@ -37,10 +32,7 @@ impl Banco {
                 "Chiede carta finché ha meno di {} e poi si ferma, senza guardare le tue carte",
                 crate::fmt_points(t)
             ),
-            Banco::Esperto => {
-                "Guarda le tue carte scoperte e tira o si ferma per massimizzare la sua vincita"
-                    .into()
-            }
+            Banco::Esperto => "Guarda le tue carte scoperte e tira o si ferma per massimizzare la sua vincita".into(),
         }
     }
 
@@ -72,11 +64,7 @@ pub struct BancoBrain {
 
 impl BancoBrain {
     pub fn new(rules: Rules, banco: Banco) -> Self {
-        BancoBrain {
-            rules,
-            banco,
-            memo: Memo::default(),
-        }
+        BancoBrain { rules, banco, memo: Memo::default() }
     }
 
     /// Il banco, con la mano `b`, chiede un'altra carta?
@@ -114,11 +102,7 @@ impl BancoBrain {
             .filter(|&k| ok[k] && s.n[k] > 0)
             .map(|k| {
                 let p = up.add(k);
-                let u = if b.rank() >= p.rank() {
-                    1.0
-                } else {
-                    -pay(&rules, p)
-                };
+                let u = if b.rank() >= p.rank() { 1.0 } else { -pay(&rules, p) };
                 s.n[k] as f64 * u
             })
             .sum::<f64>()
@@ -139,15 +123,8 @@ impl BancoBrain {
                 let s2 = s.without(c);
                 let nb = b.add(c);
                 let val = if nb.bust() {
-                    let w2: f64 = (0..CLASSES)
-                        .filter(|&k| ok[k])
-                        .map(|k| s2.n[k] as f64)
-                        .sum();
-                    -(0..CLASSES)
-                        .filter(|&k| ok[k])
-                        .map(|k| s2.n[k] as f64 * pay(&rules, up.add(k)))
-                        .sum::<f64>()
-                        / w2
+                    let w2: f64 = (0..CLASSES).filter(|&k| ok[k]).map(|k| s2.n[k] as f64).sum();
+                    -(0..CLASSES).filter(|&k| ok[k]).map(|k| s2.n[k] as f64 * pay(&rules, up.add(k))).sum::<f64>() / w2
                 } else {
                     self.esperto(&s2, nb, up).0
                 };

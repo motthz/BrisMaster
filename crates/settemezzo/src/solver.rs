@@ -21,37 +21,16 @@ pub struct Dist {
 impl Dist {
     fn of_win(rules: &Rules, p: Hand) -> Dist {
         if p.reale() && rules.reale_paga != 1 {
-            Dist {
-                win_reale: 1.0,
-                ..Default::default()
-            }
+            Dist { win_reale: 1.0, ..Default::default() }
         } else {
-            Dist {
-                win: 1.0,
-                ..Default::default()
-            }
+            Dist { win: 1.0, ..Default::default() }
         }
     }
-    const LOSE: Dist = Dist {
-        win: 0.0,
-        win_reale: 0.0,
-        bust: 0.0,
-        lose: 1.0,
-    };
-    const BUST: Dist = Dist {
-        win: 0.0,
-        win_reale: 0.0,
-        bust: 1.0,
-        lose: 0.0,
-    };
+    const LOSE: Dist = Dist { win: 0.0, win_reale: 0.0, bust: 0.0, lose: 1.0 };
+    const BUST: Dist = Dist { win: 0.0, win_reale: 0.0, bust: 1.0, lose: 0.0 };
 
     pub fn scaled(self, k: f64) -> Dist {
-        Dist {
-            win: self.win * k,
-            win_reale: self.win_reale * k,
-            bust: self.bust * k,
-            lose: self.lose * k,
-        }
+        Dist { win: self.win * k, win_reale: self.win_reale * k, bust: self.bust * k, lose: self.lose * k }
     }
     pub fn plus(self, o: Dist) -> Dist {
         Dist {
@@ -84,8 +63,7 @@ pub struct Advice {
 
 impl Advice {
     pub fn should_hit(&self, rules: &Rules) -> bool {
-        self.hit
-            .is_some_and(|h| h.ev(rules) > self.stand.ev(rules) + 1e-12)
+        self.hit.is_some_and(|h| h.ev(rules) > self.stand.ev(rules) + 1e-12)
     }
     pub fn best(&self, rules: &Rules) -> Dist {
         if self.should_hit(rules) {
@@ -113,12 +91,7 @@ fn node_key(d: &Deck, hc: usize, up: Hand) -> u64 {
 
 impl Solver {
     pub fn new(rules: Rules, banco: Banco) -> Self {
-        Solver {
-            rules,
-            brain: BancoBrain::new(rules, banco),
-            stand_memo: Memo::default(),
-            opt_memo: Memo::default(),
-        }
+        Solver { rules, brain: BancoBrain::new(rules, banco), stand_memo: Memo::default(), opt_memo: Memo::default() }
     }
 
     pub fn banco(&self) -> Banco {
@@ -153,11 +126,7 @@ impl Solver {
                     continue;
                 }
                 let nb = b.add(c);
-                let r = if nb.bust() {
-                    Dist::of_win(&rules, p)
-                } else {
-                    self.banker(&d.without(c), hc, up, nb)
-                };
+                let r = if nb.bust() { Dist::of_win(&rules, p) } else { self.banker(&d.without(c), hc, up, nb) };
                 acc = acc.plus(r.scaled(d.n[c] as f64 / t as f64));
             }
             acc
@@ -207,28 +176,16 @@ impl Solver {
         let t = d.total() as f64;
         let p = up.add(hc);
         let p_bust_next = if t > 0.0 {
-            (0..CLASSES)
-                .filter(|&c| p.add(c).bust())
-                .map(|c| d.n[c] as f64)
-                .sum::<f64>()
-                / t
+            (0..CLASSES).filter(|&c| p.add(c).bust()).map(|c| d.n[c] as f64).sum::<f64>() / t
         } else {
             0.0
         };
-        Advice {
-            stand,
-            hit,
-            p_bust_next,
-        }
+        Advice { stand, hit, p_bust_next }
     }
 
     /// Esiti di una mano intera giocata da una strategia, a partire dal mazzo `deck` (di solito pieno).
     /// `hit_prob(solver, d, hc, up)` dice con che probabilità la strategia chiede carta.
-    pub fn evaluate(
-        &mut self,
-        deck: &Deck,
-        hit_prob: &mut dyn FnMut(&Deck, usize, Hand) -> f64,
-    ) -> Dist {
+    pub fn evaluate(&mut self, deck: &Deck, hit_prob: &mut dyn FnMut(&Deck, usize, Hand) -> f64) -> Dist {
         let mut memo = Memo::default();
         let t = deck.total() as f64;
         let mut acc = Dist::default();
@@ -265,11 +222,8 @@ impl Solver {
                     continue;
                 }
                 let nu = up.add(c);
-                let r = if nu.add(hc).bust() {
-                    Dist::BUST
-                } else {
-                    self.eval_node(&d.without(c), hc, nu, hit_prob, memo)
-                };
+                let r =
+                    if nu.add(hc).bust() { Dist::BUST } else { self.eval_node(&d.without(c), hc, nu, hit_prob, memo) };
                 acc = acc.plus(r.scaled(q * d.n[c] as f64 / t as f64));
             }
         }
@@ -314,10 +268,7 @@ mod tests {
     #[test]
     fn dist_sums_to_one_and_optimal_dominates() {
         for matta in [true, false] {
-            let rules = Rules {
-                matta,
-                reale_paga: 2,
-            };
+            let rules = Rules { matta, reale_paga: 2 };
             for banco in Banco::ALL {
                 let mut s = Solver::new(rules, banco);
                 let deck = rules.full_deck();
@@ -337,11 +288,7 @@ mod tests {
                 assert!((again.ev(&rules) - opt.ev(&rules)).abs() < 1e-9);
                 for t in 2..=15 {
                     let v = s.evaluate(&deck, &mut soglia(t)).ev(&rules);
-                    assert!(
-                        v <= opt.ev(&rules) + 1e-9,
-                        "{banco:?} soglia {t}: {v} > {}",
-                        opt.ev(&rules)
-                    );
+                    assert!(v <= opt.ev(&rules) + 1e-9, "{banco:?} soglia {t}: {v} > {}", opt.ev(&rules));
                 }
             }
         }

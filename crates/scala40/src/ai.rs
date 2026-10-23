@@ -509,6 +509,10 @@ pub struct Weights {
     pub danger_partner: f32,
     /// Sconto sul rischio se l'avversario ha già scartato lo stesso valore o una carta vicina dello stesso seme.
     pub safe: f32,
+    /// Scarti valutati guardando la pescata successiva (0: solo valutazione statica).
+    pub look: f32,
+    /// Premio, nella pescata successiva, per una mano che permette di aprire.
+    pub open_bonus: f32,
     pub take_margin: f32,
     /// Pescate dal tallone simulate per decidere se prendere dal pozzo (0: si prende sempre).
     pub take_samples: u32,
@@ -531,6 +535,8 @@ impl Default for Weights {
             danger_attach: 12.0,
             danger_partner: 0.0,
             safe: 0.0,
+            look: 3.0,
+            open_bonus: 0.0,
             take_margin: 0.0,
             take_samples: 0,
         }
@@ -692,6 +698,23 @@ impl Scorer for Eval {
     }
 }
 
+/// La carta di tipo `k` forma una coppia o una combinazione con qualche carta della mano?
+fn connects(n: &Counts, k: u8) -> bool {
+    if n[JOKER as usize] > 0 {
+        return true;
+    }
+    let (s, r) = (k / 13, k % 13 + 1);
+    if (0..4).any(|t| t != s && n[cards::kind_of(t, r) as usize] > 0) {
+        return true;
+    }
+    let p = r as i32;
+    let mut near = vec![p - 2, p - 1, p + 1, p + 2];
+    if r == 1 {
+        near.extend([12, 13]);
+    }
+    near.into_iter().any(|q| (1..=14).contains(&q) && n[pos_kind(s, q as u8).unwrap()] > 0)
+}
+
 /// Scomposizione con la valutazione del motore (per decidere cosa calare).
 struct EngineLay(Weights);
 
@@ -730,6 +753,46 @@ impl EnginePlayer {
             out.push((c, ev.hand_value(&rest) - ev.danger(g, me, c)));
         }
         out.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let k = self.w.look as usize;
+        if k > 0 && out.len() > 1 {
+            // Le migliori `k` si rivalutano con la media sulla prossima pescata dal tallone.
+            let unseen = g.unseen(me);
+            let total: f32 = unseen.iter().map(|&n| n as f32).sum();
+            let opened = g.opened[me as usize];
+            for item in out.iter_mut().take(k) {
+                let mut rest = hand.to_vec();
+                let i = rest.iter().position(|&x| x == item.0).unwrap();
+                rest.remove(i);
+                let mut v = 0.0;
+                let base = ev.hand_value(&rest);
+                let n = cards::counts(&rest);
+                for kd in 0..NUM_KINDS {
+                    if unseen[kd] == 0 {
+                        continue;
+                    }
+                    // Una carta che non si lega a niente della mano resta spaiata: non serve la ricerca.
+                    if kd != JOKER as usize && !connects(&n, kd as u8) {
+                        v += unseen[kd] as f32 * (base + ev.group(&Group::Single(kd as u8)));
+                        continue;
+                    }
+                    let Some(c) = cards::free_copy(kd as u8, &rest) else { continue };
+                    rest.push(c);
+                    let mut x = ev.hand_value(&rest);
+                    if self.w.open_bonus != 0.0 && !opened && solver::best_opening(&rest, None).0 >= OPEN_MIN {
+                        x += self.w.open_bonus;
+                    }
+                    rest.pop();
+                    v += unseen[kd] as f32 * x;
+                }
+                item.1 = v / total.max(1.0) - ev.danger(g, me, item.0) + 1000.0;
+            }
+            out.sort_by(|a, b| b.1.total_cmp(&a.1));
+            for item in out.iter_mut() {
+                if item.1 > 500.0 {
+                    item.1 -= 1000.0;
+                }
+            }
+        }
         out
     }
 

@@ -68,21 +68,27 @@ impl MatchStats {
         ((mean - half).max(0.0), (mean + half).min(1.0))
     }
 
-    pub fn deal_rate(&self) -> f64 {
-        self.deals_won as f64 / self.deals as f64
-    }
-
+    /// Una riga di testo per coppia di partite, per la cache dei rapporti.
     pub fn to_line(&self) -> String {
         format!(
-            "{} {} {} {} {} {} {} {}",
-            self.wins, self.draws, self.losses, self.deals_won, self.deals, self.pen_for, self.pen_against, self.sum
+            "{} {} {} {} {} {} {} {} {} {}",
+            self.wins,
+            self.draws,
+            self.losses,
+            self.deals_won,
+            self.deals,
+            self.pen_for,
+            self.pen_against,
+            self.unopened_for,
+            self.unopened_against,
+            self.sum
         )
     }
 
     pub fn from_line(line: &str) -> Option<MatchStats> {
         let f: Vec<&str> = line.split(' ').collect();
         let n = |i: usize| f.get(i)?.parse::<u64>().ok();
-        let sum: f64 = f.get(7)?.parse().ok()?;
+        let sum: f64 = f.get(9)?.parse().ok()?;
         Some(MatchStats {
             wins: n(0)?,
             draws: n(1)?,
@@ -91,12 +97,16 @@ impl MatchStats {
             deals: n(4)?,
             pen_for: n(5)?,
             pen_against: n(6)?,
-            unopened_for: 0,
-            unopened_against: 0,
+            unopened_for: n(7)?,
+            unopened_against: n(8)?,
             pairs: 1,
             sum,
             sum_sq: sum * sum,
         })
+    }
+
+    pub fn deal_rate(&self) -> f64 {
+        self.deals_won as f64 / self.deals as f64
     }
 }
 
@@ -155,6 +165,18 @@ fn play_match(seed: u64, m: u64, agents: &mut [Box<dyn Player>; 2], rng: &mut Sm
 
 /// `matches` coppie di partite in duplicato tra `player` e `opponent`.
 pub fn run_matches(player: &str, opponent: &str, matches: std::ops::Range<u64>, seed: u64) -> Result<Vec<MatchStats>, String> {
+    run_matches_with(player, opponent, matches, seed, true)
+}
+
+/// Con `duplicate = false` la seconda partita della coppia usa mazzi diversi: serve per il
+/// controllo contro se stesso, dove il duplicato darebbe 50% esatto per costruzione.
+pub fn run_matches_with(
+    player: &str,
+    opponent: &str,
+    matches: std::ops::Range<u64>,
+    seed: u64,
+    duplicate: bool,
+) -> Result<Vec<MatchStats>, String> {
     make_agent(player)?;
     make_agent(opponent)?;
     Ok(matches
@@ -167,7 +189,8 @@ pub fn run_matches(player: &str, opponent: &str, matches: std::ops::Range<u64>, 
                 let opp = make_agent(opponent).unwrap();
                 let mut agents = if seat == 0 { [me, opp] } else { [opp, me] };
                 let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(m * 2 + seat as u64));
-                let r = play_match(seed, m, &mut agents, &mut rng, seat, &mut s);
+                let deck_id = if duplicate || seat == 0 { m } else { m | 1 << 40 };
+                let r = play_match(seed, deck_id, &mut agents, &mut rng, seat, &mut s);
                 match r {
                     x if x == 1.0 => s.wins += 1,
                     x if x == 0.0 => s.losses += 1,

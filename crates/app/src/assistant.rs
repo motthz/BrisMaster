@@ -709,7 +709,7 @@ impl Assistant {
                 egui::ComboBox::from_id_salt("precision")
                     .selected_text(precision_label(*samples))
                     .show_ui(ui, |ui| {
-                        for s in [500, 2000, 6000] {
+                        for s in [1000, 3000, 6000] {
                             ui.selectable_value(samples, s, precision_label(s));
                         }
                     })
@@ -790,8 +790,8 @@ impl Assistant {
 
 fn precision_label(s: u32) -> String {
     match s {
-        0..=999 => format!("Veloce ({s})"),
-        1000..=2999 => format!("Normale ({s})"),
+        0..=1000 => format!("Veloce ({s})"),
+        1001..=3000 => format!("Normale ({s})"),
         _ => format!("Massima ({s})"),
     }
 }

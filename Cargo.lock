@@ -197,6 +197,7 @@ version = "0.2.0"
 dependencies = [
  "briscola-core 0.2.0",
  "eframe",
+ "poker-it",
  "rand",
  "self-replace",
  "semver",
@@ -1947,17 +1948,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "poker-core"
+name = "poker-it"
 version = "0.2.0"
 dependencies = [
  "rand",
+ "rayon",
 ]
 
 [[package]]
-name = "poker-sim"
+name = "poker-it-sim"
 version = "0.2.0"
 dependencies = [
- "poker-core",
+ "poker-it",
  "rand",
  "rayon",
 ]

@@ -4,6 +4,7 @@ mod app;
 mod assistant;
 mod cards_ui;
 mod poker;
+mod record;
 mod update;
 
 fn main() -> eframe::Result {

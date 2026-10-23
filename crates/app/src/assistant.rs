@@ -1,6 +1,7 @@
 //! Assistente: inserisci a mano briscola, carte in mano, pescate e giocate; il motore consiglia la mossa.
 
 use crate::cards_ui::{self, BEST, CARD_SIZE, GOLD};
+use crate::record::{self, Advice, CardRec, Event, Recorder};
 use briscola_core::ai::{evaluate, EngineConfig, MoveEval};
 use briscola_core::cards::{self, Card, CardSet};
 use briscola_core::{Observation, Trick};
@@ -296,8 +297,10 @@ struct Analysis {
 
 pub struct Assistant {
     pos: Position,
-    history: Vec<(Position, usize)>,
+    /// Posizione, prese e eventi registrati prima di ogni azione (per annullare).
+    history: Vec<(Position, usize, usize)>,
     tricks: Vec<Trick>,
+    rec: Recorder,
     generation: u64,
     analysis: Option<Analysis>,
     pending: Option<Receiver<Analysis>>,
@@ -312,6 +315,7 @@ impl Default for Assistant {
             pos: Position::default(),
             history: Vec::new(),
             tricks: Vec::new(),
+            rec: Recorder::default(),
             generation: 0,
             analysis: None,
             pending: None,
@@ -333,13 +337,22 @@ impl Assistant {
     }
 
     fn save(&mut self) {
-        self.history.push((self.pos, self.tricks.len()));
+        self.history.push((self.pos, self.tricks.len(), self.rec.events.len()));
+    }
+
+    fn set_first(&mut self, p: u8) {
+        self.save();
+        self.pos.set_first(p);
+        self.rec.events.push(Event::PrimoDiMano { chi: record::who(p) });
+        self.changed();
     }
 
     fn undo(&mut self) {
-        if let Some((p, n)) = self.history.pop() {
+        if let Some((p, n, e)) = self.history.pop() {
             self.pos = p;
             self.tricks.truncate(n);
+            self.rec.events.truncate(e);
+            self.rec.write(&self.pos);
             self.changed();
         }
     }
@@ -350,10 +363,21 @@ impl Assistant {
 
     fn enter(&mut self, c: Card) -> bool {
         let before = self.pos;
+        let event = match before.step() {
+            Step::Trump => Event::Briscola { carta: CardRec::of(c) },
+            Step::Draw(_) => Event::Pescata { carta: CardRec::of(c) },
+            Step::MyMove => {
+                let advice = self.analysis.as_ref().map(|a| Advice::new(&a.evals, a.samples));
+                Event::play(&before, c, advice)
+            }
+            _ => Event::play(&before, c, None),
+        };
         match self.pos.enter(c) {
             Some(trick) => {
-                self.history.push((before, self.tricks.len()));
+                self.history.push((before, self.tricks.len(), self.rec.events.len()));
                 self.tricks.extend(trick);
+                self.rec.events.push(event);
+                self.rec.write(&self.pos);
                 self.changed();
                 true
             }
@@ -559,14 +583,10 @@ impl Assistant {
                     ui.horizontal(|ui| {
                         let big = |t: &str| egui::Button::new(RichText::new(t).size(17.0)).min_size(vec2(200.0, 44.0));
                         if ui.add(big("Comincio io")).clicked() {
-                            self.save();
-                            self.pos.set_first(ME);
-                            self.changed();
+                            self.set_first(ME);
                         }
                         if ui.add(big("Comincia l'avversario")).clicked() {
-                            self.save();
-                            self.pos.set_first(OPP);
-                            self.changed();
+                            self.set_first(OPP);
                         }
                     });
                 }
@@ -613,7 +633,33 @@ impl Assistant {
                 gone.insert(t);
             }
             tracker(ui, gone, self.pos.hand);
+            ui.add_space(14.0);
+            ui.separator();
+            self.recording_ui(ui);
         });
+    }
+
+    /// Dove viene salvata la partita.
+    fn recording_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("● Registrazione automatica").color(Color32::LIGHT_RED).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Apri cartella partite").clicked() {
+                    record::open_dir();
+                }
+            });
+        });
+        ui.label(
+            RichText::new(format!(
+                "Ogni partita viene salvata, dalla prima carta giocata, in {}",
+                self.rec.path().display()
+            ))
+            .small()
+            .weak(),
+        );
+        if let Some(e) = &self.rec.error {
+            ui.label(RichText::new(e).color(Color32::LIGHT_RED));
+        }
     }
 
     fn picker_and_entry(&mut self, ui: &mut egui::Ui) {
@@ -892,6 +938,55 @@ mod tests {
             }
             assert_eq!(a.step(), Step::Over);
         }
+    }
+
+    /// Una partita inserita nell'assistente finisce per intero nel file, con esito e consigli.
+    #[test]
+    fn records_games() {
+        let dir = std::env::temp_dir().join(format!("brismaster-test-{}", std::process::id()));
+        let mut rng = SmallRng::seed_from_u64(5);
+        let mut g = Game::new(&mut rng, ME);
+        let mut a = Assistant::default();
+        a.rec.dir = dir.clone();
+        assert!(a.enter(g.trump_card));
+        a.set_first(ME);
+        for c in g.hands[0].iter() {
+            assert!(a.enter(c));
+        }
+        let mut advised = 0;
+        while !g.is_over() {
+            if a.pos.step() == Step::MyMove && a.pos.hand.len() > 1 && advised < 2 {
+                // Consiglio finto, per non far girare il motore nel test.
+                let evals: Vec<MoveEval> =
+                    a.pos.hand.iter().map(|card| MoveEval { card, win_prob: 0.5, exp_points: 60.0 }).collect();
+                a.analysis = Some(Analysis { evals, reasons: Vec::new(), samples: 7 });
+                advised += 1;
+            }
+            let c = g.legal_moves().to_vec()[0];
+            let before = g.hands[0];
+            g.play(c);
+            assert!(a.enter(c));
+            for d in g.hands[0].minus(before).iter() {
+                if !a.pos.hand.contains(d) {
+                    assert!(a.enter(d));
+                }
+            }
+        }
+        let path = a.rec.path().to_path_buf();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["finita"], true);
+        assert_eq!(v["risultato"]["punti_miei"], g.points[0]);
+        let ev = v["eventi"].as_array().unwrap();
+        assert_eq!(ev[0]["tipo"], "briscola");
+        assert_eq!(ev[1]["chi"], "io");
+        assert_eq!(ev.iter().filter(|e| e["tipo"] == "giocata").count(), 40);
+        assert_eq!(ev.iter().filter(|e| e["consiglio"]["mondi"] == 7).count(), 2);
+        // Annullare tutto cancella il file di una partita mai cominciata.
+        while !a.history.is_empty() {
+            a.undo();
+        }
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

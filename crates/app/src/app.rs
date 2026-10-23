@@ -2,6 +2,7 @@
 //! e assistente con inserimento manuale delle carte.
 
 use crate::assistant::{self, Assistant};
+use crate::blackjack::BlackjackUi;
 use crate::cards_ui::{self, BEST, CARD_SIZE};
 use crate::update::{self, Release};
 use briscola_core::ai::{evaluate, EngineConfig, EnginePlayer, HeuristicPlayer, MoveEval, Player};
@@ -61,6 +62,14 @@ struct Record {
     drawn: [u32; 3],
 }
 
+/// Gioco scelto in alto a sinistra.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum Gioco {
+    #[default]
+    Briscola,
+    Blackjack,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Gioca,
@@ -76,6 +85,7 @@ struct Settings {
     record: Record,
     mode: Mode,
     assist_samples: u32,
+    game: Gioco,
 }
 
 impl Default for Settings {
@@ -87,6 +97,7 @@ impl Default for Settings {
             record: Record::default(),
             mode: Mode::Gioca,
             assist_samples: 2000,
+            game: Gioco::Briscola,
         }
     }
 }
@@ -195,6 +206,7 @@ pub struct BrisApp {
     games_started: u32,
     update: UpdateState,
     assistant: Assistant,
+    blackjack: BlackjackUi,
 }
 
 impl BrisApp {
@@ -218,6 +230,7 @@ impl BrisApp {
             games_started: 1,
             update: UpdateState::Idle,
             assistant: Assistant::default(),
+            blackjack: BlackjackUi::new(cc.storage.and_then(|s| eframe::get_value(s, "blackjack")).unwrap_or_default()),
         };
         if app.settings.auto_update {
             app.check_updates();
@@ -311,7 +324,21 @@ impl BrisApp {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading(RichText::new("BrisMaster").strong().color(cards_ui::GOLD));
+            egui::ComboBox::from_id_salt("game")
+                .selected_text(RichText::new(format!("{:?}", self.settings.game)).size(16.0))
+                .show_ui(ui, |ui| {
+                    for g in [Gioco::Briscola, Gioco::Blackjack] {
+                        ui.selectable_value(&mut self.settings.game, g, format!("{g:?}"));
+                    }
+                });
             ui.separator();
+            if self.settings.game == Gioco::Blackjack {
+                self.blackjack.top_controls(ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.update_widget(ui);
+                });
+                return;
+            }
             for (m, label) in [(Mode::Gioca, "Gioca contro il motore"), (Mode::Assistente, "Assistente")] {
                 let sel = self.settings.mode == m;
                 let text = RichText::new(label).size(16.0);
@@ -649,7 +676,8 @@ impl eframe::App for BrisApp {
         let now = ui.input(|i| i.time);
         let ctx = ui.ctx().clone();
         self.poll_background();
-        if self.settings.mode == Mode::Gioca {
+        let blackjack = self.settings.game == Gioco::Blackjack;
+        if self.settings.mode == Mode::Gioca && !blackjack {
             self.step(now, &ctx);
         }
 
@@ -659,6 +687,10 @@ impl eframe::App for BrisApp {
             ui.add_space(6.0);
         });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
+            if blackjack {
+                self.blackjack.ui(ui, now);
+                return;
+            }
             // Tavolo verde a sinistra, pannello informativo a destra.
             let full = ui.available_rect_before_wrap();
             let side_w = match self.settings.mode {
@@ -693,6 +725,7 @@ impl eframe::App for BrisApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, "settings", &self.settings);
+        eframe::set_value(storage, "blackjack", &self.blackjack.settings);
     }
 }
 

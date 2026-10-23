@@ -140,6 +140,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "blackjack-core"
+version = "0.2.0"
+dependencies = [
+ "rand",
+ "serde",
+]
+
+[[package]]
 name = "block2"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -195,6 +203,7 @@ dependencies = [
 name = "brismaster"
 version = "0.2.0"
 dependencies = [
+ "blackjack-core",
  "briscola-core 0.2.0",
  "eframe",
  "rand",

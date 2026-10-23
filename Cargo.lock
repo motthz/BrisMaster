@@ -1994,7 +1994,7 @@ dependencies = [
 
 [[package]]
 name = "poker-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rand",
  "rayon",
@@ -2002,7 +2002,7 @@ dependencies = [
 
 [[package]]
 name = "poker-sim"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "poker-core",
  "rand",

@@ -85,6 +85,8 @@ Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro
 
 Nella scheda **Texas Hold'em** c'è un assistente per il No Limit testa a testa (due giocatori). Scegli la tua posizione (bottone o grande buio) e le tue due carte, poi inserisci man mano le azioni dell'avversario, quelle che fai tu e le carte del board: quando tocca a te l'app indica l'azione consigliata e la probabilità con cui il motore sceglie ciascuna azione (fold, check/call, puntate di varie misure, all-in), con l'equità della mano contro una mano a caso. Ogni passo si annulla con Ctrl+Z.
 
+![BrisMaster: assistente di Texas Hold'em](docs/holdem.png)
+
 Il motore è allenato per bui 50/100 con 100 grandi bui a testa: con stack molto diversi o con più di due giocatori al tavolo i consigli valgono meno.
 
 **Come ragiona.** La strategia è calcolata in anticipo con CFR Monte Carlo (campionamento esterno) su una versione semplificata del gioco: le mani iniziali nelle 169 classi, dopo il flop 120 gruppi di mani per giro (per E[HS²] al flop e al turn, per forza esatta al river), e alcune misure di puntata per giro. Le puntate vere dell'avversario si riportano a quelle dell'albero con la traduzione pseudo-armonica.

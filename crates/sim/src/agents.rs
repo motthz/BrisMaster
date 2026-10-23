@@ -3,6 +3,7 @@
 //! SPEC: random | heuristic | aggressive | cautious | trumphappy | counter
 //!       | followsuit | loadleader | notrump
 //!       | engine:MONDI[:EPSILON[:SOGLIA[:PESO_PUNTI]]] | ismcts:ITERAZIONI
+//!       | ismcts+:ITERAZIONI           (ISMCTS con le simulazioni del motore: a carte scoperte, finale esatto)
 //!       | classic:MONDI                (motore della v0.1.1 compilato con la versione attuale)
 //!       | eng:CHIAVE=VALORE,...        (varianti del motore attuale, vedi make_player)
 //!       | noisy:ERRORE:SPEC            (es. noisy:0.25:heuristic)
@@ -69,9 +70,8 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
         "followsuit" => Box::new(FollowSuitPlayer),
         "loadleader" => Box::new(LoadLeaderPlayer),
         "notrump" => Box::new(NoTrumpPlayer),
-        s if s.starts_with("ismcts:") => {
-            Box::new(IsmctsPlayer { iterations: num(&s[7..], "numero di iterazioni")? as u32 })
-        }
+        s if s.starts_with("ismcts:") => Box::new(IsmctsPlayer::new(num(&s[7..], "numero di iterazioni")? as u32)),
+        s if s.starts_with("ismcts+:") => Box::new(IsmctsPlayer::strong(num(&s[8..], "numero di iterazioni")? as u32)),
         s if s.starts_with("engine:") => {
             let parts: Vec<&str> = s[7..].split(':').collect();
             let mut cfg = EngineConfig::strength(num(parts[0], "numero di mondi")? as u32);

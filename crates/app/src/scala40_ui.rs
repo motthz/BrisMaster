@@ -134,7 +134,10 @@ fn sorted(hand: &[Card]) -> Vec<Card> {
 }
 
 fn labels(cs: &[Card]) -> String {
-    cs.iter().map(|&c| cards::short(c)).collect::<Vec<_>>().join(" ")
+    match Meld::new(cs, 0) {
+        Some(m) => m.label(),
+        None => cs.iter().map(|&c| cards::short(c)).collect::<Vec<_>>().join(", "),
+    }
 }
 
 /// Le azioni di un turno a parole.
@@ -145,7 +148,7 @@ fn describe(t: &Turn, d: &Deal) -> Vec<String> {
         match a {
             Action::Lay(groups) => {
                 let v: u32 = groups.iter().map(|m| Meld::new(m, 0).map_or(0, |m| m.value())).sum();
-                let what = groups.iter().map(|m| labels(m)).collect::<Vec<_>>().join("  ·  ");
+                let what = groups.iter().map(|m| labels(m)).collect::<Vec<_>>().join(" + ");
                 if g.opened[g.to_move as usize] {
                     out.push(format!("Cala {what}"));
                 } else {
@@ -376,7 +379,7 @@ impl Scala40Ui {
         });
         ui.add_space(4.0);
         let mut picked = None;
-        egui::Grid::new("picker40").spacing([3.0, 4.0]).show(ui, |ui| {
+        egui::Grid::new("picker40").spacing([3.0, 4.0]).min_col_width(28.0).show(ui, |ui| {
             for s in 0..4u8 {
                 for r in 1..=13u8 {
                     let k = cards::kind_of(s, r);
@@ -436,7 +439,7 @@ impl Scala40Ui {
             ui.label(RichText::new("Scarti a confronto (0 = il migliore):").weak().small());
             let best = a.ranking[0].1;
             for &(c, v) in a.ranking.iter().take(5) {
-                ui.label(RichText::new(format!("{:>6}  {:+.1}", cards::short(c), v - best)).monospace());
+                ui.label(RichText::new(format!("{:+6.1}   {}", v - best, cards::short(c))).monospace());
             }
         }
     }

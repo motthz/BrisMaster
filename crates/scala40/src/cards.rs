@@ -80,12 +80,12 @@ pub fn name(c: Card) -> String {
     }
 }
 
-/// Nome breve, es. "7♥", "Jolly".
+/// Nome breve, es. "7 cuori", "Jolly".
 pub fn short(c: Card) -> String {
     if is_joker(c) {
         "Jolly".into()
     } else {
-        format!("{}{}", rank_label(rank(c)), ["♥", "♦", "♣", "♠"][suit(c) as usize])
+        format!("{} {}", rank_label(rank(c)), SUITS[suit(c) as usize])
     }
 }
 

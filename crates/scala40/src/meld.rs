@@ -183,9 +183,29 @@ impl Meld {
         Some(std::mem::replace(&mut self.cards[j], c))
     }
 
-    /// Descrizione breve, es. "5♥ 6♥ ★ 8♥".
+    /// Descrizione breve, es. "5-6-Jolly-8 di cuori" o "tris di 7 (cuori, fiori, Jolly)".
     pub fn label(&self) -> String {
-        self.cards.iter().map(|&c| cards::short(c)).collect::<Vec<_>>().join(" ")
+        match self.kind {
+            MeldKind::Run { suit, .. } => format!(
+                "{} di {}",
+                self.cards
+                    .iter()
+                    .map(|&c| if is_joker(c) { "Jolly" } else { cards::rank_label(rank(c)) })
+                    .collect::<Vec<_>>()
+                    .join("-"),
+                cards::SUITS[suit as usize]
+            ),
+            MeldKind::Set { rank: r } => format!(
+                "{} di {} ({})",
+                if self.cards.len() == 4 { "poker" } else { "tris" },
+                cards::rank_label(r),
+                self.cards
+                    .iter()
+                    .map(|&c| if is_joker(c) { "Jolly" } else { cards::SUITS[suit(c) as usize] })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
     }
 }
 

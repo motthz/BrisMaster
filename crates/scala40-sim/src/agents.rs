@@ -41,6 +41,7 @@ pub fn fields(w: &mut Weights) -> Vec<(&'static str, &mut f32)> {
         ("attachable", &mut w.attachable),
         ("dattach", &mut w.danger_attach),
         ("dpartner", &mut w.danger_partner),
+        ("safe", &mut w.safe),
     ]
 }
 

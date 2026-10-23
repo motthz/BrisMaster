@@ -507,6 +507,8 @@ pub struct Weights {
     pub attachable: f32,
     pub danger_attach: f32,
     pub danger_partner: f32,
+    /// Sconto sul rischio se l'avversario ha già scartato lo stesso valore o una carta vicina dello stesso seme.
+    pub safe: f32,
     pub take_margin: f32,
     /// Pescate dal tallone simulate per decidere se prendere dal pozzo (0: si prende sempre).
     pub take_samples: u32,
@@ -528,6 +530,7 @@ impl Default for Weights {
             attachable: 3.0,
             danger_attach: 12.0,
             danger_partner: 0.0,
+            safe: 0.0,
             take_margin: 0.0,
             take_samples: 0,
         }
@@ -611,7 +614,19 @@ impl Eval {
         }
         let total: f32 = self.unseen.iter().map(|&n| n as f32).sum::<f32>().max(1.0);
         let in_hand = d.hands[opp].len() as f32 / total;
-        x + self.w.danger_partner * partners * in_hand * if d.opened[opp] { 1.0 } else { 0.5 }
+        x += self.w.danger_partner * partners * in_hand * if d.opened[opp] { 1.0 } else { 0.5 };
+        if self.w.safe != 0.0 {
+            let shunned = d.log.iter().any(|e| match *e {
+                crate::game::Event::Discard(p, o) if p as usize == opp && !is_joker(o) => {
+                    cards::rank(o) == r || (cards::suit(o) == s && cards::rank(o).abs_diff(r) <= 1)
+                }
+                _ => false,
+            });
+            if shunned {
+                x -= self.w.safe;
+            }
+        }
+        x
     }
 }
 

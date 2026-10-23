@@ -4,6 +4,7 @@ mod app;
 mod assistant;
 mod cards_ui;
 mod record;
+mod scala40_ui;
 mod update;
 
 fn main() -> eframe::Result {

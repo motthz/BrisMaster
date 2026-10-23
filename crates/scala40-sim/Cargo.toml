@@ -1,0 +1,10 @@
+[package]
+name = "scala40-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+scala40-core = { path = "../scala40" }
+rand = { version = "0.8", features = ["small_rng"] }
+rayon = "1.10"

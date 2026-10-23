@@ -357,6 +357,83 @@ impl Observation {
         moves_for(self.hand, self.table, out);
     }
 
+    /// Inizio di smazzata visto da `me`, prima di conoscere tavolo e mano (per l'assistente).
+    pub fn new_hand(me: u8, dealer: u8, match_score: [u8; 2]) -> Observation {
+        Observation {
+            me,
+            hand: CardSet::EMPTY,
+            table: CardSet::EMPTY,
+            opp_hand_len: 3,
+            deck_len: (NUM_CARDS - 10) as u8,
+            captured: [CardSet::EMPTY; 2],
+            scope: [0, 0],
+            dealer,
+            to_move: 1 - dealer,
+            last_taker: None,
+            match_score,
+        }
+    }
+
+    /// Smazzata finita (carte rimaste in tavola già assegnate).
+    pub fn is_over(&self) -> bool {
+        self.deck_len == 0 && self.hand.is_empty() && self.opp_hand_len == 0
+    }
+
+    /// Mosse legali per chi è di turno: per l'avversario, con le carte che potrebbe avere.
+    pub fn is_legal(&self, m: Move) -> bool {
+        let can_hold = if self.to_move == self.me { self.hand } else { self.unknown() };
+        if !can_hold.contains(m.card) || (self.to_move != self.me && self.opp_hand_len == 0) {
+            return false;
+        }
+        let mut ok = false;
+        let any = for_each_capture(self.table, m.card, |t| ok |= t == m.take);
+        if any { ok } else { m.take.is_empty() }
+    }
+
+    /// Applica la mossa di chi è di turno. Se le mani finiscono e il mazzo no, l'avversario
+    /// riceve 3 carte e la mano di `me` resta vuota finché non si indicano le carte pescate.
+    /// Restituisce vero se è scopa.
+    pub fn apply(&mut self, m: Move) -> bool {
+        debug_assert!(self.is_legal(m));
+        let p = self.to_move as usize;
+        if self.to_move == self.me {
+            self.hand.remove(m.card);
+        } else {
+            self.opp_hand_len -= 1;
+        }
+        let last = self.deck_len == 0 && self.hand.is_empty() && self.opp_hand_len == 0;
+        let mut scopa = false;
+        if m.take.is_empty() {
+            self.table.insert(m.card);
+        } else {
+            self.table = self.table.minus(m.take);
+            self.captured[p] = self.captured[p].union(m.take);
+            self.captured[p].insert(m.card);
+            self.last_taker = Some(p as u8);
+            if self.table.is_empty() && !last {
+                self.scope[p] += 1;
+                scopa = true;
+            }
+        }
+        self.to_move = 1 - self.to_move;
+        if self.hand.is_empty() && self.opp_hand_len == 0 {
+            if self.deck_len > 0 {
+                self.deck_len -= 6;
+                self.opp_hand_len = 3;
+            } else {
+                if let Some(t) = self.last_taker {
+                    self.captured[t as usize] = self.captured[t as usize].union(self.table);
+                }
+                self.table = CardSet::EMPTY;
+            }
+        }
+        scopa
+    }
+
+    pub fn score(&self) -> HandScore {
+        score(self.captured, self.scope)
+    }
+
     /// Uno stato completo compatibile con quello che so, con le carte ignote distribuite a caso.
     pub fn determinize<R: Rng>(&self, rng: &mut R) -> Game {
         let me = self.me as usize;
@@ -485,6 +562,32 @@ mod tests {
             let deck: CardSet = d.deck[..d.deck_len as usize].iter().copied().collect();
             let all = d.hands[0].union(d.hands[1]).union(d.table).union(d.captured[0]).union(d.captured[1]).union(deck);
             assert_eq!(all, CardSet::FULL);
+        }
+    }
+
+    #[test]
+    fn observation_follows_the_game() {
+        let mut rng = SmallRng::seed_from_u64(9);
+        let mut moves = Vec::new();
+        for i in 0..300 {
+            let mut g = Game::new(&mut rng, (i % 2) as u8);
+            let mut o = Observation::new_hand(0, g.dealer, [0, 0]);
+            o.table = g.table;
+            o.hand = g.hands[0];
+            while !g.is_over() {
+                assert_eq!(o.hand, g.hands[0]);
+                g.legal_moves(&mut moves);
+                let m = moves[rng.gen_range(0..moves.len())];
+                assert!(o.is_legal(m));
+                assert_eq!(o.apply(m), g.play(m));
+                if o.hand.is_empty() && o.opp_hand_len == 3 {
+                    o.hand = g.hands[0];
+                }
+                let n = Observation::of(&g, 0, [0, 0]);
+                assert_eq!((o.table, o.captured, o.scope, o.deck_len, o.to_move), (n.table, n.captured, n.scope, n.deck_len, n.to_move));
+            }
+            assert!(o.is_over());
+            assert_eq!(o.score(), g.score());
         }
     }
 

@@ -198,6 +198,7 @@ dependencies = [
  "briscola-core 0.2.0",
  "eframe",
  "rand",
+ "scopa-core",
  "self-replace",
  "semver",
  "serde",

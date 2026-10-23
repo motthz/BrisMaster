@@ -3,6 +3,7 @@
 
 use crate::assistant::{self, Assistant};
 use crate::cards_ui::{self, BEST, CARD_SIZE};
+use crate::scopa_ui::ScopaUi;
 use crate::update::{self, Release};
 use briscola_core::ai::{evaluate, EngineConfig, EnginePlayer, HeuristicPlayer, MoveEval, Player};
 use briscola_core::cards::{self, Card};
@@ -61,6 +62,24 @@ struct Record {
     drawn: [u32; 3],
 }
 
+/// Gioco scelto nella barra in alto.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum GameKind {
+    #[default]
+    Briscola,
+    Scopa,
+}
+
+impl GameKind {
+    const ALL: [GameKind; 2] = [GameKind::Briscola, GameKind::Scopa];
+    fn label(self) -> &'static str {
+        match self {
+            GameKind::Briscola => "Briscola",
+            GameKind::Scopa => "Scopa",
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Gioca,
@@ -76,6 +95,7 @@ struct Settings {
     record: Record,
     mode: Mode,
     assist_samples: u32,
+    game: GameKind,
 }
 
 impl Default for Settings {
@@ -87,6 +107,7 @@ impl Default for Settings {
             record: Record::default(),
             mode: Mode::Gioca,
             assist_samples: 2000,
+            game: GameKind::Briscola,
         }
     }
 }
@@ -195,11 +216,13 @@ pub struct BrisApp {
     games_started: u32,
     update: UpdateState,
     assistant: Assistant,
+    scopa: ScopaUi,
 }
 
 impl BrisApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, "settings")).unwrap_or_default();
+        let scopa = ScopaUi::new(cc.storage.and_then(|s| eframe::get_value(s, "scopa")).unwrap_or_default());
         let mut style = (*cc.egui_ctx.global_style()).clone();
         style.visuals = egui::Visuals::dark();
         style.visuals.panel_fill = Color32::from_rgb(20, 24, 22);
@@ -218,6 +241,7 @@ impl BrisApp {
             games_started: 1,
             update: UpdateState::Idle,
             assistant: Assistant::default(),
+            scopa,
         };
         if app.settings.auto_update {
             app.check_updates();
@@ -311,17 +335,27 @@ impl BrisApp {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading(RichText::new("BrisMaster").strong().color(cards_ui::GOLD));
+            egui::ComboBox::from_id_salt("game")
+                .selected_text(RichText::new(self.settings.game.label()).size(16.0).strong())
+                .show_ui(ui, |ui| {
+                    for g in GameKind::ALL {
+                        ui.selectable_value(&mut self.settings.game, g, g.label());
+                    }
+                });
             ui.separator();
-            for (m, label) in [(Mode::Gioca, "Gioca contro il motore"), (Mode::Assistente, "Assistente")] {
-                let sel = self.settings.mode == m;
-                let text = RichText::new(label).size(16.0);
-                if ui.add(egui::Button::selectable(sel, if sel { text.strong() } else { text })).clicked() {
-                    self.settings.mode = m;
+            // La scopa ha solo l'assistente: tu descrivi la partita, il motore ti dice cosa giocare.
+            if self.settings.game == GameKind::Briscola {
+                for (m, label) in [(Mode::Gioca, "Gioca contro il motore"), (Mode::Assistente, "Assistente")] {
+                    let sel = self.settings.mode == m;
+                    let text = RichText::new(label).size(16.0);
+                    if ui.add(egui::Button::selectable(sel, if sel { text.strong() } else { text })).clicked() {
+                        self.settings.mode = m;
+                    }
                 }
-            }
-            ui.separator();
-            if self.settings.mode == Mode::Gioca {
-                self.game_controls(ui);
+                ui.separator();
+                if self.settings.mode == Mode::Gioca {
+                    self.game_controls(ui);
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.update_widget(ui);
@@ -649,7 +683,7 @@ impl eframe::App for BrisApp {
         let now = ui.input(|i| i.time);
         let ctx = ui.ctx().clone();
         self.poll_background();
-        if self.settings.mode == Mode::Gioca {
+        if self.settings.mode == Mode::Gioca && self.settings.game == GameKind::Briscola {
             self.step(now, &ctx);
         }
 
@@ -659,6 +693,10 @@ impl eframe::App for BrisApp {
             ui.add_space(6.0);
         });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
+            if self.settings.game == GameKind::Scopa {
+                self.scopa.central(ui);
+                return;
+            }
             // Tavolo verde a sinistra, pannello informativo a destra.
             let full = ui.available_rect_before_wrap();
             let side_w = match self.settings.mode {
@@ -693,6 +731,7 @@ impl eframe::App for BrisApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, "settings", &self.settings);
+        eframe::set_value(storage, "scopa", &self.scopa.settings);
     }
 }
 

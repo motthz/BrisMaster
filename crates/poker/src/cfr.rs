@@ -182,6 +182,33 @@ impl Trainer {
         }
     }
 
+    /// Salva lo stato completo (regret e somme) per riprendere l'allenamento.
+    pub fn save_state(&self, path: &str) -> std::io::Result<()> {
+        let mut out = Vec::with_capacity(8 + 8 * self.regret.len());
+        out.extend_from_slice(&self.iterations().to_le_bytes());
+        for v in [&self.regret, &self.sum] {
+            for x in v.iter() {
+                out.extend_from_slice(&x.load(Relaxed).to_le_bytes());
+            }
+        }
+        std::fs::write(path, out)
+    }
+
+    /// Riprende da uno stato salvato con `save_state` (stesso albero, stesse soglie).
+    pub fn load_state(&mut self, path: &str) -> std::io::Result<()> {
+        let b = std::fs::read(path)?;
+        let n = self.regret.len();
+        if b.len() != 8 + 8 * n {
+            return Err(std::io::Error::other("stato di dimensione sbagliata"));
+        }
+        self.iterations.store(u64::from_le_bytes(b[..8].try_into().unwrap()), Relaxed);
+        for (i, chunk) in b[8..].chunks_exact(4).enumerate() {
+            let x = u32::from_le_bytes(chunk.try_into().unwrap());
+            if i < n { self.regret[i].store(x, Relaxed) } else { self.sum[i - n].store(x, Relaxed) }
+        }
+        Ok(())
+    }
+
     /// La strategia media; per un exploiter la strategia corrente (la risposta migliore).
     pub fn strategy(&self) -> Strategy {
         let src = if self.frozen.is_some() { &self.regret } else { &self.sum };

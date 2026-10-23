@@ -1,7 +1,7 @@
 //! Banco di prova del Texas Hold'em: allenamento del motore e migliaia di mani in duplicato.
 //!
 //! Uso:
-//!   poker-sim train [--iters N] [--seed X] [--out FILE]
+//!   poker-sim train [--iters N] [--seed X] [--out FILE] [--state FILE]
 //!   poker-sim match --player SPEC --opponent SPEC [--deals N] [--seed X]
 //!   poker-sim report [--deals N] [--self-deals N] [--out FILE]
 //!   poker-sim calibrate [--deals N]
@@ -107,21 +107,30 @@ fn train(args: &[String]) {
     let seed: u64 = arg(args, "--seed", 20261023);
     let out: String = arg(args, "--out", "crates/poker/data/holdem.bin".to_string());
     let t = Instant::now();
+    // Stato completo per riprendere un allenamento interrotto (`--state FILE`).
+    let state: String = arg(args, "--state", String::new());
     let b = arena::fresh_bucketer();
     eprintln!("soglie dei bucket: {:.0}s", t.elapsed().as_secs_f64());
-    let tr = Trainer::new(b);
+    let mut tr = Trainer::new(b);
+    if !state.is_empty() && std::path::Path::new(&state).exists() {
+        tr.load_state(&state).expect("lettura stato");
+        eprintln!("ripreso da {state}: {} iterazioni", tr.iterations());
+    }
     let chunk = (iters / 20).max(1);
     while tr.iterations() < iters {
         tr.run(chunk.min(iters - tr.iterations()), threads(), seed ^ tr.iterations());
         let bytes = tr.strategy().to_bytes();
         std::fs::write(&out, &bytes).expect("scrittura strategia");
+        if !state.is_empty() {
+            tr.save_state(&state).expect("scrittura stato");
+        }
         eprintln!("{} iterazioni, {:.0}s (salvata in {out})", tr.iterations(), t.elapsed().as_secs_f64());
     }
 }
 
 fn self_play(deals: u64, seed: u64) -> Vec<(u64, MatchStats)> {
     let per = arena::run_deals("engine", "engine", 0..deals, seed);
-    [1000, 2000, 4000, 8000, 16000, 32000]
+    [1000, 2000, 4000, 8000, 16000, 40000]
         .into_iter()
         .filter(|&n| n <= deals)
         .map(|n| (n, per[..n as usize].iter().copied().fold(MatchStats::default(), MatchStats::merge)))
@@ -141,8 +150,8 @@ fn panel() -> Vec<(String, String)> {
 }
 
 fn report(args: &[String]) -> ExitCode {
-    let deals: u64 = arg(args, "--deals", 8000);
-    let self_deals: u64 = arg(args, "--self-deals", 16000);
+    let deals: u64 = arg(args, "--deals", 40000);
+    let self_deals: u64 = arg(args, "--self-deals", 40000);
     let out: String = arg(args, "--out", "bench/HOLDEM.md".to_string());
     let seed: u64 = arg(args, "--seed", 20261023);
     let t = Instant::now();
@@ -195,6 +204,25 @@ fn report(args: &[String]) -> ExitCode {
         let (lo, hi) = s.ci95();
         writeln!(md, "| {n} | {} | {} .. {} |", num(s.bb100()), num(lo), num(hi)).unwrap();
     }
+    writeln!(md, "\nAltri semi, {self_deals} smazzate ciascuno:\n").unwrap();
+    writeln!(md, "| Seme | bb/100 | IC 95% |").unwrap();
+    writeln!(md, "|---:|---:|---|").unwrap();
+    for extra in [7u64, 99] {
+        let s = run_match("engine", "engine", self_deals, extra).expect("self-play");
+        let (lo, hi) = s.ci95();
+        writeln!(md, "| {extra} | {} | {} .. {} |", num(s.bb100()), num(lo), num(hi)).unwrap();
+    }
+    writeln!(
+        md,
+        "\nUn intervallo al 95% esclude lo 0 per caso circa una volta su venti: per questo il controllo \
+         si ripete con più semi.\n\n\
+         **L'avversario allenato per sfruttare il motore** gioca nella stessa astrazione e parte dalla \
+         strategia del motore come avversario fisso: in 20 milioni di iterazioni non trova un modo di \
+         batterlo. È un controllo di robustezza, non una misura completa di quanto il motore sia \
+         sfruttabile: un giocatore umano molto forte o un risolutore con un'astrazione più fine \
+         potrebbero trovare punti deboli che questo test non vede."
+    )
+    .unwrap();
     writeln!(md, "\nTempo totale: {:.0} s.", t.elapsed().as_secs_f64()).unwrap();
     std::fs::write(&out, md).expect("scrittura rapporto");
     eprintln!("rapporto in {out}");

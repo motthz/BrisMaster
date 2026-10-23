@@ -36,7 +36,7 @@ Nel Sette e mezzo contro il banco non c'è un avversario da battere "più del 50
 | Chiede finché ha meno di 6½ | **-25,29%** | 35,6% | 3,4% | 52,5% | 11,9% | -25,30% ± 0,20 | sì | -13,74% (-13,89% – -13,58%) |
 | A caso | **-41,36%** | 28,4% | 1,8% | 25,3% | 46,3% | -41,56% ± 0,18 | **NO** | -30,00% (-30,23% – -29,77%) |
 
-1000000 mani per strategia simulate in 4 s.
+1000000 mani per strategia simulate in 3 s.
 
 ## Contro il banco a soglia 5½
 
@@ -52,7 +52,7 @@ Nel Sette e mezzo contro il banco non c'è un avversario da battere "più del 50
 | Chiede finché ha meno di 6½ | **-27,09%** | 34,7% | 3,4% | 52,5% | 12,8% | -27,10% ± 0,20 | sì | -19,69% (-19,91% – -19,46%) |
 | A caso | **-33,28%** | 32,4% | 1,8% | 25,3% | 42,2% | -33,51% ± 0,19 | **NO** | -26,10% (-26,31% – -25,89%) |
 
-1000000 mani per strategia simulate in 4 s.
+1000000 mani per strategia simulate in 2 s.
 
 ## Contro il banco a soglia 6
 
@@ -69,7 +69,7 @@ Nel Sette e mezzo contro il banco non c'è un avversario da battere "più del 50
 | Chiede finché ha meno di 6½ | **-28,60%** | 34,0% | 3,4% | 52,5% | 13,6% | -28,60% ± 0,20 | sì | -26,07% (-26,30% – -25,85%) |
 | A caso | **-28,49%** | 34,8% | 1,8% | 25,3% | 39,8% | -28,73% ± 0,19 | **NO** | -26,20% (-26,41% – -25,99%) |
 
-1000000 mani per strategia simulate in 5 s.
+1000000 mani per strategia simulate in 3 s.
 
 ## Contro il banco esperto
 
@@ -85,7 +85,7 @@ Nel Sette e mezzo contro il banco non c'è un avversario da battere "più del 50
 | Chiede finché ha meno di 6½ | **-26,36%** | 35,2% | 3,3% | 52,5% | 12,4% | -26,32% ± 0,20 | sì | -20,22% (-20,39% – -20,05%) |
 | A caso | **-49,88%** | 24,2% | 1,8% | 25,3% | 50,5% | -50,07% ± 0,18 | **NO** | -43,97% (-44,18% – -43,76%) |
 
-1000000 mani per strategia simulate in 4 s.
+1000000 mani per strategia simulate in 3 s.
 
 ## Robustezza: strategia pensata per un banco, giocata contro un altro
 
@@ -116,4 +116,12 @@ In grassetto la strategia giusta per quel banco, il massimo della colonna.
 | Banco a soglia 6 | -2,36% | Chiede finché ha meno di 4: -8,26% | +5,90% |
 | Banco esperto | -6,09% | Chiede finché ha meno di 5: -7,32% | +1,23% |
 
-Controlli: simulazione entro 3,5 deviazioni standard dal valore esatto in ogni riga e nessuna strategia sopra l'ottimale: **superati**. Tempo totale 21 s.
+## Cosa significa
+
+- **Il banco resta in vantaggio.** Con queste regole il rendimento è negativo contro tutti i banchi, anche giocando in modo perfetto: il pareggio va al banco e chi sballa perde subito, prima che il banco giochi. Nessuna strategia può garantire di vincere nel lungo periodo; quella ottimale **perde il meno possibile**.
+- **Quanto vale il consiglio.** Rispetto alla migliore regola fissa ("chiedo finché ho meno di…") la strategia ottimale guadagna da +1,23% a +5,90% della puntata per mano, e molto di più rispetto alle regole che rischiano troppo (chiedere finché si ha meno di 6 costa tra 4 e 20 punti). Tutte le differenze sono certe: gli intervalli appaiati non toccano lo zero.
+- **Se non sai come gioca il banco** scegli il modello *banco esperto* nell'app: nel caso peggiore rende -12,39%, mentre usare la strategia di un banco a soglia contro un banco che guarda le tue carte può costare fino a 20 punti.
+- **Le regole contano più della strategia.** Il reale pagato doppio vale circa 4 punti; senza matta e contro un banco che si ferma a 6 il giocatore ottimale è addirittura in leggero vantaggio (tabella delle varianti).
+
+
+Controlli: simulazione entro 3,5 deviazioni standard dal valore esatto in ogni riga e nessuna strategia sopra l'ottimale: **superati**. Tempo totale 15 s.

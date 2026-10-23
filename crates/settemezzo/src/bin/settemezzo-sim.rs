@@ -147,11 +147,14 @@ fn main() -> ExitCode {
         write!(md, " {} |", b.label()).unwrap();
     }
     writeln!(md, "\n|---|{}", "---:|".repeat(Banco::ALL.len())).unwrap();
+    let mut worst: Vec<(Banco, f64)> = Vec::new();
     for pensata in Banco::ALL {
         write!(md, "| {} |", pensata.label()).unwrap();
+        let mut w = f64::INFINITY;
         for reale in Banco::ALL {
             let s = if pensata == reale { Strategia::Ottimale } else { Strategia::OttimaleContro(pensata) };
             let v = exact(rules, reale, s).ev(&rules);
+            w = w.min(v);
             if pensata == reale {
                 write!(md, " **{}** |", pct(v)).unwrap();
             } else {
@@ -159,6 +162,7 @@ fn main() -> ExitCode {
             }
         }
         writeln!(md).unwrap();
+        worst.push((pensata, w));
     }
     writeln!(md, "\nIn grassetto la strategia giusta per quel banco, il massimo della colonna.\n").unwrap();
 
@@ -185,6 +189,26 @@ fn main() -> ExitCode {
     for (b, o, s, v) in &summary {
         writeln!(md, "| {} | {} | {}: {} | {} |", b.label(), pct(*o), s.label(), pct(*v), pct(o - v)).unwrap();
     }
+    let (robusta, rw) = worst.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+    let gains: Vec<f64> = summary.iter().map(|(_, o, _, v)| o - v).collect();
+    let (gmin, gmax) = gains.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &g| (a.min(g), b.max(g)));
+    writeln!(
+        md,
+        "\n## Cosa significa\n\n\
+         - **Il banco resta in vantaggio.** Con queste regole il rendimento è negativo contro tutti i banchi, anche giocando \
+           in modo perfetto: il pareggio va al banco e chi sballa perde subito, prima che il banco giochi. \
+           Nessuna strategia può garantire di vincere nel lungo periodo; quella ottimale **perde il meno possibile**.\n\
+         - **Quanto vale il consiglio.** Rispetto alla migliore regola fissa (\"chiedo finché ho meno di…\") la strategia \
+           ottimale guadagna da {} a {} della puntata per mano, e molto di più rispetto alle regole che rischiano troppo \
+           (chiedere finché si ha meno di 6 costa tra 4 e 20 punti). Tutte le differenze sono certe: gli intervalli appaiati \
+           non toccano lo zero.\n\
+         - **Se non sai come gioca il banco** scegli il modello *{}* nell'app: nel caso peggiore rende {}, \
+           mentre usare la strategia di un banco a soglia contro un banco che guarda le tue carte può costare fino a 20 punti.\n\
+         - **Le regole contano più della strategia.** Il reale pagato doppio vale circa 4 punti; senza matta e contro un banco \
+           che si ferma a 6 il giocatore ottimale è addirittura in leggero vantaggio (tabella delle varianti).\n",
+        pct(gmin), pct(gmax), robusta.label().to_lowercase(), pct(rw)
+    )
+    .unwrap();
     writeln!(
         md,
         "\nControlli: simulazione entro 3,5 deviazioni standard dal valore esatto in ogni riga e nessuna strategia sopra l'ottimale: **{}**. \

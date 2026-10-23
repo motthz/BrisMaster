@@ -1,0 +1,10 @@
+[package]
+name = "scopa-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Stesso mazzo napoletano da 40 carte della briscola: si riusano carte e statistiche.
+briscola-core = { path = "../core" }
+rand = { version = "0.8", features = ["small_rng"] }

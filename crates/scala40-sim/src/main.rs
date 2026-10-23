@@ -76,7 +76,8 @@ const PANEL: &[(&str, &str)] = &[
     ("hoarder", "Chiude in mano: tiene le combinazioni nascoste e cala tutto insieme, a meno che l'avversario non abbia 5 carte o meno"),
     ("hoarder:2", "Chiude in mano, più azzardato: cala prima solo se l'avversario ha 2 carte o meno"),
     ("noisy:0.1:engine", "Motore distratto: lo stesso motore che sbaglia una mossa su dieci"),
-    ("engine:pair=14,outs=0.5,dpartner=1", "Motore con i pesi scritti a mano prima della taratura (valuta diversamente coppie e rischi)"),
+    ("engine:look=0", "Versione precedente del motore: stessa valutazione, ma senza guardare la pescata successiva"),
+    ("engine:pair=14,outs=0.5,dpartner=1", "Variante del motore con i pesi scritti a mano prima della taratura (valuta diversamente coppie e rischi)"),
 ];
 
 /// Risultati coppia per coppia; con `SCALA40_SIM_CACHE=dir` si salvano su file e un rapporto

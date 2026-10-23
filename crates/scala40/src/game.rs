@@ -283,6 +283,9 @@ impl Deal {
             return Err(format!("{} non è nella mano", cards::name(c)));
         }
         let m = self.melds.get_mut(meld).ok_or("Combinazione inesistente")?;
+        if self.taken.is_some_and(|t| m.cards.contains(&t)) {
+            return Err("Non puoi riprendere il jolly appena preso dal pozzo".into());
+        }
         let j = m.swap(c).ok_or_else(|| format!("{} non sostituisce il jolly di {}", cards::name(c), m.label()))?;
         remove(&mut self.hands[p], c);
         self.hands[p].push(j);

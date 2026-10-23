@@ -20,7 +20,10 @@ const PLAYER: &str = "engine:16";
 /// Gli avversari del rapporto: stili umani tipici e programmi forti.
 const PANEL: &[(&str, &str)] = &[
     ("random", "Pesca e scarta a caso, cala quello che vede"),
-    ("beginner", "Principiante: usa subito le matte, raccoglie gli scarti solo se servono subito, non guarda cosa regala"),
+    (
+        "beginner",
+        "Principiante: usa subito le matte, raccoglie gli scarti solo se servono subito, non guarda cosa regala",
+    ),
     ("closer", "Chiude appena può, usa subito le matte"),
     ("hoarder", "Raccoglie sempre gli scarti e usa subito le matte"),
     ("holder", "Tiene in mano le combinazioni e le cala solo per andare al pozzetto"),
@@ -57,7 +60,15 @@ fn style(spec: &str) -> Style {
 fn named_style(name: &str) -> Option<Style> {
     let e = Style::EXPERT;
     Some(match name {
-        "beginner" => Style { pile_threshold: 15.0, eager_wilds: true, care: 0.0, keep_w: 0.5, dump_w: 1.0, close_margin: -1000, ..e },
+        "beginner" => Style {
+            pile_threshold: 15.0,
+            eager_wilds: true,
+            care: 0.0,
+            keep_w: 0.5,
+            dump_w: 1.0,
+            close_margin: -1000,
+            ..e
+        },
         "classic" => Style { pile_threshold: 8.0, stock_samples: 12, ..e },
         "hoarder" => Style { pile_threshold: -1000.0, eager_wilds: true, deny_w: 0.0, ..e },
         "closer" => Style { eager_wilds: true, close_margin: -1000, late_stock: 30, ..e },
@@ -224,12 +235,17 @@ fn report(player: &str, deals: u64, seed: u64, out: &str) {
     sorted.sort_by(|a, b| a.2.score().total_cmp(&b.2.score()));
     for (spec, _, s) in &sorted {
         let (lo, hi) = s.score_ci95();
-        writeln!(md, "| {} | {} | {} – {} | {} |", describe(spec), pct(s.score()), pct(lo), pct(hi), verdict(s)).unwrap();
+        writeln!(md, "| {} | {} | {} – {} | {} |", describe(spec), pct(s.score()), pct(lo), pct(hi), verdict(s))
+            .unwrap();
     }
     writeln!(md).unwrap();
     writeln!(md, "Come leggere le colonne:\n").unwrap();
     writeln!(md, "- **Punteggio**: vittoria 1, pareggio ½, sconfitta 0. Il 50% è la parità.").unwrap();
-    writeln!(md, "- **IC 95%**: intervallo di confidenza del punteggio, calcolato sulle coppie di smazzate dello stesso mazzo.").unwrap();
+    writeln!(
+        md,
+        "- **IC 95%**: intervallo di confidenza del punteggio, calcolato sulle coppie di smazzate dello stesso mazzo."
+    )
+    .unwrap();
     writeln!(md, "- **Elo**: la stessa differenza di forza in punti Elo (+35 ≈ 55%).").unwrap();
     writeln!(md, "- **Scarto medio**: punti del motore meno punti dell'avversario, in media per smazzata.\n").unwrap();
 
@@ -239,7 +255,13 @@ fn report(player: &str, deals: u64, seed: u64, out: &str) {
     let (lo, hi) = selfplay.score_ci95();
     writeln!(md, "Punteggio {} (IC {} – {}): due copie dello stesso motore si dividono le smazzate a metà, come deve essere in duplicato. Serve a controllare che il banco di prova sia equo: contro un avversario forte quanto lui nessun programma può superare il 50%.\n", pct(selfplay.score()), pct(lo), pct(hi)).unwrap();
     let g = selfplay.games() as f64 / 2.0;
-    writeln!(md, "Chi inizia vince il {} delle smazzate, chi è secondo il {}: il duplicato compensa il vantaggio del posto.\n", pct(selfplay.seat_wins[0] as f64 / g), pct(selfplay.seat_wins[1] as f64 / g)).unwrap();
+    writeln!(
+        md,
+        "Chi inizia vince il {} delle smazzate, chi è secondo il {}: il duplicato compensa il vantaggio del posto.\n",
+        pct(selfplay.seat_wins[0] as f64 / g),
+        pct(selfplay.seat_wins[1] as f64 / g)
+    )
+    .unwrap();
 
     writeln!(md, "## 2. Contro gli avversari\n").unwrap();
     header(&mut md);

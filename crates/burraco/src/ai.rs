@@ -111,10 +111,11 @@ fn burraco_progress(m: &Meld) -> f32 {
     }
     let l = m.len() as f32;
     let clean = if m.is_clean() { 1.0 } else { 0.5 };
-    clean * match m.len() {
-        0..=3 => 0.0,
-        _ => (l - 3.0) * 12.0,
-    }
+    clean
+        * match m.len() {
+            0..=3 => 0.0,
+            _ => (l - 3.0) * 12.0,
+        }
 }
 
 /// Posizione nella scala di una carta naturale (l'asso in alto, 14).
@@ -454,13 +455,12 @@ fn use_wilds(plan: &mut Plan, g: &Game, me: u8, style: &Style, late: bool) {
     let mut dumped = trial.clone();
     while let Some(&w) = wilds(&dumped).first() {
         let opts = wild_options(&dumped, w);
-        let best = opts
-            .into_iter()
-            .filter(|(op, _)| matches!(op, Op::Add(_, v) if v.len() == 1))
-            .max_by_key(|(op, _)| match op {
+        let best = opts.into_iter().filter(|(op, _)| matches!(op, Op::Add(_, v) if v.len() == 1)).max_by_key(
+            |(op, _)| match op {
                 Op::Add(i, _) => dumped.melds[*i].len(),
                 _ => 0,
-            });
+            },
+        );
         match best {
             Some((op, _)) if dumped.apply(op.clone()) => {}
             _ => break,

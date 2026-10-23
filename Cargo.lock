@@ -196,6 +196,7 @@ name = "brismaster"
 version = "0.2.0"
 dependencies = [
  "briscola-core 0.2.0",
+ "burraco",
  "eframe",
  "rand",
  "self-replace",

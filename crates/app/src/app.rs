@@ -2,6 +2,7 @@
 //! e assistente con inserimento manuale delle carte.
 
 use crate::assistant::{self, Assistant};
+use crate::burraco_ui::BurracoAssistant;
 use crate::cards_ui::{self, BEST, CARD_SIZE};
 use crate::update::{self, Release};
 use briscola_core::ai::{evaluate, EngineConfig, EnginePlayer, HeuristicPlayer, MoveEval, Player};
@@ -67,9 +68,18 @@ enum Mode {
     Assistente,
 }
 
+/// Il gioco scelto in alto a sinistra.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+enum GameKind {
+    Briscola,
+    Burraco,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 struct Settings {
+    game: GameKind,
+    burraco_samples: u32,
     difficulty: Difficulty,
     training: bool,
     auto_update: bool,
@@ -81,6 +91,8 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            game: GameKind::Briscola,
+            burraco_samples: 96,
             difficulty: Difficulty::Medio,
             training: true,
             auto_update: true,
@@ -195,6 +207,7 @@ pub struct BrisApp {
     games_started: u32,
     update: UpdateState,
     assistant: Assistant,
+    burraco: BurracoAssistant,
 }
 
 impl BrisApp {
@@ -218,6 +231,7 @@ impl BrisApp {
             games_started: 1,
             update: UpdateState::Idle,
             assistant: Assistant::default(),
+            burraco: BurracoAssistant::default(),
         };
         if app.settings.auto_update {
             app.check_updates();
@@ -311,7 +325,16 @@ impl BrisApp {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading(RichText::new("BrisMaster").strong().color(cards_ui::GOLD));
+            egui::ComboBox::from_id_salt("game").selected_text(format!("{:?}", self.settings.game)).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.settings.game, GameKind::Briscola, "Briscola");
+                ui.selectable_value(&mut self.settings.game, GameKind::Burraco, "Burraco");
+            });
             ui.separator();
+            if self.settings.game != GameKind::Briscola {
+                ui.label(RichText::new("Assistente: descrivi la smazzata, il motore ti dice cosa fare").weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.update_widget(ui));
+                return;
+            }
             for (m, label) in [(Mode::Gioca, "Gioca contro il motore"), (Mode::Assistente, "Assistente")] {
                 let sel = self.settings.mode == m;
                 let text = RichText::new(label).size(16.0);
@@ -649,7 +672,7 @@ impl eframe::App for BrisApp {
         let now = ui.input(|i| i.time);
         let ctx = ui.ctx().clone();
         self.poll_background();
-        if self.settings.mode == Mode::Gioca {
+        if self.settings.game == GameKind::Briscola && self.settings.mode == Mode::Gioca {
             self.step(now, &ctx);
         }
 
@@ -659,6 +682,10 @@ impl eframe::App for BrisApp {
             ui.add_space(6.0);
         });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
+            if self.settings.game == GameKind::Burraco {
+                self.burraco.ui(ui, &mut self.settings.burraco_samples);
+                return;
+            }
             // Tavolo verde a sinistra, pannello informativo a destra.
             let full = ui.available_rect_before_wrap();
             let side_w = match self.settings.mode {

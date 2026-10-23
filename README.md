@@ -81,12 +81,19 @@ Motore attuale, livello Difficile, 4.000 partite per avversario, tra parentesi l
 
 Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro avversari deboli o medi il motore vince nettamente più della metà delle partite, ma contro un giocatore forte quanto lui nessun algoritmo può garantire più del 50%: due copie dello stesso motore vincono per forza il 50% a testa.
 
+## Burraco
+
+Dal menu in alto a sinistra si sceglie il gioco. Per il **burraco** (a due giocatori) c'è l'assistente: indichi le tue 11 carte e la carta scoperta, poi a ogni turno cosa peschi, cosa cala e scarta l'avversario e le carte del pozzetto quando lo prendi. Il motore ti dice se pescare dal tallone o raccogliere gli scarti, cosa calare e in che ordine, e cosa scartare, con la probabilità di vincere la smazzata per ogni alternativa. Le carte si inseriscono con un clic sulla griglia o da tastiera (`7c`, `Kq`, `10p`, `Af`, `jk` per il jolly); ogni passo si annulla con Ctrl+Z.
+
+Il motore del burraco (`crates/burraco`) è un giocatore esperto tarato con decine di migliaia di smazzate, più simulazioni Monte Carlo sulle due scelte decisive del turno: pescare o raccogliere e quale carta scartare. Su 8.000 smazzate per avversario vince tra il 58% e l'87% contro 9 stili diversi, sempre sopra il 55% con certezza statistica, e il 50% contro se stesso (come deve essere): dettagli in [bench/BURRACO.md](bench/BURRACO.md).
+
 ## Struttura
 
 | Cartella | Contenuto |
 |---|---|
 | `crates/core` | Regole, motore, avversari di riferimento, statistiche |
 | `crates/sim` | Banco di prova per le simulazioni massive |
+| `crates/burraco` | Burraco: regole, giocatori, motore, banco di prova (`burraco-sim`) |
 | `crates/app` | App Windows (egui) e aggiornamento automatico |
 
 ## Pubblicare una nuova versione

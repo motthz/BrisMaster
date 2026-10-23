@@ -4,6 +4,7 @@ mod app;
 mod assistant;
 mod burraco_ui;
 mod cards_ui;
+mod record;
 mod update;
 
 fn main() -> eframe::Result {

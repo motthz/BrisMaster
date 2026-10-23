@@ -3,6 +3,7 @@
 mod app;
 mod assistant;
 mod cards_ui;
+mod poker;
 mod update;
 
 fn main() -> eframe::Result {

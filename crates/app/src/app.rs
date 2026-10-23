@@ -3,6 +3,7 @@
 
 use crate::assistant::{self, Assistant};
 use crate::cards_ui::{self, BEST, CARD_SIZE};
+use crate::poker::HoldemAssistant;
 use crate::update::{self, Release};
 use briscola_core::ai::{evaluate, EngineConfig, EnginePlayer, HeuristicPlayer, MoveEval, Player};
 use briscola_core::cards::{self, Card};
@@ -65,6 +66,7 @@ struct Record {
 enum Mode {
     Gioca,
     Assistente,
+    Holdem,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -195,6 +197,7 @@ pub struct BrisApp {
     games_started: u32,
     update: UpdateState,
     assistant: Assistant,
+    holdem: HoldemAssistant,
 }
 
 impl BrisApp {
@@ -218,6 +221,7 @@ impl BrisApp {
             games_started: 1,
             update: UpdateState::Idle,
             assistant: Assistant::default(),
+            holdem: HoldemAssistant::default(),
         };
         if app.settings.auto_update {
             app.check_updates();
@@ -312,7 +316,9 @@ impl BrisApp {
         ui.horizontal(|ui| {
             ui.heading(RichText::new("BrisMaster").strong().color(cards_ui::GOLD));
             ui.separator();
-            for (m, label) in [(Mode::Gioca, "Gioca contro il motore"), (Mode::Assistente, "Assistente")] {
+            for (m, label) in
+                [(Mode::Gioca, "Gioca contro il motore"), (Mode::Assistente, "Assistente"), (Mode::Holdem, "Texas Hold'em")]
+            {
                 let sel = self.settings.mode == m;
                 let text = RichText::new(label).size(16.0);
                 if ui.add(egui::Button::selectable(sel, if sel { text.strong() } else { text })).clicked() {
@@ -320,8 +326,9 @@ impl BrisApp {
                 }
             }
             ui.separator();
-            if self.settings.mode == Mode::Gioca {
-                self.game_controls(ui);
+            match self.settings.mode {
+                Mode::Gioca => self.game_controls(ui),
+                Mode::Assistente | Mode::Holdem => {}
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.update_widget(ui);
@@ -664,6 +671,7 @@ impl eframe::App for BrisApp {
             let side_w = match self.settings.mode {
                 Mode::Gioca => 300.0,
                 Mode::Assistente => (full.width() * 0.4).clamp(440.0, 560.0),
+                Mode::Holdem => 400.0,
             };
             let split = full.max.x - side_w;
             let left = Rect::from_min_max(full.min, egui::pos2(split, full.max.y));
@@ -686,6 +694,10 @@ impl eframe::App for BrisApp {
                     let samples = &mut self.settings.assist_samples;
                     ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| self.assistant.side_ui(ui, samples));
                     ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| self.assistant.table_ui(ui));
+                }
+                Mode::Holdem => {
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| self.holdem.side_ui(ui));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| self.holdem.table_ui(ui));
                 }
             }
         });

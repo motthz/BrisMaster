@@ -167,12 +167,13 @@ fn panel() -> Vec<(String, String)> {
     v.push(("cfr:200000".into(), "Motore allenato con 200.000 iterazioni (un centesimo)".into()));
     v.push(("cfr:2000000".into(), "Motore allenato con 2 milioni di iterazioni (un decimo)".into()));
     v.push(("exploit:4000000".into(), "Allenato con 4 milioni di iterazioni per battere proprio questo motore, conoscendone la strategia".into()));
+    v.push(("exploit:20000000".into(), "Come sopra, con 20 milioni di iterazioni: l'avversario più forte possibile contro questo motore".into()));
     v
 }
 
 fn report(args: &[String]) -> ExitCode {
-    let deals: u64 = arg(args, "--deals", 8000);
-    let self_deals: u64 = arg(args, "--self-deals", 16000);
+    let deals: u64 = arg(args, "--deals", 100_000);
+    let self_deals: u64 = arg(args, "--self-deals", 100_000);
     let out: String = arg(args, "--out", "bench/POKER_IT.md".to_string());
     let seed: u64 = arg(args, "--seed", 20261023);
     let t = Instant::now();
@@ -187,6 +188,18 @@ fn report(args: &[String]) -> ExitCode {
     )
     .unwrap();
     writeln!(md, "{deals} mazzi per avversario ({} mani), seme {seed}.\n", deals * 2).unwrap();
+    writeln!(
+        md,
+        "**Criterio.** Nella briscola si contano le partite vinte; nel poker conta quante fiche si \
+         vincono in media per mano (1 fiche = un invito), perché si possono perdere tante mani piccole \
+         e vincerne poche grandi. Il poker ha molta più varianza: con lo stesso criterio della briscola \
+         (8.000 partite) l'intervallo sarebbe largo ±0,04 fiche, più dei vantaggi da misurare. Per questo \
+         si giocano 100.000 mazzi per avversario (200.000 mani), che danno un intervallo di circa \
+         ±0,01 fiche per mano; la tabella del motore contro se stesso, in fondo, mostra che a questo \
+         numero di mazzi una copia identica dà 0 entro l'intervallo. **Vince** vuol dire che tutto \
+         l'intervallo è sopra lo zero.\n"
+    )
+    .unwrap();
     writeln!(md, "| Avversario | Fiche per mano | IC 95% | Mani vinte | Piatti a showdown | |").unwrap();
     writeln!(md, "|---|---:|---|---:|---:|---|").unwrap();
     let mut worst = f64::INFINITY;
@@ -223,7 +236,7 @@ fn report(args: &[String]) -> ExitCode {
     let per = arena::run_deals("engine", "engine", 0..self_deals, seed ^ 0xABCD);
     writeln!(md, "| Mazzi | Fiche per mano | IC 95% |").unwrap();
     writeln!(md, "|---:|---:|---|").unwrap();
-    for n in [1000, 2000, 4000, 8000, 16000].into_iter().filter(|&n| n <= self_deals) {
+    for n in [1000, 4000, 16000, 50000, 100000, 200000].into_iter().filter(|&n| n <= self_deals) {
         let s = per[..n as usize].iter().copied().fold(MatchStats::default(), MatchStats::merge);
         let (lo, hi) = s.ci95();
         writeln!(md, "| {n} | {} | {} .. {} |", fmt_num(s.mean()), fmt_num(lo), fmt_num(hi)).unwrap();

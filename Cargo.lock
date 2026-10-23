@@ -2325,6 +2325,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "scopa-core"
+version = "0.2.0"
+dependencies = [
+ "briscola-core 0.2.0",
+ "rand",
+]
+
+[[package]]
+name = "scopa-sim"
+version = "0.2.0"
+dependencies = [
+ "briscola-core 0.2.0",
+ "rand",
+ "rayon",
+ "scopa-core",
+]
+
+[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

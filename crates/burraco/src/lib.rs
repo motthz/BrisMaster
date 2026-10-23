@@ -3,6 +3,7 @@
 pub mod ai;
 pub mod arena;
 pub mod cards;
+pub mod engine;
 pub mod game;
 pub mod melds;
 

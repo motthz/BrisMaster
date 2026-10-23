@@ -22,6 +22,9 @@ pub struct MatchStats {
     pub closed: [u64; 2],
     /// Vittorie del giocatore quando inizia (posto 0) e quando è secondo (posto 1).
     pub seat_wins: [u64; 2],
+    /// Turni giocati in tutto e smazzate finite per il limite di turni.
+    pub turns: u64,
+    pub timeouts: u64,
     pub deals: u64,
     pub sum: f64,
     pub sum_sq: f64,
@@ -38,6 +41,8 @@ impl MatchStats {
             self.closed[i] += o.closed[i];
             self.seat_wins[i] += o.seat_wins[i];
         }
+        self.turns += o.turns;
+        self.timeouts += o.timeouts;
         self.deals += o.deals;
         self.sum += o.sum;
         self.sum_sq += o.sum_sq;
@@ -117,6 +122,7 @@ impl MatchStats {
             deals: 1,
             sum,
             sum_sq: sum * sum,
+            ..Default::default()
         })
     }
 }
@@ -149,6 +155,10 @@ pub fn play_deal(
             play_hand(g, &mut [b.as_mut(), a.as_mut()], &mut rng)
         };
         let (pa, pb) = (end.score(seat), end.score(1 - seat));
+        st.turns += end.turns as u64;
+        if end.turns >= crate::game::MAX_TURNS {
+            st.timeouts += 1;
+        }
         st.points_for += pa as i64;
         st.points_against += pb as i64;
         match end.closed_by {
@@ -170,6 +180,17 @@ pub fn play_deal(
     st.sum = deal_score / 2.0;
     st.sum_sq = st.sum * st.sum;
     st
+}
+
+/// Risultati mazzo per mazzo, in parallelo.
+pub fn run_per_deal(
+    seed: u64,
+    from: u64,
+    to: u64,
+    make_a: &(dyn Fn() -> Box<dyn Player> + Sync),
+    make_b: &(dyn Fn() -> Box<dyn Player> + Sync),
+) -> Vec<MatchStats> {
+    (from..to).into_par_iter().map(|i| play_deal(seed, i, make_a, make_b)).collect()
 }
 
 /// Gioca i mazzi `from..to` in parallelo.

@@ -173,17 +173,18 @@ fn naturals(h: &Cards) -> impl Iterator<Item = Kind> + '_ {
 
 /// Attacca alle combinazioni tutte le carte naturali possibili.
 fn attach_naturals(plan: &mut Plan) {
-    loop {
-        let mut changed = false;
-        for i in 0..plan.melds.len() {
-            let ks: Vec<Kind> = naturals(&plan.hand).collect();
-            for k in ks {
-                if plan.hand.has(k) && plan.apply(Op::Add(i, vec![k])) {
-                    changed = true;
+    for i in 0..plan.melds.len() {
+        'grow: loop {
+            for k in plan.melds[i].natural_targets() {
+                if plan.hand.has(k) {
+                    if let Some(m) = plan.melds[i].with_natural(k) {
+                        plan.melds[i] = m;
+                        plan.hand.remove(k);
+                        plan.ops.push(Op::Add(i, vec![k]));
+                        continue 'grow;
+                    }
                 }
             }
-        }
-        if !changed {
             break;
         }
     }
@@ -261,7 +262,11 @@ pub fn potential(hand: &Cards, melds: &[Meld]) -> f32 {
 
 /// La carta si attacca a una di queste combinazioni?
 pub fn attaches(melds: &[Meld], k: Kind) -> bool {
-    melds.iter().any(|m| m.with(&[k]).is_some())
+    if cards::is_wild(k) {
+        melds.iter().any(|m| m.with(&[k]).is_some())
+    } else {
+        melds.iter().any(|m| m.with_natural(k).is_some())
+    }
 }
 
 /// Stile di gioco: i parametri del giocatore euristico.
@@ -289,12 +294,14 @@ pub struct Style {
     pub late_stock: usize,
     /// Probabilità di uno scarto a caso.
     pub noise: f32,
+    /// Carte del tallone provate per stimare la pescata (0: stima fissa, più veloce).
+    pub stock_samples: u8,
 }
 
 impl Style {
     /// Lo stile del motore: equilibrato, attento agli scarti, matte conservate per il burraco.
     pub const EXPERT: Style = Style {
-        pile_threshold: 8.0,
+        pile_threshold: -20.0,
         pile_card_cost: 1.0,
         deny_w: 0.5,
         eager_wilds: false,
@@ -305,7 +312,13 @@ impl Style {
         close_margin: 0,
         late_stock: 8,
         noise: 0.0,
+        stock_samples: 0,
     };
+
+    /// Lo stesso stile, più veloce: per le simulazioni del motore.
+    pub const fn fast(self) -> Style {
+        Style { stock_samples: 0, ..self }
+    }
 }
 
 /// Giocatore euristico con uno stile.
@@ -546,8 +559,8 @@ pub fn choose_discard(g: &Game, me: u8, plan: &Plan, style: &Style, rng: &mut Sm
         .unwrap()
 }
 
-/// Carte su cui si stima la pescata dal tallone.
-const STOCK_SAMPLES: usize = 12;
+/// Guadagno medio di potenziale di una carta pescata dal tallone, quando non lo si stima.
+const STOCK_GAIN: f32 = 6.0;
 
 /// Quanto conviene raccogliere gli scarti rispetto a pescare dal tallone (in punti di potenziale).
 pub fn pile_gain(g: &Game, me: u8, style: &Style, rng: &mut SmallRng) -> f32 {
@@ -558,19 +571,40 @@ pub fn pile_gain(g: &Game, me: u8, style: &Style, rng: &mut SmallRng) -> f32 {
     for &k in &g.pile {
         with_pile.add(k);
     }
-    let unseen = g.unseen(me).to_vec();
-    let stock: f32 = (0..STOCK_SAMPLES)
-        .map(|_| {
-            let mut h = hand;
-            h.add(unseen[rng.gen_range(0..unseen.len())]);
-            potential(&h, &g.melds[i]) - base
-        })
-        .sum::<f32>()
-        / STOCK_SAMPLES as f32;
+    let n = style.stock_samples as usize;
+    let stock = if n == 0 {
+        STOCK_GAIN
+    } else {
+        let unseen = g.unseen(me).to_vec();
+        (0..n)
+            .map(|_| {
+                let mut h = hand;
+                h.add(unseen[rng.gen_range(0..unseen.len())]);
+                potential(&h, &g.melds[i]) - base
+            })
+            .sum::<f32>()
+            / n as f32
+    };
     let gain = potential(&with_pile, &g.melds[i]) - base - stock;
     let deny: f32 =
         g.pile.iter().map(|&k| if cards::is_wild(k) || attaches(&g.melds[1 - i], k) { 20.0 } else { 0.0 }).sum();
     gain + style.deny_w * deny - style.pile_card_cost * (g.pile.len() as f32 - 1.0)
+}
+
+/// Raccoglie gli scarti? Una carta sola si prende solo se si cala subito
+/// (altrimenti i due giocatori si passerebbero la stessa carta all'infinito).
+pub fn wants_pile(g: &Game, me: u8, style: &Style, rng: &mut SmallRng) -> bool {
+    match g.pile.len() {
+        0 => false,
+        1 => {
+            let k = g.pile[0];
+            let mut h = g.hands[me as usize];
+            h.add(k);
+            let p = natural_plan(&h, &g.melds[me as usize]);
+            p.hand.count(k) < h.count(k)
+        }
+        _ => pile_gain(g, me, style, rng) >= style.pile_threshold,
+    }
 }
 
 impl Heuristic {
@@ -579,7 +613,7 @@ impl Heuristic {
         let style = &self.style;
         match g.phase {
             Phase::Draw => {
-                if !g.pile.is_empty() && pile_gain(g, me, style, rng) >= style.pile_threshold {
+                if wants_pile(g, me, style, rng) {
                     Action::TakePile
                 } else {
                     Action::DrawStock

@@ -168,6 +168,57 @@ impl Meld {
         }
     }
 
+    /// Le carte naturali che si possono attaccare (al più 4).
+    pub fn natural_targets(&self) -> impl Iterator<Item = Kind> {
+        let mut t = [JOLLY; 4];
+        if self.seq {
+            let (lo, hi) = self.range();
+            let cand = [lo.wrapping_sub(1), hi + 1, if self.wild_pos != 0 { self.wild_pos } else { 0 }];
+            for (i, p) in cand.into_iter().enumerate() {
+                if (1..=14).contains(&p) && p != 2 && self.mask & (1 << p) == 0 {
+                    t[i] = pos_kind(self.suit, p);
+                }
+            }
+        } else {
+            for s in 0..4 {
+                t[s as usize] = kind(s, self.rank);
+            }
+        }
+        t.into_iter().filter(|&k| k != JOLLY)
+    }
+
+    /// La combinazione con una carta naturale in più (veloce, senza allocazioni).
+    /// Per le pinelle e il jolly si usa `with`.
+    pub fn with_natural(&self, k: Kind) -> Option<Meld> {
+        debug_assert!(!cards::is_wild(k));
+        if !self.seq {
+            if rank(k) != self.rank {
+                return None;
+            }
+            let mut m = *self;
+            m.suits[suit(k) as usize] += 1;
+            m.nat += 1;
+            return Some(m);
+        }
+        if suit(k) != self.suit {
+            return None;
+        }
+        let try_pos = |p: u8| -> Option<Meld> {
+            let b = 1u16 << p;
+            if self.mask & b != 0 {
+                return None;
+            }
+            let mask = self.mask | b;
+            let wp = arrange(mask, self.wild, self.wild_pos)?;
+            Some(Meld { mask, nat: self.nat + 1, wild_pos: wp, ..*self })
+        };
+        if rank(k) == 1 {
+            try_pos(1).or_else(|| try_pos(14))
+        } else {
+            try_pos(rank(k))
+        }
+    }
+
     fn group_with(&self, ks: &[Kind]) -> Option<Meld> {
         let mut m = *self;
         for &k in ks {
@@ -314,5 +365,24 @@ mod tests {
         let full = Meld::new(&ks("Ac 3c 4c 5c 6c 7c 8c 9c 10c Jc Qc Kc jk")).unwrap();
         assert_eq!(full.len(), 13);
         assert!(full.with(&ks("2c")).is_some());
+    }
+
+    #[test]
+    fn fast_natural_matches_general() {
+        let melds = [
+            Meld::new(&ks("5c jk 7c")).unwrap(),
+            Meld::new(&ks("Qp Kp Ap")).unwrap(),
+            Meld::new(&ks("3f 4f 5f")).unwrap(),
+            Meld::new(&ks("9q 9q 9c 2f")).unwrap(),
+            Meld::new(&ks("Ac 3c 4c 5c 6c 7c 8c 9c 10c Jc Qc Kc jk")).unwrap(),
+        ];
+        for m in melds {
+            for k in 0..52u8 {
+                if cards::is_wild(k) {
+                    continue;
+                }
+                assert_eq!(m.with_natural(k), m.with(&[k]), "{:?} + {}", m.cards(), cards::name(k));
+            }
+        }
     }
 }

@@ -6,7 +6,9 @@ use eframe::egui::{self, vec2, Color32, Rect, RichText, Stroke, Vec2};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use scopa_core::ai::{evaluate, EngineConfig, MoveEval};
-use scopa_core::game::{self, for_each_capture, match_winner, name, short, Card, CardSet, HandScore, Move, Observation, TARGET};
+use scopa_core::game::{
+    self, for_each_capture, match_winner, name, short, Card, CardSet, HandScore, Move, Observation, TARGET,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc::{channel, Receiver};
 
@@ -58,7 +60,13 @@ fn white(a: u8) -> Color32 {
 }
 
 /// Fila di carte centrata, che va a capo se non ci sta.
-fn card_row(ui: &mut egui::Ui, cards: &[Card], size: Vec2, glow: impl Fn(Card) -> Option<Color32>, clickable: bool) -> Option<Card> {
+fn card_row(
+    ui: &mut egui::Ui,
+    cards: &[Card],
+    size: Vec2,
+    glow: impl Fn(Card) -> Option<Color32>,
+    clickable: bool,
+) -> Option<Card> {
     let mut clicked = None;
     let per_row = ((ui.available_width() - 20.0) / (size.x + 8.0)).max(1.0) as usize;
     for chunk in cards.chunks(per_row.max(1)) {
@@ -66,7 +74,8 @@ fn card_row(ui: &mut egui::Ui, cards: &[Card], size: Vec2, glow: impl Fn(Card) -
             let w = chunk.len() as f32 * (size.x + 8.0);
             ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
             for &c in chunk {
-                if cards_ui::card(ui, Some(c), size, glow(c), clickable).clicked() {
+                let look = cards_ui::Look { glow: glow(c), no_points: true, ..Default::default() };
+                if cards_ui::card_look(ui, Some(c), size, look, clickable).clicked() {
                     clicked = Some(c);
                 }
                 ui.add_space(2.0);
@@ -79,25 +88,27 @@ fn card_row(ui: &mut egui::Ui, cards: &[Card], size: Vec2, glow: impl Fn(Card) -
 /// Riquadro con il punteggio della partita e le prese della smazzata in corso.
 fn score_box(ui: &mut egui::Ui, match_score: [u8; 2], captured: [CardSet; 2], scope: [u8; 2], opp: &str) {
     egui::Frame::new().fill(Color32::from_black_alpha(70)).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
-        ui.set_width(190.0);
-        ui.label(RichText::new(format!("Tu  {}", match_score[0])).size(24.0).strong().color(Color32::WHITE));
-        ui.label(RichText::new(format!("{opp}  {}", match_score[1])).size(18.0).color(white(200)));
-        ui.label(RichText::new(format!("Partita a {TARGET}")).color(white(150)));
-        ui.add_space(4.0);
-        for (who, p) in [("Tu", 0), (opp, 1)] {
-            let c = captured[p];
-            ui.label(
-                RichText::new(format!(
-                    "{who}: {} carte, {} denari{}{}",
-                    c.len(),
-                    (c.0 & 0x3FF).count_ones(),
-                    if c.contains(game::SETTEBELLO) { ", settebello" } else { "" },
-                    if scope[p] > 0 { format!(", {} scope", scope[p]) } else { String::new() }
-                ))
-                .small()
-                .color(white(190)),
-            );
-        }
+        ui.set_width(220.0);
+        ui.vertical(|ui| {
+            ui.label(RichText::new(format!("Tu  {}", match_score[0])).size(24.0).strong().color(Color32::WHITE));
+            ui.label(RichText::new(format!("{opp}  {}", match_score[1])).size(18.0).color(white(200)));
+            ui.label(RichText::new(format!("Partita a {TARGET}")).color(white(150)));
+            ui.add_space(4.0);
+            for (who, p) in [("Tu", 0), (opp, 1)] {
+                let c = captured[p];
+                ui.label(
+                    RichText::new(format!(
+                        "{who}: {} carte, {} denari{}{}",
+                        c.len(),
+                        (c.0 & 0x3FF).count_ones(),
+                        if c.contains(game::SETTEBELLO) { ", settebello" } else { "" },
+                        if scope[p] > 0 { format!(", {} scope", scope[p]) } else { String::new() }
+                    ))
+                    .small()
+                    .color(white(190)),
+                );
+            }
+        });
     });
 }
 
@@ -190,6 +201,8 @@ struct Assist {
     pending: Option<Receiver<(Vec<MoveEval>, u32)>>,
     generation: u64,
     added: bool,
+    /// Ultima giocata, da mostrare sul tavolo.
+    last: Option<String>,
 }
 
 impl Default for Assist {
@@ -204,13 +217,16 @@ impl Default for Assist {
             pending: None,
             generation: 0,
             added: false,
+            last: None,
         }
     }
 }
 
 impl Assist {
     fn step(&self) -> Step {
-        let Some(o) = &self.obs else { return Step::Dealer };
+        let Some(o) = &self.obs else {
+            return Step::Dealer;
+        };
         // A inizio smazzata (nessuno ha ancora preso) si indicano prima le 4 carte in tavola.
         let fresh = o.deck_len == 30 && o.captured[0].is_empty() && o.captured[1].is_empty();
         // Dopo ogni distribuzione nessuno ha ancora giocato: tocca a chi non distribuisce e
@@ -256,6 +272,7 @@ impl Assist {
         self.dealer = dealer;
         self.history.clear();
         self.obs = Some(Observation::new_hand(HUMAN, dealer, self.score));
+        self.last = None;
         self.added = false;
         self.changed();
     }
@@ -263,7 +280,11 @@ impl Assist {
     fn apply(&mut self, m: Move) {
         self.save();
         if let Some(o) = &mut self.obs {
-            o.apply(m);
+            let who = if o.to_move == HUMAN { "Hai giocato" } else { "L'avversario ha giocato" };
+            let table = o.table;
+            let scopa = o.apply(m);
+            self.last =
+                Some(format!("{who} {}: {}{}", name(m.card), take_label(&m, table), if scopa { "!" } else { "" }));
         }
         self.changed();
     }
@@ -297,7 +318,9 @@ impl Assist {
 
     /// Carte che si possono indicare adesso.
     fn allowed(&self) -> CardSet {
-        let Some(o) = &self.obs else { return CardSet::EMPTY };
+        let Some(o) = &self.obs else {
+            return CardSet::EMPTY;
+        };
         match self.step() {
             Step::Table | Step::Hand | Step::OppMove => o.unknown(),
             Step::MyMove => o.hand,
@@ -400,12 +423,16 @@ fn assist_side(a: &mut Assist, ui: &mut egui::Ui, samples: &mut u32) {
                 picker(a, ui);
             }
             Step::OppMove => {
-                title(ui, "Che carta ha giocato l'avversario?", "Clicca la carta; se poteva prendere in più modi, scegli cosa ha preso.");
+                title(
+                    ui,
+                    "Che carta ha giocato l'avversario?",
+                    "Clicca la carta; se poteva prendere in più modi, scegli cosa ha preso.",
+                );
                 capture_choice(a, ui);
                 picker(a, ui);
             }
             Step::MyMove => {
-                title(ui, "Tocca a te", "Clicca nel tavolo la carta che giochi (anche se non è la consigliata).");
+                title(ui, "Tocca a te", "Clicca nella tua mano la carta che giochi (anche se non è la consigliata).");
                 capture_choice(a, ui);
                 match &a.analysis {
                     Some((ev, _)) => eval_list(ui, ev, a.obs.unwrap().table),
@@ -487,7 +514,9 @@ fn picker(a: &mut Assist, ui: &mut egui::Ui) {
 }
 
 fn capture_choice(a: &mut Assist, ui: &mut egui::Ui) {
-    let (Some(sel), Some(o)) = (a.selected, a.obs) else { return };
+    let (Some(sel), Some(o)) = (a.selected, a.obs) else {
+        return;
+    };
     ui.label(RichText::new(format!("Cosa prende {}?", name(sel))).strong());
     let mut chosen = None;
     for opt in options(o.table, sel) {
@@ -530,11 +559,18 @@ fn assist_table(a: &mut Assist, ui: &mut egui::Ui) {
             card_row(ui, &table, CARD, |c| best.is_some_and(|b| b.take.contains(c)).then_some(GOLD), false);
         });
     });
+    ui.vertical_centered(|ui| {
+        if let Some(t) = &a.last {
+            ui.label(RichText::new(t).size(16.0).color(white(220)));
+        }
+    });
     ui.add_space(10.0);
     ui.vertical_centered(|ui| ui.label(RichText::new("La tua mano").size(16.0).strong().color(Color32::WHITE)));
     let my_turn = a.step() == Step::MyMove && a.selected.is_none();
     let hand = o.hand.to_vec();
-    if let Some(c) = card_row(ui, &hand, CARD, |c| (my_turn && best.is_some_and(|b| b.card == c)).then_some(BEST), my_turn) {
+    if let Some(c) =
+        card_row(ui, &hand, CARD, |c| (my_turn && best.is_some_and(|b| b.card == c)).then_some(BEST), my_turn)
+    {
         a.enter(c);
     }
     if let Some((ev, _)) = &a.analysis {

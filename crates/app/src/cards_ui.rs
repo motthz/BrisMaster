@@ -107,6 +107,8 @@ pub struct Look {
     pub dim: bool,
     /// Sollevata (passaggio del mouse).
     pub lifted: bool,
+    /// Senza i punti della briscola nell'angolo (per gli altri giochi).
+    pub no_points: bool,
 }
 
 /// Disegna la faccia di una carta nel rettangolo dato.
@@ -133,7 +135,7 @@ pub fn paint_face(p: &Painter, rect: Rect, c: Card, look: Look) {
 
     // Punti della carta in alto a destra.
     let pts = cards::points(c);
-    if pts > 0 {
+    if pts > 0 && !look.no_points {
         let pill = Rect::from_center_size(rect.right_top() + vec2(-0.16 * h, 0.11 * h), vec2(0.2 * h, 0.12 * h));
         p.rect_filled(pill, 0.06 * h, GOLD);
         p.text(pill.center(), Align2::CENTER_CENTER, pts.to_string(), FontId::proportional(0.085 * h), INK);
@@ -215,11 +217,16 @@ pub fn paint_slot(p: &Painter, rect: Rect, label: &str) {
 
 /// Carta interattiva (faccia o dorso) di dimensione `size`.
 pub fn card(ui: &mut egui::Ui, c: Option<Card>, size: Vec2, glow: Option<Color32>, clickable: bool) -> egui::Response {
+    card_look(ui, c, size, Look { glow, ..Default::default() }, clickable)
+}
+
+/// Come `card`, con l'aspetto indicato (il sollevamento al passaggio del mouse si aggiunge da solo).
+pub fn card_look(ui: &mut egui::Ui, c: Option<Card>, size: Vec2, look: Look, clickable: bool) -> egui::Response {
     let sense = if clickable { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     match c {
         Some(c) => {
-            let look = Look { glow, dim: false, lifted: clickable && resp.hovered() };
+            let look = Look { lifted: clickable && resp.hovered(), ..look };
             paint_face(ui.painter(), rect, c, look);
         }
         None => paint_back(ui.painter(), rect),

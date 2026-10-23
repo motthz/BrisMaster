@@ -70,7 +70,11 @@ impl Weights {
     fn best_gain_with(&self, table: CardSet, c: Card, last: bool) -> i32 {
         let mut best = i32::MIN;
         let any = for_each_capture(table, c, |take| best = best.max(self.gain(Move { card: c, take }, table, last)));
-        if any { best } else { self.gain(Move { card: c, take: CardSet::EMPTY }, table, last) }
+        if any {
+            best
+        } else {
+            self.gain(Move { card: c, take: CardSet::EMPTY }, table, last)
+        }
     }
 
     /// Miglior guadagno di chi ha in mano `hand` sul tavolo `table` (risposta a carte scoperte).
@@ -427,6 +431,10 @@ pub struct EngineConfig {
     pub solve_endgame: bool,
     /// Thread per simulare i mondi (1 = riproducibile; i test massivi parallelizzano le partite).
     pub threads: usize,
+    /// Ricerca ad albero (ISMCTS) invece di Monte Carlo piatto; `samples` = iterazioni.
+    pub tree: bool,
+    /// Costante di esplorazione dell'albero.
+    pub exploration: f64,
 }
 
 impl EngineConfig {
@@ -439,6 +447,8 @@ impl EngineConfig {
             match_aware: true,
             solve_endgame: true,
             threads: 1,
+            tree: false,
+            exploration: 0.7,
         }
     }
 }
@@ -471,7 +481,14 @@ pub struct MoveEval {
 }
 
 /// Simula fino a fine smazzata e restituisce i punti finali.
-fn rollout(g: &mut Game, cfg: &EngineConfig, me: u8, moves: &mut Vec<Move>, bufs: &mut Vec<Vec<Move>>, rng: &mut SmallRng) -> [u8; 2] {
+fn rollout(
+    g: &mut Game,
+    cfg: &EngineConfig,
+    me: u8,
+    moves: &mut Vec<Move>,
+    bufs: &mut Vec<Vec<Move>>,
+    rng: &mut SmallRng,
+) -> [u8; 2] {
     while !g.is_over() {
         if cfg.solve_endgame && g.deck_len == 0 && g.hands[0].len() + g.hands[1].len() > 1 {
             // Finale esatto: la variante migliore per entrambi (differenza punti).
@@ -548,6 +565,9 @@ fn simulate(obs: &Observation, moves: &[Move], cfg: &EngineConfig, samples: u32,
 pub fn evaluate(obs: &Observation, cfg: &EngineConfig, rng: &mut SmallRng) -> Vec<MoveEval> {
     let mut moves = Vec::new();
     obs.legal_moves(&mut moves);
+    if cfg.tree && obs.deck_len > 0 {
+        return evaluate_tree(obs, &moves, cfg, rng);
+    }
     // A mazzo vuoto la mano avversaria è nota: un mondo solo, risolto esattamente.
     let samples = if obs.deck_len == 0 { 1 } else { cfg.samples.max(1) };
     let threads = (cfg.threads.max(1) as u32).min(samples / 32).max(1);
@@ -594,7 +614,11 @@ impl EnginePlayer {
 
 impl Player for EnginePlayer {
     fn name(&self) -> String {
-        format!("Motore PIMC ({} mondi)", self.cfg.samples)
+        if self.cfg.tree {
+            format!("Motore ad albero ({} iterazioni)", self.cfg.samples)
+        } else {
+            format!("Motore PIMC ({} mondi)", self.cfg.samples)
+        }
     }
     fn choose(&mut self, obs: &Observation, rng: &mut SmallRng) -> Move {
         let mut moves = Vec::new();
@@ -633,7 +657,8 @@ impl Player for IsmctsPlayer {
             return legal[0];
         }
         let greedy = Weights::default();
-        let mut nodes = vec![Node { mv: None, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0 }];
+        let mut nodes =
+            vec![Node { mv: None, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0 }];
         let mut moves = Vec::new();
         for _ in 0..self.iterations {
             let mut g = obs.determinize(rng);
@@ -703,6 +728,142 @@ impl Player for IsmctsPlayer {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Motore ad albero: ISMCTS potenziato con la politica dei rollout del motore, il finale
+// esatto a mazzo vuoto e il valore della partita come ricompensa.
+
+/// Statistiche di una mossa alla radice.
+#[derive(Clone, Copy, Default)]
+struct RootStat {
+    visits: f64,
+    win: f64,
+    diff: f64,
+}
+
+fn tree_search(
+    obs: &Observation,
+    cfg: &EngineConfig,
+    legal: &[Move],
+    iterations: u32,
+    rng: &mut SmallRng,
+) -> Vec<RootStat> {
+    let table = MatchTable::standard();
+    let reward = |pts: [u8; 2], p: u8| -> (f64, f64) {
+        let (p, o) = (p as usize, 1 - p as usize);
+        let d = pts[p] as f64 - pts[o] as f64;
+        let w = table.value(obs.match_score[p] + pts[p], obs.match_score[o] + pts[o]);
+        let r = if cfg.match_aware { w + d * 1e-3 } else { (0.5 + d / 12.0).clamp(0.0, 1.0) };
+        (r, w)
+    };
+    let mut nodes = vec![Node { mv: None, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0 }];
+    // I figli della radice sono le mosse legali, in quest'ordine.
+    for &m in legal {
+        nodes.push(Node { mv: Some(m), mover: obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0 });
+        let id = nodes.len() - 1;
+        nodes[0].children.push(id);
+    }
+    let mut root = vec![RootStat::default(); legal.len()];
+    let mut moves = Vec::new();
+    let mut bufs = Vec::new();
+    for _ in 0..iterations {
+        let mut g = obs.determinize(rng);
+        let mut path = vec![0usize];
+        let mut cur = 0usize;
+        loop {
+            if g.is_over() || (cfg.solve_endgame && g.deck_len == 0 && cur != 0) {
+                break;
+            }
+            g.legal_moves(&mut moves);
+            let kids: Vec<usize> =
+                nodes[cur].children.iter().copied().filter(|&k| moves.contains(&nodes[k].mv.unwrap())).collect();
+            for &k in &kids {
+                nodes[k].avail += 1.0;
+            }
+            if let Some(&k) = kids.iter().find(|&&k| nodes[k].visits == 0.0) {
+                g.play(nodes[k].mv.unwrap());
+                path.push(k);
+                break;
+            }
+            let untried: Vec<Move> =
+                moves.iter().copied().filter(|m| !kids.iter().any(|&k| nodes[k].mv == Some(*m))).collect();
+            if !untried.is_empty() {
+                let m = untried[rng.gen_range(0..untried.len())];
+                let mover = g.to_move;
+                g.play(m);
+                nodes.push(Node { mv: Some(m), mover, children: vec![], visits: 0.0, avail: 1.0, reward: 0.0 });
+                let id = nodes.len() - 1;
+                nodes[cur].children.push(id);
+                path.push(id);
+                break;
+            }
+            let best = *kids
+                .iter()
+                .max_by(|&&a, &&b| {
+                    let ucb = |k: usize| {
+                        let n = &nodes[k];
+                        n.reward / n.visits + cfg.exploration * (n.avail.ln() / n.visits).sqrt()
+                    };
+                    ucb(a).partial_cmp(&ucb(b)).unwrap()
+                })
+                .unwrap();
+            g.play(nodes[best].mv.unwrap());
+            path.push(best);
+            cur = best;
+        }
+        let pts = rollout(&mut g, cfg, obs.me, &mut moves, &mut bufs, rng);
+        for &id in &path {
+            let n = &mut nodes[id];
+            n.visits += 1.0;
+            n.reward += reward(pts, n.mover).0;
+        }
+        let (_, w) = reward(pts, obs.me);
+        let i = path[1] - 1;
+        root[i].visits += 1.0;
+        root[i].win += w;
+        root[i].diff += pts[obs.me as usize] as f64 - pts[1 - obs.me as usize] as f64;
+    }
+    root
+}
+
+fn evaluate_tree(obs: &Observation, legal: &[Move], cfg: &EngineConfig, rng: &mut SmallRng) -> Vec<MoveEval> {
+    let threads = (cfg.threads.max(1) as u32).min(cfg.samples / 200).max(1);
+    let stats: Vec<RootStat> = if threads == 1 {
+        tree_search(obs, cfg, legal, cfg.samples, rng)
+    } else {
+        // Un albero per thread; alla fine si sommano le visite delle mosse alla radice.
+        let seeds: Vec<u64> = (0..threads).map(|_| rng.gen()).collect();
+        std::thread::scope(|s| {
+            let hs: Vec<_> = seeds
+                .iter()
+                .map(|&seed| {
+                    s.spawn(move || {
+                        tree_search(obs, cfg, legal, cfg.samples / threads, &mut SmallRng::seed_from_u64(seed))
+                    })
+                })
+                .collect();
+            let mut tot = vec![RootStat::default(); legal.len()];
+            for h in hs {
+                for (t, r) in tot.iter_mut().zip(h.join().expect("thread del motore")) {
+                    t.visits += r.visits;
+                    t.win += r.win;
+                    t.diff += r.diff;
+                }
+            }
+            tot
+        })
+    };
+    let mut out: Vec<(f64, MoveEval)> = legal
+        .iter()
+        .zip(&stats)
+        .map(|(&m, r)| {
+            let n = r.visits.max(1.0);
+            (r.visits, MoveEval { mv: m, exp_diff: r.diff / n, win_prob: r.win / n })
+        })
+        .collect();
+    out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    out.into_iter().map(|(_, e)| e).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -724,7 +885,11 @@ mod tests {
             n.play(m);
             minimax(&n, me)
         });
-        if g.to_move == me { vals.max().unwrap() } else { vals.min().unwrap() }
+        if g.to_move == me {
+            vals.max().unwrap()
+        } else {
+            vals.min().unwrap()
+        }
     }
 
     #[test]

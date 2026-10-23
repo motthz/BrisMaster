@@ -41,6 +41,31 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
             }
             Box::new(EnginePlayer::new(cfg))
         }
+        // Motore ad albero: tree:ITERAZIONI[,chiave=valore...] (c=esplorazione, pol=open|greedy|counted, eps=, diff, nosolve)
+        s if s.starts_with("tree:") => {
+            let mut parts = s[5..].split(',');
+            let mut cfg = EngineConfig::strength(num(parts.next().unwrap(), "iterazioni")? as u32);
+            cfg.tree = true;
+            for kv in parts {
+                let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+                match k {
+                    "c" => cfg.exploration = num(v, "esplorazione")?,
+                    "eps" => cfg.rollout_epsilon = num(v, "eps")?,
+                    "pol" => {
+                        cfg.rollout = match v {
+                            "open" => Rollout::OpenHand,
+                            "greedy" => Rollout::Greedy,
+                            "counted" => Rollout::Counted,
+                            _ => return Err(format!("politica sconosciuta: {v}")),
+                        }
+                    }
+                    "diff" => cfg.match_aware = false,
+                    "nosolve" => cfg.solve_endgame = false,
+                    _ => return Err(format!("opzione sconosciuta: {k}")),
+                }
+            }
+            Box::new(EnginePlayer::new(cfg))
+        }
         s if s.starts_with("noisy:") => {
             let (err, base) = s[6..].split_once(':').ok_or(format!("serve noisy:ERRORE:SPEC, non '{s}'"))?;
             Box::new(NoisyPlayer { eps: num(err, "errore")?, inner: make_player(base)? })

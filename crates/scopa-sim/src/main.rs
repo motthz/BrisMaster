@@ -69,8 +69,16 @@ fn table_row(name: &str, s: &MatchStats) -> String {
     let (pf, pa) = s.per_hand();
     format!(
         "| {name} | {} | {} | **{}** | {} – {} | {:+.0} | {} | {} – {} | {} |",
-        s.games, s.wins, pct(s.score()), pct(lo), pct(hi), s.elo(),
-        dec(s.hands as f64 / s.games as f64), dec(pf), dec(pa), dec(s.scope_for as f64 / s.games as f64)
+        s.games,
+        s.wins,
+        pct(s.score()),
+        pct(lo),
+        pct(hi),
+        s.elo(),
+        dec(s.hands as f64 / s.games as f64),
+        dec(pf),
+        dec(pa),
+        dec(s.scope_for as f64 / s.games as f64)
     )
 }
 
@@ -110,7 +118,13 @@ fn deals_cached(player: &str, opponent: &str, deals: u64, seed: u64) -> Vec<Matc
 fn run(player: &str, opponent: &str, deals: u64, seed: u64) -> MatchStats {
     let start = Instant::now();
     let s = deals_cached(player, opponent, deals, seed).into_iter().fold(MatchStats::default(), MatchStats::merge);
-    eprintln!("  {} contro {}: {}  ({:.0}s)", describe(player), describe(opponent), pct(s.score()), start.elapsed().as_secs_f64());
+    eprintln!(
+        "  {} contro {}: {}  ({:.0}s)",
+        describe(player),
+        describe(opponent),
+        pct(s.score()),
+        start.elapsed().as_secs_f64()
+    );
     s
 }
 
@@ -161,11 +175,21 @@ fn convergence(per_deal: &[MatchStats], margin: f64, md: &mut String) -> Option<
     writeln!(md, "|---:|---:|---:|---|---:|:---:|").unwrap();
     for (i, (n, s)) in checkpoints.iter().zip(&stats).enumerate() {
         let (lo, hi) = s.score_ci95();
-        let mark = if Some(i) == first { "✅ da qui" } else if first.is_some_and(|f| i > f) { "✅" } else { "—" };
+        let mark = if Some(i) == first {
+            "✅ da qui"
+        } else if first.is_some_and(|f| i > f) {
+            "✅"
+        } else {
+            "—"
+        };
         writeln!(
             md,
             "| {n} | {} | {} | {} – {} | {} punti | {mark} |",
-            n * 2, pct(s.score()), pct(lo), pct(hi), format!("{:.1}", (s.score() - 0.5).abs() * 100.0).replace('.', ",")
+            n * 2,
+            pct(s.score()),
+            pct(lo),
+            pct(hi),
+            format!("{:.1}", (s.score() - 0.5).abs() * 100.0).replace('.', ",")
         )
         .unwrap();
     }
@@ -183,7 +207,13 @@ fn target_mark(s: &MatchStats) -> &'static str {
     }
 }
 
-fn panel_rows(player: &str, opponents: &[(&str, &str)], deals: u64, seed: u64, md: &mut String) -> Vec<(String, MatchStats)> {
+fn panel_rows(
+    player: &str,
+    opponents: &[(&str, &str)],
+    deals: u64,
+    seed: u64,
+    md: &mut String,
+) -> Vec<(String, MatchStats)> {
     table_header(md);
     let mut out = Vec::new();
     for (opp, _) in opponents {
@@ -219,7 +249,9 @@ fn report(player: &str, deals: u64, self_deals: u64, seed: u64) -> String {
          In duplicato ogni sequenza di mazzi viene giocata da entrambe le copie da entrambi i posti, quindi nessuna \
          delle due può fare meglio del 50%: contro un avversario forte quanto lui nessun programma lo supera. \
          Il test controlla che il banco di prova sia equo e stabilisce quante partite servono.\n",
-        pct(selfp.score()), pct(lo), pct(hi)
+        pct(selfp.score()),
+        pct(lo),
+        pct(hi)
     )
     .unwrap();
     let (olo, ohi) = selfp.seat_ci(0);
@@ -227,7 +259,10 @@ fn report(player: &str, deals: u64, self_deals: u64, seed: u64) -> String {
         sec1,
         "Chi gioca per primo nella prima smazzata vince il {} delle partite (IC {} – {}), chi distribuisce il {}. \
          Il duplicato compensa il vantaggio del posto.\n",
-        pct(selfp.seat_wins[0] as f64 / self_deals as f64), pct(olo), pct(ohi), pct(selfp.seat_wins[1] as f64 / self_deals as f64)
+        pct(selfp.seat_wins[0] as f64 / self_deals as f64),
+        pct(olo),
+        pct(ohi),
+        pct(selfp.seat_wins[1] as f64 / self_deals as f64)
     )
     .unwrap();
     writeln!(
@@ -307,7 +342,8 @@ fn report(player: &str, deals: u64, self_deals: u64, seed: u64) -> String {
     md.push_str(&sec3);
     writeln!(md, "\n## Come riprodurlo\n").unwrap();
     writeln!(md, "```\ncargo run --release -p scopa-sim -- report --player {player} --deals {deals} --self-deals {self_deals} --seed {seed} --out bench/SCOPA.md\n```\n").unwrap();
-    writeln!(md, "{games} partite in tutto, {:.0} minuti su questa macchina.", start.elapsed().as_secs_f64() / 60.0).unwrap();
+    writeln!(md, "{games} partite in tutto, {:.0} minuti su questa macchina.", start.elapsed().as_secs_f64() / 60.0)
+        .unwrap();
     md
 }
 
@@ -339,9 +375,14 @@ fn hand_distribution(player: &str, hands: u64, seed: u64) -> String {
     }
     let n = (hands * 2) as f64;
     let mut out = String::new();
-    writeln!(out, "//! Distribuzione dei punti di una smazzata tra due giocatori di pari forza: `HAND_DIST[i][j]` è la").unwrap();
+    writeln!(
+        out,
+        "//! Distribuzione dei punti di una smazzata tra due giocatori di pari forza: `HAND_DIST[i][j]` è la"
+    )
+    .unwrap();
     writeln!(out, "//! probabilità che uno faccia `i` punti e l'altro `j`. Generata con").unwrap();
-    writeln!(out, "//! `cargo run --release -p scopa-sim -- dist --player {player} --hands {hands} --seed {seed}`.\n").unwrap();
+    writeln!(out, "//! `cargo run --release -p scopa-sim -- dist --player {player} --hands {hands} --seed {seed}`.\n")
+        .unwrap();
     writeln!(out, "pub const HAND_DIST: [[f64; 16]; 16] = [").unwrap();
     for row in &total {
         let cells: Vec<String> = row.iter().map(|&k| format!("{:.6}", k as f64 / n)).collect();
@@ -397,7 +438,8 @@ fn main() -> ExitCode {
     }
 
     if has("--panel") {
-        let opponents: Vec<(&str, &str)> = if has("--strong") { STRONG.to_vec() } else { STYLES.iter().chain(STRONG).copied().collect() };
+        let opponents: Vec<(&str, &str)> =
+            if has("--strong") { STRONG.to_vec() } else { STYLES.iter().chain(STRONG).copied().collect() };
         println!("{} contro il pannello di avversari, {} partite ciascuno", describe(&player), deals * 2);
         let mut md = String::new();
         panel_rows(&player, &opponents, deals, seed, &mut md);
@@ -413,7 +455,14 @@ fn main() -> ExitCode {
     let (pf, pa) = s.per_hand();
     println!("{} contro {}", describe(&player), describe(&opponent));
     println!("Partite: {} ({} mazzi in duplicato), seme {seed}", s.games, deals);
-    println!("Vinte {} ({:.2}%, IC 95% {:.2}% - {:.2}%, Elo {:+.0})", s.wins, s.score() * 100.0, lo * 100.0, hi * 100.0, s.elo());
+    println!(
+        "Vinte {} ({:.2}%, IC 95% {:.2}% - {:.2}%, Elo {:+.0})",
+        s.wins,
+        s.score() * 100.0,
+        lo * 100.0,
+        hi * 100.0,
+        s.elo()
+    );
     println!("Smazzate a partita {:.2}, punti a smazzata {:.2} - {:.2}", s.hands as f64 / s.games as f64, pf, pa);
     println!("Tempo: {:.1}s", start.elapsed().as_secs_f64());
     ExitCode::SUCCESS

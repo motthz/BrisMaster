@@ -74,7 +74,15 @@ pub fn for_each_capture(table: CardSet, c: Card, mut f: impl FnMut(CardSet)) -> 
             n += 1;
         }
     }
-    fn dfs(cand: &[Card], start: usize, left: u8, acc: CardSet, depth: u8, found: &mut bool, f: &mut dyn FnMut(CardSet)) {
+    fn dfs(
+        cand: &[Card],
+        start: usize,
+        left: u8,
+        acc: CardSet,
+        depth: u8,
+        found: &mut bool,
+        f: &mut dyn FnMut(CardSet),
+    ) {
         for i in start..cand.len() {
             let v = value(cand[i]);
             if v > left {
@@ -258,7 +266,11 @@ impl Game {
         }
         let mut ok = false;
         let any = for_each_capture(self.table, m.card, |t| ok |= t == m.take);
-        if any { ok } else { m.take.is_empty() }
+        if any {
+            ok
+        } else {
+            m.take.is_empty()
+        }
     }
 
     /// Vero se dopo questa giocata la smazzata finisce (l'ultima carta non fa scopa).
@@ -387,7 +399,11 @@ impl Observation {
         }
         let mut ok = false;
         let any = for_each_capture(self.table, m.card, |t| ok |= t == m.take);
-        if any { ok } else { m.take.is_empty() }
+        if any {
+            ok
+        } else {
+            m.take.is_empty()
+        }
     }
 
     /// Applica la mossa di chi è di turno. Se le mani finiscono e il mazzo no, l'avversario
@@ -584,7 +600,10 @@ mod tests {
                     o.hand = g.hands[0];
                 }
                 let n = Observation::of(&g, 0, [0, 0]);
-                assert_eq!((o.table, o.captured, o.scope, o.deck_len, o.to_move), (n.table, n.captured, n.scope, n.deck_len, n.to_move));
+                assert_eq!(
+                    (o.table, o.captured, o.scope, o.deck_len, o.to_move),
+                    (n.table, n.captured, n.scope, n.deck_len, n.to_move)
+                );
             }
             assert!(o.is_over());
             assert_eq!(o.score(), g.score());

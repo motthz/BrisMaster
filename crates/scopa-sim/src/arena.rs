@@ -49,8 +49,15 @@ impl MatchStats {
     pub fn to_line(&self) -> String {
         format!(
             "{} {} {} {} {} {} {} {} {}",
-            self.games, self.wins, self.seat_wins[0], self.seat_wins[1], self.hands, self.points_for,
-            self.points_against, self.scope_for, self.sum
+            self.games,
+            self.wins,
+            self.seat_wins[0],
+            self.seat_wins[1],
+            self.hands,
+            self.points_for,
+            self.points_against,
+            self.scope_for,
+            self.sum
         )
     }
 
@@ -108,7 +115,9 @@ impl MatchStats {
 
 /// Mazzo della smazzata `hand` del mazzo `deal`.
 pub fn deck_order(seed: u64, deal: u64, hand: u64) -> Vec<Card> {
-    let mut rng = SmallRng::seed_from_u64(seed ^ deal.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ hand.wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
+    let mut rng = SmallRng::seed_from_u64(
+        seed ^ deal.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ hand.wrapping_mul(0xC2B2_AE3D_27D4_EB4F),
+    );
     let mut order: Vec<Card> = (0..NUM_CARDS as u8).collect();
     order.shuffle(&mut rng);
     order
@@ -116,7 +125,12 @@ pub fn deck_order(seed: u64, deal: u64, hand: u64) -> Vec<Card> {
 
 /// Partita a 11 punti: nella prima smazzata distribuisce il posto 1 (gioca per primo il posto 0),
 /// poi chi distribuisce si alterna.
-pub fn play_match(players: &mut [Box<dyn Player>; 2], seed: u64, deal: u64, rng: &mut SmallRng) -> ([u8; 2], u64, [u64; 2]) {
+pub fn play_match(
+    players: &mut [Box<dyn Player>; 2],
+    seed: u64,
+    deal: u64,
+    rng: &mut SmallRng,
+) -> ([u8; 2], u64, [u64; 2]) {
     let mut score = [0u8; 2];
     let mut scope = [0u64; 2];
     let mut dealer = 1u8;
@@ -138,7 +152,12 @@ pub fn play_match(players: &mut [Box<dyn Player>; 2], seed: u64, deal: u64, rng:
     }
 }
 
-pub fn run_deals(player: &str, opponent: &str, deals: std::ops::Range<u64>, seed: u64) -> Result<Vec<MatchStats>, String> {
+pub fn run_deals(
+    player: &str,
+    opponent: &str,
+    deals: std::ops::Range<u64>,
+    seed: u64,
+) -> Result<Vec<MatchStats>, String> {
     make_player(player)?;
     make_player(opponent)?;
     Ok(deals
@@ -174,7 +193,9 @@ pub fn run_deals(player: &str, opponent: &str, deals: std::ops::Range<u64>, seed
 pub fn prefixes(per_deal: &[MatchStats], checkpoints: &[u64]) -> Vec<MatchStats> {
     checkpoints
         .iter()
-        .map(|&n| per_deal[..(n as usize).min(per_deal.len())].iter().copied().fold(MatchStats::default(), MatchStats::merge))
+        .map(|&n| {
+            per_deal[..(n as usize).min(per_deal.len())].iter().copied().fold(MatchStats::default(), MatchStats::merge)
+        })
         .collect()
 }
 

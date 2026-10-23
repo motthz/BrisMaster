@@ -10,7 +10,12 @@ pub use game::{Game, HandScore, Move, Observation};
 use rand::rngs::SmallRng;
 
 /// Gioca una smazzata intera. `match_score` è il punteggio della partita prima della smazzata.
-pub fn play_hand(mut g: Game, players: &mut [&mut dyn Player; 2], match_score: [u8; 2], rng: &mut SmallRng) -> HandScore {
+pub fn play_hand(
+    mut g: Game,
+    players: &mut [&mut dyn Player; 2],
+    match_score: [u8; 2],
+    rng: &mut SmallRng,
+) -> HandScore {
     while !g.is_over() {
         let p = g.to_move;
         let obs = Observation::of(&g, p, match_score);

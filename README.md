@@ -88,6 +88,8 @@ Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro
 | `crates/core` | Regole, motore, avversari di riferimento, statistiche |
 | `crates/sim` | Banco di prova per le simulazioni massive |
 | `crates/app` | App Windows (egui) e aggiornamento automatico |
+| `crates/scala40` | Scala 40: regole, combinazioni, motore, stili di avversario |
+| `crates/scala40-sim` | Banco di prova di Scala 40 |
 
 ## Pubblicare una nuova versione
 

@@ -114,7 +114,6 @@ fn total(v: &[arena::MatchStats]) -> arena::MatchStats {
 fn report(player: &str, matches: u64, seed: u64) -> String {
     use std::fmt::Write as _;
     let mut md = String::new();
-    let t0 = Instant::now();
     writeln!(md, "# Scala 40: rapporto del banco di prova\n").unwrap();
     writeln!(
         md,
@@ -172,8 +171,6 @@ fn report(player: &str, matches: u64, seed: u64) -> String {
         let (lo, hi) = p.score_ci95();
         writeln!(md, "| {n} | {:.1}% | {:.1}–{:.1}% |", p.score() * 100.0, lo * 100.0, hi * 100.0).unwrap();
     }
-    writeln!(md, "\nTempo totale: {:.0} minuti su {} core.\n", t0.elapsed().as_secs_f64() / 60.0, rayon::current_num_threads())
-        .unwrap();
     writeln!(md, "Per rifarlo:\n\n```\ncargo run --release -p scala40-sim -- report --player {player} --matches {matches} --seed {seed} --out bench/SCALA40.md\n```").unwrap();
     md
 }

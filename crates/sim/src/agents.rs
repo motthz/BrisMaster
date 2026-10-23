@@ -124,7 +124,7 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
     if let Some((ver, rest)) = spec.split_once('/') {
         return match ver {
             "v0.1.0" | "v0.1.1" => v0_1_1::make(rest),
-            "v0.2.0" => v0_2_0::make(rest),
+            "v0.2.0" | "v0.2.1" => v0_2_0::make(rest),
             _ => Err(format!(
                 "versione non disponibile: {ver} (disponibili: {})",
                 RELEASED.join(", ")
@@ -136,7 +136,8 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
 
 /// Versioni rilasciate con cui si può confrontare il motore (la più recente per ultima).
 /// v0.1.0 e v0.1.1 hanno lo stesso motore; dalla v0.2.0 il motore è quello forte (PR #4).
-pub const RELEASED: &[&str] = &["v0.1.1", "v0.2.0"];
+/// v0.2.1 ha lo stesso motore della v0.2.0 (aggiunge solo la registrazione delle partite).
+pub const RELEASED: &[&str] = &["v0.1.1", "v0.2.0", "v0.2.1"];
 
 /// Genera l'adattatore per una versione rilasciata del crate `briscola-core`.
 /// Per aggiungere una versione: dipendenza in Cargo.toml, `legacy!`, voce in `make_agent` e `RELEASED`.
@@ -195,7 +196,7 @@ mod tests {
 
     #[test]
     fn specs_parse() {
-        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "v0.2.0/engine:20", "followsuit"] {
+        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "v0.2.0/engine:20", "v0.2.1/engine:20", "followsuit"] {
             assert!(make_agent(s).is_ok(), "{s}");
         }
         assert!(make_agent("v9.9.9/engine:20").is_err());

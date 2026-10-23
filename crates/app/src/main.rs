@@ -3,6 +3,7 @@
 mod app;
 mod assistant;
 mod cards_ui;
+mod record;
 mod update;
 
 fn main() -> eframe::Result {

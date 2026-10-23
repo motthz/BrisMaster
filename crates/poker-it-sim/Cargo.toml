@@ -1,0 +1,10 @@
+[package]
+name = "poker-it-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+poker-it = { path = "../poker-it" }
+rand = { version = "0.8", features = ["small_rng"] }
+rayon = "1.10"

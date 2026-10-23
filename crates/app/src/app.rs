@@ -65,6 +65,7 @@ struct Record {
 enum Mode {
     Gioca,
     Assistente,
+    PokerIt,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -195,6 +196,7 @@ pub struct BrisApp {
     games_started: u32,
     update: UpdateState,
     assistant: Assistant,
+    poker_it: crate::poker_it::PokerIt,
 }
 
 impl BrisApp {
@@ -218,6 +220,7 @@ impl BrisApp {
             games_started: 1,
             update: UpdateState::Idle,
             assistant: Assistant::default(),
+            poker_it: crate::poker_it::PokerIt::load(cc.storage),
         };
         if app.settings.auto_update {
             app.check_updates();
@@ -312,7 +315,11 @@ impl BrisApp {
         ui.horizontal(|ui| {
             ui.heading(RichText::new("BrisMaster").strong().color(cards_ui::GOLD));
             ui.separator();
-            for (m, label) in [(Mode::Gioca, "Gioca contro il motore"), (Mode::Assistente, "Assistente")] {
+            for (m, label) in [
+                (Mode::Gioca, "Gioca contro il motore"),
+                (Mode::Assistente, "Assistente"),
+                (Mode::PokerIt, "Poker all'italiana"),
+            ] {
                 let sel = self.settings.mode == m;
                 let text = RichText::new(label).size(16.0);
                 if ui.add(egui::Button::selectable(sel, if sel { text.strong() } else { text })).clicked() {
@@ -320,8 +327,10 @@ impl BrisApp {
                 }
             }
             ui.separator();
-            if self.settings.mode == Mode::Gioca {
-                self.game_controls(ui);
+            match self.settings.mode {
+                Mode::Gioca => self.game_controls(ui),
+                Mode::PokerIt => self.poker_it.top_controls(ui),
+                Mode::Assistente => {}
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.update_widget(ui);
@@ -659,11 +668,15 @@ impl eframe::App for BrisApp {
             ui.add_space(6.0);
         });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
+            if self.settings.mode == Mode::PokerIt {
+                self.poker_it.ui(ui);
+                return;
+            }
             // Tavolo verde a sinistra, pannello informativo a destra.
             let full = ui.available_rect_before_wrap();
             let side_w = match self.settings.mode {
                 Mode::Gioca => 300.0,
-                Mode::Assistente => (full.width() * 0.4).clamp(440.0, 560.0),
+                Mode::Assistente | Mode::PokerIt => (full.width() * 0.4).clamp(440.0, 560.0),
             };
             let split = full.max.x - side_w;
             let left = Rect::from_min_max(full.min, egui::pos2(split, full.max.y));
@@ -682,6 +695,7 @@ impl eframe::App for BrisApp {
                         }
                     });
                 }
+                Mode::PokerIt => {}
                 Mode::Assistente => {
                     let samples = &mut self.settings.assist_samples;
                     ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| self.assistant.side_ui(ui, samples));
@@ -693,6 +707,7 @@ impl eframe::App for BrisApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, "settings", &self.settings);
+        self.poker_it.save(storage);
     }
 }
 

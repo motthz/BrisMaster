@@ -28,6 +28,8 @@ Il motore usa il **Monte Carlo determinizzato** (PIMC):
 3. Quando nel mazzo restano otto carte o meno risolve ogni distribuzione in modo esatto con alfa-beta.
 4. Gioca la carta con la probabilità di vittoria più alta (a parità, quella con più punti attesi).
 
+Nell'Assistente il motore simula di serie 3000 distribuzioni per consiglio (meno di un decimo di secondo su un PC a 4 core).
+
 Il motore vede solo quello che vedrebbe un giocatore: le simulazioni non sbirciano mai la mano avversaria.
 
 ## Test massivi

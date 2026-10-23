@@ -19,12 +19,13 @@ pub(crate) fn engine_cfg(samples: u32) -> EngineConfig {
 #[serde(default)]
 struct Settings {
     auto_update: bool,
-    assist_samples: u32,
+    /// Mondi simulati per ogni consiglio. Nome nuovo: chi aveva il vecchio valore (2000) passa a 3000.
+    assist_worlds: u32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_update: true, assist_samples: 2000 }
+        Settings { auto_update: true, assist_worlds: 3000 }
     }
 }
 
@@ -177,7 +178,7 @@ impl eframe::App for BrisApp {
                 Rect::from_min_max(egui::pos2(split + 14.0, full.min.y + 10.0), full.max - egui::vec2(10.0, 0.0));
             cards_ui::paint_felt(ui.painter(), left);
             ui.painter().vline(split, full.y_range(), Stroke::new(1.0, Color32::from_gray(60)));
-            let samples = &mut self.settings.assist_samples;
+            let samples = &mut self.settings.assist_worlds;
             ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| self.assistant.side_ui(ui, samples));
             ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| self.assistant.table_ui(ui));
         });

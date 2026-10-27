@@ -5,6 +5,7 @@ mod assistant;
 mod blackjack;
 mod cards_ui;
 mod record;
+mod scopa_ui;
 mod update;
 
 fn main() -> eframe::Result {

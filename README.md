@@ -126,6 +126,25 @@ Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro
 | `crates/sim` | Banco di prova per le simulazioni massive |
 | `crates/blackjack` | Blackjack: regole, valore atteso esatto, strategia di base, simulatore |
 | `crates/app` | App Windows (egui) e aggiornamento automatico |
+| `crates/scopa` | Scopa: regole (partita a 11), motore e avversari |
+| `crates/scopa-sim` | Banco di prova della scopa |
+
+## Scopa
+
+Nell'app scegli **Scopa** dal menu in alto. C'è solo l'assistente: indichi chi distribuisce e il punteggio
+della partita, le 4 carte in tavola, le carte che ricevi e ogni giocata dell'avversario (se poteva prendere
+in più modi, scegli cosa ha preso). Il motore ti dice cosa giocare, con la probabilità di vincere la partita
+e la differenza punti attesa nella smazzata.
+
+Il motore campiona le possibili carte dell'avversario e del mazzo, gioca ogni mossa fino a fine smazzata
+e calcola il finale esatto quando il mazzo è finito; ogni smazzata vale per la probabilità di vincere la
+partita a 11 dato il punteggio. I test sono in [bench/SCOPA.md](bench/SCOPA.md):
+
+```
+cargo run --release -p scopa-sim -- report --player engine:400 --deals 4000 --self-deals 4000 --out bench/SCOPA.md
+cargo run --release -p scopa-sim -- --player engine:400 --opponent ismcts:1000 --deals 4000
+```
+
 
 ## Pubblicare una nuova versione
 

@@ -1,0 +1,11 @@
+[package]
+name = "scopa-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+scopa-core = { path = "../scopa" }
+briscola-core = { path = "../core" }
+rand = { version = "0.8", features = ["small_rng"] }
+rayon = "1.10"

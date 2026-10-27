@@ -1,8 +1,5 @@
-//! Dove guardare: monitor e area del tavolo scelti dall'utente (o trovati da soli), e la diagnosi
+//! Dove guardare: monitor e area del tavolo scelti dall'utente (o tutto il monitor), e la diagnosi
 //! da mandare quando la lettura sbaglia.
-//!
-//! Senza un'area scelta, della schermata si tiene solo la zona verde più grande (il panno del
-//! tavolo): così icone, finestre e sfondi del desktop non vengono scambiati per carte.
 
 use super::detect;
 use super::Img;
@@ -52,6 +49,27 @@ impl Img {
         Img { w: x1 - x0, h: y1 - y0, px }
     }
 
+    /// Rimpicciolisce di `k` volte (media dei blocchi k x k).
+    pub fn shrink(&self, k: usize) -> Img {
+        let (w, h) = (self.w / k, self.h / k);
+        let mut px = Vec::with_capacity(w * h);
+        for y in 0..h {
+            for x in 0..w {
+                let mut acc = [0u32; 3];
+                for dy in 0..k {
+                    for dx in 0..k {
+                        let p = self.at(x * k + dx, y * k + dy);
+                        for c in 0..3 {
+                            acc[c] += p[c] as u32;
+                        }
+                    }
+                }
+                px.push(acc.map(|a| (a / (k * k) as u32) as u8));
+            }
+        }
+        Img { w, h, px }
+    }
+
     pub fn save_png(&self, path: &std::path::Path) -> Result<(), String> {
         let raw: Vec<u8> = self.px.iter().flatten().copied().collect();
         let im = image::RgbImage::from_raw(self.w as u32, self.h as u32, raw).ok_or("immagine non valida")?;
@@ -59,82 +77,39 @@ impl Img {
     }
 }
 
-/// Riquadro della zona verde più grande (passo di 4 pixel), se copre almeno il 3% dello schermo.
-pub fn felt_box(img: &Img) -> Option<(usize, usize, usize, usize)> {
-    const S: usize = 4;
-    let (w, h) = (img.w / S, img.h / S);
-    if w == 0 || h == 0 {
-        return None;
-    }
-    let felt: Vec<bool> = (0..w * h).map(|i| detect::is_felt(img.at((i % w) * S, (i / w) * S))).collect();
-    let mut seen = vec![false; w * h];
-    let mut best: Option<(usize, (usize, usize, usize, usize))> = None;
-    let mut stack = Vec::new();
-    for s in 0..w * h {
-        if !felt[s] || seen[s] {
-            continue;
+/// La parte di schermata da leggere: l'area scelta dall'utente, altrimenti tutto il monitor (le
+/// carte si riconoscono dal disegno, il resto del desktop si scarta da solo). Gli schermi molto
+/// grandi si rimpiccioliscono: le carte restano abbastanza grandi e la lettura è più veloce.
+pub fn table(img: &Img, area: &Area) -> Img {
+    let img = match area.rect {
+        Some([l, t, r, b]) => {
+            let (w, h) = (img.w as f32, img.h as f32);
+            img.crop((l * w) as usize, (t * h) as usize, (r * w) as usize, (b * h) as usize)
         }
-        seen[s] = true;
-        stack.push(s);
-        let (mut n, mut x0, mut y0, mut x1, mut y1) = (0, usize::MAX, usize::MAX, 0, 0);
-        while let Some(i) = stack.pop() {
-            n += 1;
-            let (x, y) = (i % w, i / w);
-            x0 = x0.min(x);
-            y0 = y0.min(y);
-            x1 = x1.max(x);
-            y1 = y1.max(y);
-            for (nx, ny) in [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)] {
-                if nx < w && ny < h {
-                    let j = ny * w + nx;
-                    if felt[j] && !seen[j] {
-                        seen[j] = true;
-                        stack.push(j);
-                    }
-                }
-            }
-        }
-        if best.is_none_or(|(bn, _)| n > bn) {
-            best = Some((n, (x0, y0, x1, y1)));
-        }
+        None => img.clone(),
+    };
+    let k = img.w.div_ceil(2000).max(img.h.div_ceil(1300));
+    if k > 1 {
+        img.shrink(k)
+    } else {
+        img
     }
-    let (n, (x0, y0, x1, y1)) = best?;
-    if n * 100 < 3 * w * h {
-        return None;
-    }
-    Some((x0 * S, y0 * S, ((x1 + 1) * S).min(img.w), ((y1 + 1) * S).min(img.h)))
 }
 
-/// La parte di schermata da leggere: l'area scelta dall'utente, altrimenti il panno verde.
-pub fn table(img: &Img, area: &Area) -> Option<Img> {
-    if let Some([l, t, r, b]) = area.rect {
-        let (w, h) = (img.w as f32, img.h as f32);
-        return Some(img.crop((l * w) as usize, (t * h) as usize, (r * w) as usize, (b * h) as usize));
-    }
-    let (x0, y0, x1, y1) = felt_box(img)?;
-    Some(img.crop(x0, y0, x1, y1))
-}
-
-/// Copia dell'immagine con disegnato quello che la lettura ha trovato: in verde le carte scoperte
-/// usate, in rosso le zone chiare scartate, in blu i dorsi.
+/// Copia dell'immagine con disegnato quello che la lettura ha trovato: in verde le carte
+/// riconosciute (intere, anche dove sono coperte), in rosso le zone chiare scartate, in blu i dorsi.
 pub fn diagnose(img: &Img) -> Img {
     let mut out = img.clone();
-    for b in detect::blobs(img) {
-        let color = if detect::is_face(&b) {
-            [0, 220, 0]
-        } else if b.white <= 0.3 && b.felt > 0.3 {
-            [40, 90, 255]
-        } else {
-            [230, 0, 0]
-        };
-        let r = b.rect;
+    let a = detect::analyze(img);
+    let mut draw = |r: &detect::RotRect, color: [u8; 3]| {
         for k in 0..400 {
             let t = k as f32 / 400.0 * 4.0;
+            let (hw, hh) = (r.hw, r.hh);
             let (a, bb) = match t as u32 {
-                0 => (-r.hw + 2.0 * r.hw * t.fract(), -r.hh),
-                1 => (r.hw, -r.hh + 2.0 * r.hh * t.fract()),
-                2 => (r.hw - 2.0 * r.hw * t.fract(), r.hh),
-                _ => (-r.hw, r.hh - 2.0 * r.hh * t.fract()),
+                0 => (-hw + 2.0 * hw * t.fract(), -hh),
+                1 => (hw, -hh + 2.0 * hh * t.fract()),
+                2 => (hw - 2.0 * hw * t.fract(), hh),
+                _ => (-hw, hh - 2.0 * hh * t.fract()),
             };
             for d in -1..=1 {
                 let x = r.cx + r.u.0 * a + r.v.0 * bb + d as f32;
@@ -145,6 +120,16 @@ pub fn diagnose(img: &Img) -> Img {
                 }
             }
         }
+    };
+    for b in &a.blobs {
+        if b.light() {
+            draw(&b.rect, [230, 0, 0]);
+        } else if b.bg > 0.3 {
+            draw(&b.rect, [40, 90, 255]);
+        }
+    }
+    for c in &a.cards {
+        draw(&c.rect, [0, 220, 0]);
     }
     out
 }
@@ -257,7 +242,7 @@ impl AreaPicker {
                 self.grab(ui.ctx());
             }
         });
-        ui.label("Apri la partita nel browser, poi trascina un rettangolo attorno al tavolo verde (carte tue, carte in tavola e mazzo).");
+        ui.label("Apri la partita nel browser, poi trascina un rettangolo attorno al tavolo (carte tue, carte in tavola e mazzo).");
         if let Some(e) = &self.error {
             ui.label(RichText::new(e).color(Color32::LIGHT_RED));
         }
@@ -317,7 +302,7 @@ fn open_dir(d: &std::path::Path) {
 mod tests {
     use super::*;
 
-    /// Il panno del sito si ritaglia da solo anche dentro uno schermo più grande con altre cose attorno.
+    /// Il tavolo del sito si legge anche dentro uno schermo grande con altre cose attorno.
     #[test]
     fn finds_the_table_on_a_busy_screen() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/sito_briscola.png");
@@ -342,12 +327,18 @@ mod tests {
                 screen.px[(y + oy) * screen.w + x + ox] = site.at(x, y);
             }
         }
-        let (x0, y0, x1, y1) = felt_box(&screen).expect("tavolo");
-        assert!(x0 <= ox + 8 && y0 <= oy + 8 && x1 + 8 >= ox + site.w && y1 + 8 >= oy + site.h, "{x0},{y0},{x1},{y1}");
-        assert!(x0 + 40 >= ox && y0 + 40 >= oy, "niente desktop attorno: {x0},{y0}");
-        let table = table(&screen, &Area::default()).unwrap();
+        // Una carta uguale fuori dal tavolo (un'immagine in un'altra finestra) non conta.
+        for y in 0..186 {
+            for x in 0..125 {
+                screen.px[(1120 + y) * screen.w + 100 + x] = site.at(585 + x, 787 + y);
+            }
+        }
+        let table = table(&screen, &Area::default());
+        assert!(table.w <= 2000, "schermo rimpicciolito");
         let scene = detect::scene(&table);
         assert_eq!(scene.hand.len(), 2);
         assert!(scene.opp_slot.is_some() && scene.my_slot.is_some() && scene.trump.is_some());
+        let asso = scene.hand[1].best(briscola_core::cards::CardSet::FULL).unwrap().0;
+        assert_eq!(asso, briscola_core::cards::make(1, 0));
     }
 }

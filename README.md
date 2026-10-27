@@ -12,7 +12,7 @@ Giochi: **briscola**, **scopa**, **scala 40**, **burraco**, **sette e mezzo**, *
 
 1. Scarica `BrisMaster.exe` dall'[ultima release](https://github.com/motthz/BrisMaster/releases/latest).
 2. Mettilo in una cartella tua (per esempio `Documenti\BrisMaster`) e avvialo.
-3. Al primo avvio Windows SmartScreen può avvisare che l'app non è firmata: *Ulteriori informazioni → Esegui comunque*.
+3. Al primo avvio Windows SmartScreen può avvisare che l'app non è firmata: *Ulteriori informazioni → Esegui comunque*. Se l'antivirus la blocca, vedi [docs/ANTIVIRUS.md](docs/ANTIVIRUS.md).
 
 Gli aggiornamenti sono automatici: all'avvio l'app controlla le release di questo repository e, se ce n'è una più recente, mostra il pulsante **Installa**. L'app scarica la nuova versione, sostituisce l'eseguibile e si riavvia.
 

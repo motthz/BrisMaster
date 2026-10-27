@@ -59,4 +59,9 @@ jobs:
           files: |
             BrisMaster.exe
             BrisMaster.exe.sha256
+          body: |
+            **Download:** scarica `BrisMaster.exe` qui sotto, nella sezione **Assets** di questa pagina, e mettilo al posto di quello vecchio (per esempio in `Documenti\BrisMaster`).
+            Le app già installate si aggiornano anche da sole all'avvio.
+
+            Se Windows SmartScreen avvisa: *Ulteriori informazioni → Esegui comunque*. Se l'antivirus blocca l'exe: [come sbloccarlo](https://github.com/motthz/BrisMaster/blob/main/docs/ANTIVIRUS.md).
           generate_release_notes: true

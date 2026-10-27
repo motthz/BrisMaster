@@ -92,7 +92,14 @@ fn deals_cached(player: &str, opponent: &str, deals: u64, seed: u64) -> Vec<Matc
     let mut out = Vec::with_capacity(deals as usize);
     for start in (0..deals).step_by(CHUNK as usize) {
         let end = (start + CHUNK).min(deals);
-        let key: String = format!("{player}_{opponent}_{seed}_{start}-{end}")
+        // Le reti fanno parte del giocatore: con reti diverse i risultati salvati non valgono.
+        let nets: String = ["BRISCOLA_NET", "BRISCOLA_POLICY"]
+            .iter()
+            .filter(|_| format!("{player} {opponent}").contains("net:") || format!("{player} {opponent}").contains("infer:"))
+            .filter_map(|v| std::env::var(v).ok())
+            .map(|p| format!("_{}", std::path::Path::new(&p).file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned())))
+            .collect();
+        let key: String = format!("{player}_{opponent}_{seed}_{start}-{end}{nets}")
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
             .collect();

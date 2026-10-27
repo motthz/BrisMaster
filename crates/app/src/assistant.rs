@@ -564,12 +564,15 @@ impl Assistant {
                 if let Some(c) = cards_ui::parse_card(&self.keys) {
                     self.keys.clear();
                     let seen = self.vision.confirm.take();
-                    let drawn = self.new_hand_view().map(|v| v.img.clone());
-                    let was_draw = matches!(self.pos.step(), Step::Draw(_));
+                    // La carta che l'utente scrive a mano si impara dall'immagine sullo schermo:
+                    // la pescata (l'unica carta della mano non ancora nota) o quella dell'avversario.
+                    let shown = match self.pos.step() {
+                        Step::Draw(_) => self.new_hand_view().map(|v| v.img.clone()),
+                        Step::OppMove => self.opp_view_of(c),
+                        _ => None,
+                    };
                     if self.enter(c) {
-                        if let Some(v) = seen.filter(|v| !v.partial) {
-                            self.vision.memory.lock().unwrap().remember(&v.img, c);
-                        } else if let Some(img) = drawn.filter(|_| was_draw) {
+                        if let Some(img) = seen.filter(|v| !v.partial).map(|v| v.img).or(shown) {
                             self.vision.memory.lock().unwrap().remember(&img, c);
                         }
                     } else {
@@ -720,6 +723,14 @@ impl Assistant {
         } else {
             None
         }
+    }
+
+    /// L'immagine della carta dell'avversario sullo schermo, se somiglia a `c` più che alle carte
+    /// già giocate (altrimenti è ancora quella della presa precedente).
+    fn opp_view_of(&self, c: Card) -> Option<Img> {
+        let v = self.vision.scene.as_ref()?.opp_slot.as_ref()?;
+        let old = self.pos.played.iter().map(|p| v.scores[p as usize]).fold(f32::MIN, f32::max);
+        (v.scores[c as usize] > old).then(|| v.img.clone())
     }
 
     /// L'utente conferma la carta riconosciuta con poca sicurezza: si inserisce e si ricorda.

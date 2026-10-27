@@ -377,9 +377,13 @@ pub fn warp(img: &Img, r: &RotRect) -> Img {
 }
 
 /// Somiglianza minima con una carta di riferimento per credere che sia una carta.
-const ACCEPT: f32 = 0.40;
+const ACCEPT: f32 = 0.45;
 /// Lo stesso per una carta vista in parte: con meno disegno da confrontare serve più somiglianza.
 const ACCEPT_PARTIAL: f32 = 0.50;
+
+/// Fascia (frazione dell'altezza della carta) tolta al confronto dalla parte coperta di una carta
+/// vista in parte.
+const HIDDEN_EDGE: f32 = 0.07;
 
 /// Proporzione tipica larghezza/altezza di una carta sullo schermo.
 const RATIO: f32 = 0.62;
@@ -458,10 +462,17 @@ fn as_partial(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Option<Found>
                 let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: width / 2.0, hh: card_l / 2.0 };
                 // Centro del pezzo visibile lungo v, rispetto al centro della carta.
                 let off = -side * head * missing / 2.0;
-                let vis = [
+                let mut vis = [
                     ((off - seen / 2.0) / card_l + 0.5).clamp(0.0, 1.0),
                     ((off + seen / 2.0) / card_l + 0.5).clamp(0.0, 1.0),
                 ];
+                // Dalla parte coperta il pezzo chiaro comprende spesso il bordo bianco di quello che
+                // copre (il mazzo): quella fascia non si confronta.
+                if side * head > 0.0 {
+                    vis[1] -= HIDDEN_EDGE;
+                } else {
+                    vis[0] += HIDDEN_EDGE;
+                }
                 tries.push(Try::new(img, rect, vis));
             }
         }
@@ -474,6 +485,44 @@ fn as_partial(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Option<Found>
         .map(Try::finish)
         .filter(|f| f.score >= ACCEPT_PARTIAL)
         .max_by(|a, b| a.score.total_cmp(&b.score))
+}
+
+/// Più carte di misura `card_l` x `card_w` affiancate in una zona sola (la mano a ventaglio), quando
+/// l'erosione non basta a dividerle: si cerca una carta a ciascuna estremità della fila, provando
+/// qualche piccola rotazione (le carte a ventaglio sono un po' girate). Le carte in mezzo si
+/// ritrovano dopo, togliendo quelle delle estremità.
+fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
+    let mut out = Vec::new();
+    // La fila corre lungo l'asse più lungo di una carta; l'altro lato è alto quanto una carta.
+    for (row, across, len, height) in [(r.u, r.v, 2.0 * r.hw, 2.0 * r.hh), (r.v, r.u, 2.0 * r.hh, 2.0 * r.hw)] {
+        if len < 1.2 * card_w || !(0.8..=1.25).contains(&(height / card_l)) {
+            continue;
+        }
+        for side in [-1.0f32, 1.0] {
+            let off = side * (len - card_w) / 2.0;
+            let (cx, cy) = (r.cx + row.0 * off, r.cy + row.1 * off);
+            let mut tries = Vec::new();
+            for deg in [-8.0f32, -4.0, 0.0, 4.0, 8.0] {
+                let (sin, cos) = deg.to_radians().sin_cos();
+                // L'asse verticale della carta, girato; la testa dalle due parti.
+                let v = (across.0 * cos - across.1 * sin, across.0 * sin + across.1 * cos);
+                for v in [v, (-v.0, -v.1)] {
+                    let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: card_w / 2.0, hh: height.min(card_l) / 2.0 };
+                    tries.push(Try::new(img, rect, WHOLE));
+                }
+            }
+            if let Some(t) = tries.into_iter().max_by(|a, b| a.m.top().total_cmp(&b.m.top())) {
+                let f = t.finish();
+                if f.score >= ACCEPT {
+                    out.push(f);
+                }
+            }
+        }
+        if !out.is_empty() {
+            break;
+        }
+    }
+    out
 }
 
 /// Toglie dalla maschera il rettangolo (allargato di due pixel).
@@ -489,6 +538,15 @@ fn clear(mask: &mut [bool], w: usize, h: usize, r: &RotRect) {
             }
         }
     }
+}
+
+/// Applica `f` a ogni elemento, in parallelo (un thread per elemento: le zone sono poche).
+fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let f = &f;
+    std::thread::scope(|s| {
+        let handles: Vec<_> = items.iter().map(|it| s.spawn(move || f(it))).collect();
+        handles.into_iter().map(|h| h.join().expect("lettura di una carta")).collect()
+    })
 }
 
 /// Tutto quello che si è visto sullo schermo.
@@ -510,10 +568,12 @@ pub fn analyze(img: &Img) -> Analysis {
     let base = blobs_r(img, &paper, 1);
     let mut cards: Vec<Found> = Vec::new();
     let mut rest: Vec<Blob> = Vec::new();
-    for b in base.iter().filter(|b| b.light()) {
-        match card_shaped(&b.rect).then(|| as_full(img, &b.rect)).flatten() {
+    let light: Vec<Blob> = base.iter().copied().filter(|b| b.light()).collect();
+    let found = par_map(&light, |b| card_shaped(&b.rect).then(|| as_full(img, &b.rect)).flatten());
+    for (b, f) in light.into_iter().zip(found) {
+        match f {
             Some(f) => cards.push(f),
-            None => rest.push(*b),
+            None => rest.push(b),
         }
     }
     let median = |mut v: Vec<f32>| {
@@ -524,6 +584,7 @@ pub fn analyze(img: &Img) -> Analysis {
     // Si erode di più, finché la zona si divide in pezzi della misura delle carte già trovate (o,
     // se non ce ne sono ancora, in pezzi lunghi almeno metà della zona) che sono carte.
     let known_l = (!cards.is_empty()).then(|| median(cards.iter().map(|c| c.rect.long()).collect()));
+    let known_w = (!cards.is_empty()).then(|| median(cards.iter().map(|c| c.rect.short()).collect()));
     let mut levels: Vec<(usize, Vec<Blob>)> = Vec::new();
     let mut leftover = Vec::new();
     let mut was_split = false;
@@ -547,6 +608,11 @@ pub fn analyze(img: &Img) -> Analysis {
                 .collect();
             if !split.is_empty() {
                 break;
+            }
+        }
+        if split.is_empty() && merged {
+            if let (Some(l), Some(w)) = (known_l, known_w) {
+                split = ends(img, &b.rect, l, w);
             }
         }
         if split.is_empty() {
@@ -579,17 +645,36 @@ pub fn analyze(img: &Img) -> Analysis {
             }
         }
     }
-    let card_l = median(cards.iter().map(|c| c.rect.long()).collect());
-    let card_w = median(cards.iter().map(|c| c.rect.short()).collect());
-    // Carte coperte in parte.
-    for b in leftover {
-        if cards.iter().any(|c| c.rect.contains(b.rect.cx, b.rect.cy)) {
-            continue;
-        }
-        if let Some(f) = as_partial(img, &b.rect, card_l, card_w) {
-            cards.push(f);
+    // Un pezzo di carta attaccato al bordo bianco di qualcos'altro (la briscola contro il bordo
+    // del mazzo, quando lo schermo è un po' sfocato) forma una zona poco bianca che si scarta:
+    // con un'erosione leggera i bordi sottili spariscono e il pezzo torna da solo.
+    if !levels.iter().any(|(k, _)| *k == 3) {
+        levels.push((3, blobs_r(img, &paper, 3)));
+    }
+    let thin = &levels.iter().find(|(k, _)| *k == 3).unwrap().1;
+    for q in thin.iter().filter(|q| q.light()) {
+        let known = base.iter().filter(|b| b.light()).any(|b| b.rect.contains(q.rect.cx, q.rect.cy))
+            || cards.iter().any(|c| c.rect.contains(q.rect.cx, q.rect.cy));
+        if !known {
+            leftover.push(*q);
         }
     }
+    let card_l = median(cards.iter().map(|c| c.rect.long()).collect());
+    let card_w = median(cards.iter().map(|c| c.rect.short()).collect());
+    // Una "carta" molto più corta delle altre è il pezzo di una carta coperta in parte (la briscola
+    // sotto il mazzo ha quasi le proporzioni di una carta): si tiene la lettura che somiglia di più.
+    for c in cards.iter_mut() {
+        if c.rect.long() < 0.85 * card_l {
+            if let Some(f) = as_partial(img, &c.rect, card_l, card_w) {
+                if f.score > c.score {
+                    *c = f;
+                }
+            }
+        }
+    }
+    // Carte coperte in parte.
+    leftover.retain(|b| !cards.iter().any(|c| c.rect.contains(b.rect.cx, b.rect.cy)));
+    cards.extend(par_map(&leftover, |b| as_partial(img, &b.rect, card_l, card_w)).into_iter().flatten());
     // La stessa carta trovata due volte (per esempio divisa da una scritta): si tiene la migliore.
     cards.sort_by(|a, b| b.score.total_cmp(&a.score));
     let mut kept: Vec<Found> = Vec::new();

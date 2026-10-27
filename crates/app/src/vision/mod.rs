@@ -345,6 +345,36 @@ mod tests {
         check(&read(&img));
     }
 
+    /// Una carta vista intera (in mano) si riconosce con sicurezza anche quando torna sotto il mazzo,
+    /// vista solo in parte: la memoria confronta la fascia che si vede.
+    #[test]
+    fn memory_recognizes_a_covered_trump() {
+        let mut img = site();
+        // L'asso di coppe della mano, girato di un quarto (la testa a destra) come la briscola:
+        // se ne vede solo la parte che esce dal mazzo.
+        let (x0, y0, w, h) = (588usize, 796usize, 112usize, 168usize);
+        let keep = img.clone();
+        for y in 0..w.min(110) {
+            for x in 0..110 {
+                // Colonna x della briscola visibile = riga dell'asso, contata dalla testa.
+                let (sx, sy) = (x0 + y, y0 + (h - 1) - (h - 110 + x));
+                img.px[(805 + y) * img.w + 322 + x] = keep.at(sx, sy);
+            }
+        }
+        let mem = Mutex::new(Memory::in_memory());
+        let first = read_briscola(&img, &mem).expect("carte");
+        let asso = cards::make(1, 0);
+        let t = first.trump.as_ref().expect("briscola");
+        // La partita la inserisce dalla mano, e la ricorda.
+        mem.lock().unwrap().remember(&first.hand[1].img, first.hand[1].vis, asso);
+        let again = read_briscola(&img, &mem).expect("carte");
+        let t2 = again.trump.as_ref().expect("briscola");
+        let (c, margin) = t2.best(CardSet::FULL).unwrap();
+        let (_, before) = t.best(CardSet::FULL).unwrap();
+        assert_eq!(cards::name(c), cards::name(asso));
+        assert!(margin >= 1.4 && margin > before + 3.0, "distacco {before} -> {margin}");
+    }
+
     /// Niente carte scambiate per carte: i riquadri del sito, i dorsi e il mazzo non sono carte.
     #[test]
     fn ignores_what_is_not_a_card() {
@@ -367,7 +397,7 @@ mod tests {
         let s = screenshot();
         let mut mem = Memory::in_memory();
         let fante = cards::make(0, 7);
-        mem.remember(&s.hand[0].img, fante);
+        mem.remember(&s.hand[0].img, WHOLE, fante);
         let mut v = s.hand[0].clone();
         recognize(&mut v, &mem);
         let (c, margin) = v.best(CardSet::FULL).unwrap();
@@ -438,5 +468,89 @@ mod tests {
         }
         let s = read_scopa(&img, &Mutex::new(Memory::in_memory())).expect("tavolo");
         assert!(s.hand.is_empty() && s.table.is_empty());
+    }
+}
+
+/// Banco di prova del riconoscimento: lo screenshot del sito a varie scale, con il mazzo che copre
+/// di più la briscola e sfocato. Stampa per ogni lettura se la carta è giusta e il distacco (in
+/// somiglianza: 0.175 basta per inserirla senza conferma), più il tempo di una lettura.
+/// `cargo test --release -p brismaster banco -- --ignored --nocapture`
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use briscola_core::cards;
+
+    fn resize(img: &Img, k: f32) -> Img {
+        let raw: Vec<u8> = img.px.iter().flatten().copied().collect();
+        let im = image::RgbImage::from_raw(img.w as u32, img.h as u32, raw).unwrap();
+        let (w, h) = ((img.w as f32 * k) as u32, (img.h as f32 * k) as u32);
+        let r = image::imageops::resize(&im, w, h, image::imageops::FilterType::Triangle);
+        Img { w: w as usize, h: h as usize, px: r.pixels().map(|p| p.0).collect() }
+    }
+
+    fn report(tag: &str, img: &Img) -> (usize, usize) {
+        let want = [
+            ("briscola", cards::make(0, 8)),
+            ("avv", cards::make(3, 1)),
+            ("tua", cards::make(2, 6)),
+            ("mano0", cards::make(0, 7)),
+            ("mano1", cards::make(1, 0)),
+        ];
+        let s = read_briscola(img, &Mutex::new(memory::Memory::in_memory()));
+        let mut line = format!("{tag:<14}");
+        let (mut ok, mut auto) = (0, 0);
+        let views: Vec<Option<CardView>> = match &s {
+            Some(s) => {
+                let hand = |i: usize| s.hand.get(i).cloned();
+                vec![s.trump.clone(), s.opp_slot.clone(), s.my_slot.clone(), hand(0), hand(1)]
+            }
+            None => vec![None; 5],
+        };
+        for ((name, c), v) in want.iter().zip(views) {
+            match v.and_then(|v| v.best(cards::CardSet::FULL)) {
+                Some((b, m)) => {
+                    let good = b == *c;
+                    ok += good as usize;
+                    auto += (good && m >= 1.4) as usize;
+                    line += &format!(" {name}:{}{:.2}", if good { "ok " } else { "NO " }, m / 8.0);
+                }
+                None => line += &format!(" {name}:--      "),
+            }
+        }
+        println!("{line}");
+        (ok, auto)
+    }
+
+    #[test]
+    #[ignore]
+    fn banco() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/sito_briscola.png");
+        let site = capture::load_png(&path).unwrap();
+        let (mut ok, mut auto, mut n) = (0, 0, 0);
+        for k in [1.0f32, 0.85, 0.7, 0.6, 0.5, 0.42] {
+            let (a, b) = report(&format!("scala {k}"), &resize(&site, k));
+            (ok, auto, n) = (ok + a, auto + b, n + 5);
+        }
+        // Mazzo spostato sopra la briscola: se ne vede meno.
+        for dx in [15usize, 30, 45] {
+            let mut img = site.clone();
+            let keep = site.clone();
+            for y in 770..955 {
+                for x in (210..330).rev() {
+                    img.px[y * img.w + x + dx] = keep.at(x, y);
+                }
+            }
+            let (a, b) = report(&format!("mazzo +{dx}"), &img);
+            (ok, auto, n) = (ok + a, auto + b, n + 5);
+        }
+        // Sfocato (schermo ridimensionato due volte).
+        let (a, b) = report("sfocato", &resize(&resize(&site, 0.55), 1.0 / 0.55));
+        (ok, auto, n) = (ok + a, auto + b, n + 5);
+        println!("giuste {ok}/{n}, automatiche {auto}/{n}");
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            let _ = read_briscola(&site, &Mutex::new(memory::Memory::in_memory()));
+            println!("lettura 1524x1032 in {:?}", t.elapsed());
+        }
     }
 }

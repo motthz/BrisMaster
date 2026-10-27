@@ -200,7 +200,9 @@ pub fn blobs(img: &Img) -> Vec<Blob> {
         if count < min_area {
             continue;
         }
-        let Some(mut rect) = min_area_rect(edge) else { continue };
+        let Some(mut rect) = min_area_rect(edge) else {
+            continue;
+        };
         // Restituisce il pixel tolto dall'erosione (e mezzo pixel di bordo).
         rect.hw += 1.5;
         rect.hh += 1.5;
@@ -347,4 +349,72 @@ fn full_trump(r: &RotRect, card_l: f32) -> (RotRect, bool) {
 
 fn view_of(img: &Img, r: &RotRect, partial: bool) -> CardView {
     CardView { img: warp(img, r), partial, scores: [0.0; 40] }
+}
+
+/// Quello che si vede sul tavolo della scopa in un istante.
+#[derive(Clone, Debug, Default)]
+pub struct ScopaScene {
+    /// Le tue carte, da sinistra a destra.
+    pub hand: Vec<CardView>,
+    /// Le carte scoperte sul panno (in tavola o appena giocate), per righe dall'alto.
+    pub table: Vec<CardView>,
+}
+
+/// Vero se buona parte dello schermo è panno verde (il tavolo è aperto anche se non ci sono carte).
+fn felt_visible(img: &Img) -> bool {
+    let (mut n, mut ok) = (0, 0);
+    for y in (0..img.h).step_by(8) {
+        for x in (0..img.w).step_by(8) {
+            n += 1;
+            ok += is_felt(img.at(x, y)) as usize;
+        }
+    }
+    n > 0 && ok * 5 > n
+}
+
+/// Riga più in basso dello schermo in cui il panno verde occupa almeno un quarto della larghezza.
+fn felt_bottom(img: &Img) -> f32 {
+    for y in (0..img.h).rev().step_by(4) {
+        let felt = (0..img.w).step_by(6).filter(|&x| is_felt(img.at(x, y))).count();
+        if felt * 4 >= img.w / 6 {
+            return y as f32;
+        }
+    }
+    img.h as f32
+}
+
+/// Divide le carte scoperte della scopa fra la tua mano (in basso) e il tavolo (tutte le altre in
+/// piedi). Le carte di traverso (le scope segnate sul mucchio delle prese) e i dorsi si ignorano.
+/// None se sullo schermo non c'è il tavolo; una scena vuota se c'è il tavolo ma nessuna carta.
+pub fn scopa(img: &Img) -> Option<ScopaScene> {
+    let all = blobs(img);
+    let faces: Vec<&Blob> = all.iter().filter(|b| b.white > 0.3 && b.felt > 0.3).collect();
+    let full = |b: &Blob| (0.52..=0.74).contains(&(b.rect.short() / b.rect.long()));
+    let mut longs: Vec<f32> = faces.iter().filter(|b| full(b)).map(|b| b.rect.long()).collect();
+    if longs.is_empty() {
+        return felt_visible(img).then(ScopaScene::default);
+    }
+    longs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let card_l = longs[longs.len() / 2];
+    let sized = |b: &Blob| (0.8..=1.2).contains(&(b.rect.long() / card_l));
+    let upright: Vec<&Blob> = faces.iter().filter(|b| full(b) && sized(b) && !b.rect.landscape()).copied().collect();
+    // La mano sta sul bordo basso del panno: entro una carta e un quarto dal fondo.
+    let hand_from = felt_bottom(img) - 1.25 * card_l;
+    let (mut hand, mut table): (Vec<&Blob>, Vec<&Blob>) = upright.iter().partition(|b| b.rect.cy >= hand_from);
+    hand.sort_by(|a, b| a.rect.cx.partial_cmp(&b.rect.cx).unwrap());
+    // Per righe: due carte sono nella stessa riga se i centri distano meno di mezza carta.
+    table.sort_by(|a, b| a.rect.cy.partial_cmp(&b.rect.cy).unwrap());
+    let mut rows: Vec<Vec<&Blob>> = Vec::new();
+    for b in table {
+        match rows.last_mut() {
+            Some(r) if (b.rect.cy - r[0].rect.cy).abs() < 0.5 * card_l => r.push(b),
+            _ => rows.push(vec![b]),
+        }
+    }
+    let mut table = Vec::new();
+    for mut r in rows {
+        r.sort_by(|a, b| a.rect.cx.partial_cmp(&b.rect.cx).unwrap());
+        table.extend(r.iter().map(|b| view_of(img, &b.rect, false)));
+    }
+    Some(ScopaScene { hand: hand.iter().map(|b| view_of(img, &b.rect, false)).collect(), table })
 }

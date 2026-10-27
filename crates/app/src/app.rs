@@ -180,9 +180,9 @@ impl BrisApp {
         }
     }
 
-    /// La finestra compatta c'è per ora solo per la briscola.
+    /// La finestra compatta c'è per la briscola e la scopa.
     fn compact(&self) -> bool {
-        self.settings.compact && self.settings.game == Gioco::Briscola
+        self.settings.compact && matches!(self.settings.game, Gioco::Briscola | Gioco::Scopa)
     }
 
     /// Ridimensiona la finestra quando si entra o si esce dalla modalità compatta.
@@ -204,7 +204,8 @@ impl BrisApp {
 
     fn compact_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("BrisMaster · Briscola").strong().color(cards_ui::GOLD));
+            let title = format!("BrisMaster · {}", self.settings.game.label());
+            ui.label(RichText::new(title).strong().color(cards_ui::GOLD));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Finestra grande").clicked() {
                     self.settings.compact = false;
@@ -227,7 +228,7 @@ impl BrisApp {
                 });
             ui.separator();
             match self.settings.game {
-                Gioco::Briscola => {
+                Gioco::Briscola | Gioco::Scopa => {
                     if ui
                         .button("Finestra compatta")
                         .on_hover_text("Solo il consiglio e l'inserimento, da tenere accanto al browser")
@@ -243,7 +244,7 @@ impl BrisApp {
                 Gioco::SetteMezzo => self.settemezzo.top_controls(ui, &mut self.settings.settemezzo),
                 Gioco::Blackjack => self.blackjack.top_controls(ui),
                 Gioco::PokerIt => self.poker_it.top_controls(ui),
-                Gioco::Scopa | Gioco::Burraco | Gioco::Holdem => {
+                Gioco::Burraco | Gioco::Holdem => {
                     ui.label(RichText::new("Assistente: descrivi la partita, il motore ti dice cosa fare").weak());
                 }
             }
@@ -319,8 +320,10 @@ impl eframe::App for BrisApp {
                 self.compact_bar(ui);
                 ui.add_space(4.0);
             });
-            let samples = &mut self.settings.assist_worlds;
-            egui::CentralPanel::default().show(ui, |ui| self.assistant.side_ui(ui, samples, true));
+            egui::CentralPanel::default().show(ui, |ui| match self.settings.game {
+                Gioco::Scopa => self.scopa.compact(ui),
+                _ => self.assistant.side_ui(ui, &mut self.settings.assist_worlds, true),
+            });
             return;
         }
         egui::Panel::top("top").show(ui, |ui| {

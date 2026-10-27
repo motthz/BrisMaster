@@ -95,6 +95,7 @@ pub const CARD_W: usize = 100;
 pub const CARD_H: usize = 160;
 
 use briscola_core::cards::{Card, CardSet};
+pub use detect::ScopaScene;
 use memory::Memory;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
@@ -125,21 +126,49 @@ impl CardView {
 }
 
 /// Esito di una lettura dello schermo.
-pub enum Reading {
-    Scene(Scene),
+pub enum Reading<S> {
+    Scene(S),
     /// Nessun tavolo con carte sullo schermo.
     NoTable,
     Error(String),
 }
 
+/// Lettura per la briscola: trova le carte e le riconosce (None se non c'è nessuna carta scoperta).
+pub fn read_briscola(img: &Img, mem: &Memory) -> Option<Scene> {
+    let mut scene = detect::scene(img);
+    let found = scene.trump.is_some() || !scene.hand.is_empty() || scene.opp_slot.is_some() || scene.my_slot.is_some();
+    if !found {
+        return None;
+    }
+    for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
+        recognize(v, mem);
+    }
+    Some(scene)
+}
+
+/// Lettura per la scopa: mano e carte in tavola, riconosciute (None se il tavolo non si vede).
+pub fn read_scopa(img: &Img, mem: &Memory) -> Option<ScopaScene> {
+    let mut scene = detect::scopa(img)?;
+    for v in scene.hand.iter_mut().chain(&mut scene.table) {
+        recognize(v, mem);
+    }
+    Some(scene)
+}
+
 /// Legge lo schermo in un thread a parte, qualche volta al secondo, finché non viene fermato.
-pub struct Reader {
-    pub rx: Receiver<Reading>,
+pub struct Reader<S> {
+    pub rx: Receiver<Reading<S>>,
     stop: Arc<AtomicBool>,
 }
 
-impl Reader {
-    pub fn start(mem: Arc<Mutex<Memory>>, ctx: eframe::egui::Context) -> Reader {
+impl<S: Send + 'static> Reader<S> {
+    /// `read` trova e riconosce le carte di un gioco; `every` è l'intervallo fra due letture.
+    pub fn start(
+        mem: Arc<Mutex<Memory>>,
+        ctx: eframe::egui::Context,
+        every: std::time::Duration,
+        read: fn(&Img, &Memory) -> Option<S>,
+    ) -> Reader<S> {
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
@@ -149,24 +178,14 @@ impl Reader {
                 let t0 = std::time::Instant::now();
                 let reading = match capture::grab(monitor) {
                     Ok((img, count)) => {
-                        let mut scene = detect::scene(&img);
-                        let found = scene.trump.is_some()
-                            || !scene.hand.is_empty()
-                            || scene.opp_slot.is_some()
-                            || scene.my_slot.is_some();
-                        if found {
-                            let mem = mem.lock().unwrap();
-                            for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot) {
-                                recognize(v, &mem);
+                        let scene = read(&img, &mem.lock().unwrap());
+                        match scene {
+                            Some(s) => Reading::Scene(s),
+                            None => {
+                                // Prova il monitor successivo.
+                                monitor = (monitor + 1) % count.max(1);
+                                Reading::NoTable
                             }
-                            for v in &mut scene.hand {
-                                recognize(v, &mem);
-                            }
-                            Reading::Scene(scene)
-                        } else {
-                            // Prova il monitor successivo.
-                            monitor = (monitor + 1) % count.max(1);
-                            Reading::NoTable
                         }
                     }
                     Err(e) => Reading::Error(e),
@@ -175,15 +194,14 @@ impl Reader {
                     break;
                 }
                 ctx.request_repaint();
-                let wait = std::time::Duration::from_millis(350).saturating_sub(t0.elapsed());
-                std::thread::sleep(wait);
+                std::thread::sleep(every.saturating_sub(t0.elapsed()));
             }
         });
         Reader { rx, stop }
     }
 }
 
-impl Drop for Reader {
+impl<S> Drop for Reader<S> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
     }
@@ -245,5 +263,66 @@ mod tests {
         let mut other = s.hand[1].clone();
         recognize(&mut other, &mem);
         assert_ne!(best(&other), fante);
+    }
+
+    /// Copia un rettangolo dell'immagine in un altro punto.
+    fn paste(img: &mut Img, from: (usize, usize, usize, usize), to: (usize, usize)) {
+        let (x0, y0, w, h) = from;
+        let block: Vec<[u8; 3]> =
+            (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| img.at(x0 + x, y0 + y)).collect();
+        for y in 0..h {
+            for x in 0..w {
+                img.px[(to.1 + y) * img.w + to.0 + x] = block[y * w + x];
+            }
+        }
+    }
+
+    /// Un tavolo di scopa costruito dallo screenshot vero: le due carte giocate diventano quattro
+    /// carte in tavola su due righe, la mano resta la stessa.
+    fn scopa_screen() -> Img {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/sito_briscola.png");
+        let mut img = capture::load_png(&path).unwrap();
+        let (bastoni, spade) = ((522, 272, 125, 186), (522, 572, 125, 186));
+        let keep = img.clone();
+        // Toglie le due carte dal centro coprendole col panno lì accanto.
+        paste(&mut img, (760, 272, 125, 186), (522, 272));
+        paste(&mut img, (760, 572, 125, 186), (522, 572));
+        let mut put = |from: (usize, usize, usize, usize), to: (usize, usize)| {
+            for y in 0..from.3 {
+                for x in 0..from.2 {
+                    img.px[(to.1 + y) * img.w + to.0 + x] = keep.at(from.0 + x, from.1 + y);
+                }
+            }
+        };
+        put(bastoni, (420, 300));
+        put(spade, (600, 300));
+        put(spade, (330, 540));
+        put(bastoni, (700, 540));
+        img
+    }
+
+    #[test]
+    fn reads_scopa_table() {
+        let img = scopa_screen();
+        let s = read_scopa(&img, &Memory::in_memory()).expect("tavolo");
+        assert_eq!(s.hand.len(), 2, "mano");
+        let names: Vec<String> = s.table.iter().map(|v| cards::name(best(v))).collect();
+        let (b2, s7) = (cards::name(cards::make(3, 1)), cards::name(cards::make(2, 6)));
+        assert_eq!(names, vec![b2.clone(), s7.clone(), s7, b2]);
+        assert_eq!(cards::name(best(&s.hand[1])), cards::name(cards::make(1, 0)));
+    }
+
+    /// Tavolo aperto ma senza carte scoperte: scena vuota, non "tavolo assente".
+    #[test]
+    fn empty_scopa_table() {
+        let mut img = scopa_screen();
+        let felt = img.at(900, 500);
+        for p in img.px.iter_mut() {
+            if detect::is_felt(*p) || p[0] > 150 {
+                *p = felt;
+            }
+        }
+        let s = read_scopa(&img, &Memory::in_memory()).expect("tavolo");
+        assert!(s.hand.is_empty() && s.table.is_empty());
     }
 }

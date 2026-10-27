@@ -10,9 +10,11 @@ Giochi: **briscola**, **scopa**, **scala 40**, **burraco**, **sette e mezzo**, *
 
 ## Installazione
 
-1. Scarica `BrisMaster.exe` dall'[ultima release](https://github.com/motthz/BrisMaster/releases/latest).
-2. Mettilo in una cartella tua (per esempio `Documenti\BrisMaster`) e avvialo.
-3. Al primo avvio Windows SmartScreen può avvisare che l'app non è firmata: *Ulteriori informazioni → Esegui comunque*. Se l'antivirus la blocca, vedi [docs/ANTIVIRUS.md](docs/ANTIVIRUS.md).
+1. Scarica `BrisMaster-Setup.exe` dall'[ultima release](https://github.com/motthz/BrisMaster/releases/latest) e aprilo.
+2. L'installazione è per il tuo utente, senza permessi di amministratore: mette BrisMaster in `%LOCALAPPDATA%\Programs\BrisMaster`, crea il collegamento sul desktop e nel menu Start, e si disinstalla da *Impostazioni → App*. Partite salvate e memoria delle carte (in `Documenti\BrisMaster`) restano anche disinstallando.
+3. Windows SmartScreen può avvisare che il programma non è firmato: *Ulteriori informazioni → Esegui comunque*. Se l'antivirus lo blocca, vedi [docs/ANTIVIRUS.md](docs/ANTIVIRUS.md).
+
+Chi preferisce può scaricare solo `BrisMaster.exe` e avviarlo da una cartella sua, senza installazione. Se prima usavi l'exe così e passi all'installatore, cancella pure il vecchio exe: i dati sono in `Documenti\BrisMaster` e restano.
 
 Gli aggiornamenti sono automatici: all'avvio l'app controlla le release di questo repository e, se ce n'è una più recente, mostra il pulsante **Installa**. L'app scarica la nuova versione, sostituisce l'eseguibile e si riavvia.
 
@@ -235,4 +237,4 @@ cargo run --release -p poker-sim -- train --iters 300000000 --state stato.bin
 1. Aggiorna `version` in `Cargo.toml` (per esempio `0.3.0`).
 2. Fai push su `main`.
 
-GitHub Actions compila `BrisMaster.exe` su Windows, crea il tag `v0.3.0` e pubblica la release; le app già installate si aggiornano da sole. Il workflow si può anche lanciare a mano da *Actions → Release → Run workflow*.
+GitHub Actions compila `BrisMaster.exe` e l'installatore `BrisMaster-Setup.exe` (Inno Setup, script in `installer/BrisMaster.iss`) su Windows, crea il tag `v0.3.0` e pubblica la release; le app già installate si aggiornano da sole. Il workflow si può anche lanciare a mano da *Actions → Release → Run workflow*.

@@ -12,9 +12,15 @@ use briscola_core::cards;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-const SHEET: &[u8] = include_bytes!("../../assets/carte_napoletane.png");
+pub const SHEET: &[u8] = include_bytes!("../../assets/carte_napoletane.png");
 /// Seme di ogni riga del foglio.
 const SUIT_OF_ROW: [u8; 4] = [0, 1, 3, 2];
+
+/// Colonna e riga della carta nel foglio (10 x 4).
+pub fn sheet_cell(c: cards::Card) -> (usize, usize) {
+    let row = SUIT_OF_ROW.iter().position(|&s| s == cards::suit(c)).unwrap_or(0);
+    (cards::rank(c) as usize, row)
+}
 /// Margine tolto alle carte del foglio (orizzontale, verticale), dove i bordi sono tagliati male.
 const SHEET_MARGIN: (f32, f32) = (0.03, 0.02);
 

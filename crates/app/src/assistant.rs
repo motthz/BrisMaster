@@ -108,8 +108,10 @@ impl Position {
             Step::Draw(_) => self.unseen(),
             Step::OppMove => {
                 let mut u = self.unseen();
-                if self.trump_card_owner == Some(OPP) {
-                    u.insert(self.trump_card.unwrap());
+                // La briscola scoperta, se l'ha pescata lui e non l'ha ancora giocata.
+                let t = self.trump_card.unwrap();
+                if self.trump_card_owner == Some(OPP) && !self.played.contains(t) && self.table != Some(t) {
+                    u.insert(t);
                 }
                 u
             }
@@ -297,16 +299,19 @@ struct Analysis {
 
 pub struct Assistant {
     pos: Position,
-    /// Posizione, prese e eventi registrati prima di ogni azione (per annullare).
-    history: Vec<(Position, usize, usize)>,
+    /// Posizione, prese e eventi registrati prima di ogni azione (per annullare), e se l'azione
+    /// l'ha fatta l'app da sola perché obbligata.
+    history: Vec<(Position, usize, usize, bool)>,
     tricks: Vec<Trick>,
     rec: Recorder,
     generation: u64,
     analysis: Option<Analysis>,
     pending: Option<Receiver<Analysis>>,
-    entry: String,
+    /// Tasti digitati finora per la carta in corso (es. "3" in attesa del seme).
+    keys: String,
     entry_error: Option<String>,
-    focus_entry: bool,
+    /// Spazio premuto mentre il motore calcolava: gioca il consiglio appena arriva.
+    play_best_queued: bool,
 }
 
 impl Default for Assistant {
@@ -319,9 +324,9 @@ impl Default for Assistant {
             generation: 0,
             analysis: None,
             pending: None,
-            entry: String::new(),
+            keys: String::new(),
             entry_error: None,
-            focus_entry: true,
+            play_best_queued: false,
         }
     }
 }
@@ -331,29 +336,45 @@ impl Assistant {
         self.generation += 1;
         self.analysis = None;
         self.pending = None;
-        self.entry.clear();
+        self.keys.clear();
         self.entry_error = None;
-        self.focus_entry = true;
-    }
-
-    fn save(&mut self) {
-        self.history.push((self.pos, self.tricks.len(), self.rec.events.len()));
+        self.play_best_queued = false;
     }
 
     fn set_first(&mut self, p: u8) {
-        self.save();
+        self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
         self.pos.set_first(p);
         self.rec.events.push(Event::PrimoDiMano { chi: record::who(p) });
         self.changed();
+        self.auto_fill();
     }
 
+    /// Annulla l'ultima azione dell'utente, insieme a quelle che l'app ha fatto da sola dopo.
     fn undo(&mut self) {
-        if let Some((p, n, e)) = self.history.pop() {
+        while let Some((p, n, e, auto)) = self.history.pop() {
             self.pos = p;
             self.tricks.truncate(n);
             self.rec.events.truncate(e);
             self.rec.write(&self.pos);
             self.changed();
+            if !auto {
+                break;
+            }
+        }
+    }
+
+    /// Inserisce da sola le carte obbligate: la pescata quando resta una sola carta possibile,
+    /// l'ultima carta dell'avversario a mazzo finito, la tua ultima carta.
+    fn auto_fill(&mut self) {
+        while matches!(self.pos.step(), Step::Draw(_) | Step::MyMove | Step::OppMove) {
+            let allowed = self.pos.allowed();
+            if allowed.len() != 1 {
+                break;
+            }
+            let c = allowed.iter().next().unwrap();
+            if !self.record_entry(c, true) {
+                break;
+            }
         }
     }
 
@@ -361,7 +382,16 @@ impl Assistant {
         *self = Assistant::default();
     }
 
+    /// Inserisce una carta indicata dall'utente. Falso se non è possibile adesso.
     fn enter(&mut self, c: Card) -> bool {
+        let ok = self.record_entry(c, false);
+        if ok {
+            self.auto_fill();
+        }
+        ok
+    }
+
+    fn record_entry(&mut self, c: Card, auto: bool) -> bool {
         let before = self.pos;
         let event = match before.step() {
             Step::Trump => Event::Briscola { carta: CardRec::of(c) },
@@ -374,7 +404,7 @@ impl Assistant {
         };
         match self.pos.enter(c) {
             Some(trick) => {
-                self.history.push((before, self.tricks.len(), self.rec.events.len()));
+                self.history.push((before, self.tricks.len(), self.rec.events.len(), auto));
                 self.tricks.extend(trick);
                 self.rec.events.push(event);
                 self.rec.write(&self.pos);
@@ -389,8 +419,15 @@ impl Assistant {
     fn poll(&mut self, samples: u32, ctx: &egui::Context) {
         if let Some(rx) = &self.pending {
             if let Ok(a) = rx.try_recv() {
+                let best = a.evals.first().map(|e| e.card);
                 self.analysis = Some(a);
                 self.pending = None;
+                if std::mem::take(&mut self.play_best_queued) {
+                    if let Some(c) = best {
+                        self.enter(c);
+                        return;
+                    }
+                }
             } else {
                 ctx.request_repaint_after(std::time::Duration::from_millis(60));
             }
@@ -408,6 +445,88 @@ impl Assistant {
             });
             self.pending = Some(rx);
             ctx.request_repaint_after(std::time::Duration::from_millis(60));
+        }
+    }
+
+    /// Tastiera sempre attiva, senza campo di testo né Invio: "3c" inserisce il tre di coppe appena
+    /// digitato il seme; al tuo turno Spazio (o Invio) gioca il consiglio e 1, 2, 3 la carta in mano
+    /// in quella posizione; per chi comincia 1 = tu, 2 = l'avversario.
+    fn keyboard(&mut self, ctx: &egui::Context) {
+        if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) {
+            return;
+        }
+        // Niente pulsanti col focus: Spazio e Invio li premerebbero insieme alla scorciatoia.
+        if let Some(id) = ctx.memory(|m| m.focused()) {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
+            self.undo();
+        }
+        let events = ctx.input(|i| i.events.clone());
+        for ev in events {
+            let step = self.pos.step();
+            match ev {
+                egui::Event::Key { key, pressed: true, modifiers, .. } if modifiers.is_none() => match key {
+                    egui::Key::Space | egui::Key::Enter if step == Step::MyMove => self.play_best(),
+                    egui::Key::Enter if step == Step::Over => self.reset(),
+                    egui::Key::Backspace => {
+                        self.keys.pop();
+                    }
+                    egui::Key::Escape => {
+                        self.keys.clear();
+                        self.entry_error = None;
+                    }
+                    _ => {}
+                },
+                egui::Event::Text(t) => {
+                    for ch in t.chars().filter(|c| !c.is_whitespace()) {
+                        self.type_char(ch.to_ascii_lowercase());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn type_char(&mut self, ch: char) {
+        match self.pos.step() {
+            Step::First => match ch {
+                '1' => self.set_first(ME),
+                '2' => self.set_first(OPP),
+                _ => {}
+            },
+            Step::MyMove => {
+                if let Some(i) = ch.to_digit(10).filter(|d| *d >= 1) {
+                    if let Some(c) = self.pos.hand.to_vec().get(i as usize - 1) {
+                        self.enter(*c);
+                    }
+                }
+            }
+            Step::Trump | Step::Draw(_) | Step::OppMove => {
+                self.keys.push(ch);
+                self.entry_error = None;
+                if let Some(c) = cards_ui::parse_card(&self.keys) {
+                    self.keys.clear();
+                    if !self.enter(c) {
+                        self.entry_error = Some(format!("{} non è possibile adesso", cards::name(c)));
+                    }
+                } else if !is_rank_prefix(&self.keys) {
+                    self.entry_error = Some(format!("\"{}\" non è una carta: scrivi valore e seme, es. 3c", self.keys));
+                    self.keys.clear();
+                }
+            }
+            Step::Over => {}
+        }
+    }
+
+    /// Gioca la carta consigliata, o la prenota se il motore sta ancora calcolando.
+    fn play_best(&mut self) {
+        match self.analysis.as_ref().and_then(|a| a.evals.first()) {
+            Some(e) => {
+                let c = e.card;
+                self.enter(c);
+            }
+            None => self.play_best_queued = true,
         }
     }
 
@@ -437,9 +556,6 @@ impl Assistant {
                 }
             });
         });
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
-            self.undo();
-        }
         ui.add_space(10.0);
 
         // Avversario.
@@ -538,7 +654,7 @@ impl Assistant {
                 ui.set_min_height(CARD_SIZE.y + 40.0);
                 let hand = pos.hand.to_vec();
                 center(ui, hand.len() as f32 * (CARD_SIZE.x + 14.0));
-                for c in hand {
+                for (n, c) in hand.into_iter().enumerate() {
                     ui.vertical(|ui| {
                         ui.set_width(CARD_SIZE.x + 6.0);
                         let ev = self.eval_of(c);
@@ -552,13 +668,16 @@ impl Assistant {
                         if let Some((i, e)) = ev {
                             badge(ui, i == 0, e);
                         }
+                        if my_turn {
+                            ui.label(RichText::new(format!("tasto {}", n + 1)).color(GOLD));
+                        }
                     });
                     ui.add_space(8.0);
                 }
             });
             if step == Step::MyMove {
                 ui.label(
-                    RichText::new("Clicca la carta che giochi (anche se non è quella consigliata)")
+                    RichText::new("Clicca la carta che giochi, o premi il suo tasto (Spazio = quella consigliata)")
                         .color(Color32::from_white_alpha(170)),
                 );
             }
@@ -568,24 +687,32 @@ impl Assistant {
         }
     }
 
-    /// Pannello di destra: richiesta di input oppure consiglio del motore.
-    pub fn side_ui(&mut self, ui: &mut egui::Ui, samples: &mut u32) {
-        self.poll(*samples, &ui.ctx().clone());
+    /// Pannello di destra: richiesta di input oppure consiglio del motore. Nella finestra compatta
+    /// sostituisce il tavolo: in cima c'è un riepilogo con la tua mano, niente elenco delle uscite.
+    pub fn side_ui(&mut self, ui: &mut egui::Ui, samples: &mut u32, compact: bool) {
+        let ctx = ui.ctx().clone();
+        self.keyboard(&ctx);
+        self.poll(*samples, &ctx);
         let step = self.pos.step();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            if compact {
+                self.compact_header(ui);
+                ui.separator();
+            }
             match step {
                 Step::Trump => {
                     title(ui, "Qual è la briscola?", "Indica la carta scoperta sotto il mazzo.");
                     self.picker_and_entry(ui);
                 }
                 Step::First => {
-                    title(ui, "Chi gioca per primo?", "Chi apre la prima presa della partita.");
+                    title(ui, "Chi gioca per primo?", "Chi apre la prima presa della partita (tasti 1 e 2).");
                     ui.horizontal(|ui| {
-                        let big = |t: &str| egui::Button::new(RichText::new(t).size(17.0)).min_size(vec2(200.0, 44.0));
-                        if ui.add(big("Comincio io")).clicked() {
+                        let w = if compact { 150.0 } else { 200.0 };
+                        let big = |t: &str| egui::Button::new(RichText::new(t).size(17.0)).min_size(vec2(w, 44.0));
+                        if ui.add(big("1 · Comincio io")).clicked() {
                             self.set_first(ME);
                         }
-                        if ui.add(big("Comincia l'avversario")).clicked() {
+                        if ui.add(big("2 · L'avversario")).clicked() {
                             self.set_first(OPP);
                         }
                     });
@@ -607,8 +734,14 @@ impl Assistant {
                 Step::MyMove => {
                     self.advice(ui, samples);
                     ui.add_space(8.0);
-                    ui.label(RichText::new("Oppure scrivi la carta che hai giocato:").weak());
-                    self.entry_field(ui);
+                    ui.label(
+                        RichText::new(if self.play_best_queued {
+                            "Spazio premuto: inserisco il consiglio appena il motore ha finito."
+                        } else {
+                            "Spazio (o Invio) = hai giocato il consiglio · 1 2 3 = la carta in quella posizione della mano · oppure clicca la carta"
+                        })
+                        .color(GOLD),
+                    );
                 }
                 Step::Over => {
                     let mine = self.pos.points[ME as usize];
@@ -620,10 +753,13 @@ impl Assistant {
                     ui.add_space(10.0);
                     ui.label(RichText::new(t).size(28.0).strong().color(col));
                     ui.add_space(8.0);
-                    if ui.button(RichText::new("Nuova partita").size(17.0)).clicked() {
+                    if ui.button(RichText::new("Nuova partita (Invio)").size(17.0)).clicked() {
                         self.reset();
                     }
                 }
+            }
+            if compact {
+                return;
             }
             ui.add_space(14.0);
             ui.separator();
@@ -637,6 +773,71 @@ impl Assistant {
             ui.separator();
             self.recording_ui(ui);
         });
+    }
+
+    /// Riepilogo della finestra compatta: briscola, mazzo, punti, presa in corso e la tua mano
+    /// (numerata per i tasti 1 2 3 e cliccabile quando tocca a te).
+    fn compact_header(&mut self, ui: &mut egui::Ui) {
+        let pos = self.pos;
+        let step = pos.step();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("Presa {}/20", (pos.tricks + 1).min(20))).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("Nuova partita").clicked() {
+                    self.reset();
+                }
+                if ui
+                    .add_enabled(!self.history.is_empty(), egui::Button::new("Annulla").small())
+                    .on_hover_text("Ctrl+Z")
+                    .clicked()
+                {
+                    self.undo();
+                }
+            });
+        });
+        let mini = vec2(44.0, 68.0);
+        let mut clicked = None;
+        ui.horizontal(|ui| {
+            for (label, c) in [("Briscola", pos.trump_card), ("In tavola", pos.table)] {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(label).small().color(GOLD));
+                    let (rect, _) = ui.allocate_exact_size(mini, Sense::hover());
+                    match c {
+                        Some(c) => cards_ui::paint_face(ui.painter(), rect, c, Default::default()),
+                        None => cards_ui::paint_slot(ui.painter(), rect, ""),
+                    }
+                });
+            }
+            ui.add_space(6.0);
+            ui.vertical(|ui| {
+                ui.label(RichText::new("La tua mano").small());
+                ui.horizontal(|ui| {
+                    let my_turn = step == Step::MyMove;
+                    for (i, c) in pos.hand.to_vec().into_iter().enumerate() {
+                        ui.vertical(|ui| {
+                            let best = matches!(self.eval_of(c), Some((0, _)));
+                            let glow = (my_turn && best).then_some(BEST);
+                            if cards_ui::card(ui, Some(c), mini, glow, my_turn).clicked() {
+                                clicked = Some(c);
+                            }
+                            if my_turn {
+                                ui.label(RichText::new(format!("{}", i + 1)).strong().color(GOLD));
+                            }
+                        });
+                    }
+                });
+            });
+        });
+        ui.label(
+            RichText::new(format!(
+                "Tu {} · avversario {} punti · mazzo {} carte",
+                pos.points[ME as usize], pos.points[OPP as usize], pos.deck_len
+            ))
+            .weak(),
+        );
+        if let Some(c) = clicked {
+            self.enter(c);
+        }
     }
 
     /// Dove viene salvata la partita.
@@ -667,39 +868,24 @@ impl Assistant {
             self.enter(c);
         }
         ui.add_space(8.0);
-        self.entry_field(ui);
+        self.keys_hint(ui);
     }
 
-    fn entry_field(&mut self, ui: &mut egui::Ui) {
+    /// Cosa hai digitato finora e promemoria dei tasti.
+    fn keys_hint(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut self.entry)
-                    .hint_text("da tastiera: 3c, AD, Rs, cavallo bastoni…")
-                    .desired_width(260.0),
-            );
-            if self.focus_entry {
-                resp.request_focus();
-                self.focus_entry = false;
-            }
-            let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if (ui.button("Inserisci").clicked() || submit) && !self.entry.trim().is_empty() {
-                match cards_ui::parse_card(&self.entry) {
-                    Some(c) if self.enter(c) => {}
-                    Some(c) => {
-                        self.entry_error = Some(format!("{} non è possibile adesso", cards::name(c)));
-                        self.focus_entry = true;
-                    }
-                    None => {
-                        self.entry_error = Some("Carta non riconosciuta: scrivi valore e seme, es. 3c".into());
-                        self.focus_entry = true;
-                    }
-                }
-            }
+            ui.label(RichText::new("Da tastiera:").weak());
+            let shown = if self.keys.is_empty() { "_".to_string() } else { format!("{}_", self.keys.to_uppercase()) };
+            ui.label(RichText::new(shown).monospace().size(18.0).color(GOLD));
         });
         if let Some(e) = &self.entry_error {
             ui.label(RichText::new(e).color(Color32::LIGHT_RED));
         }
-        ui.label(RichText::new("Valori: A 2 3 4 5 6 7 F C R · Semi: d c s b · Ctrl+Z annulla").small().weak());
+        ui.label(
+            RichText::new("Scrivi valore e seme, senza Invio: A 2 3 4 5 6 7 F C R · d c s b (es. 3c). Ctrl+Z annulla")
+                .small()
+                .weak(),
+        );
     }
 
     fn advice(&mut self, ui: &mut egui::Ui, samples: &mut u32) {
@@ -790,6 +976,11 @@ impl Assistant {
             .weak(),
         );
     }
+}
+
+/// Vero se i tasti digitati possono ancora diventare una carta (manca il seme).
+fn is_rank_prefix(keys: &str) -> bool {
+    matches!(keys, "a" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "f" | "j" | "c" | "q" | "r" | "k" | "10")
 }
 
 fn precision_label(s: u32) -> String {
@@ -969,7 +1160,10 @@ mod tests {
             let c = g.legal_moves().to_vec()[0];
             let before = g.hands[0];
             g.play(c);
-            assert!(a.enter(c));
+            // Le carte obbligate le ha già inserite l'app.
+            if !a.pos.played.contains(c) && a.pos.table != Some(c) {
+                assert!(a.enter(c));
+            }
             for d in g.hands[0].minus(before).iter() {
                 if !a.pos.hand.contains(d) {
                     assert!(a.enter(d));
@@ -985,12 +1179,69 @@ mod tests {
         assert_eq!(ev[1]["chi"], "io");
         assert_eq!(ev.iter().filter(|e| e["tipo"] == "giocata").count(), 40);
         assert_eq!(ev.iter().filter(|e| e["consiglio"]["mondi"] == 7).count(), 2);
+        // L'ultima presa si inserisce da sola: la tua ultima carta e quella dell'avversario.
+        let autos: Vec<_> = a.history.iter().filter(|h| h.3).map(|h| h.0.step()).collect();
+        assert!(autos.len() >= 2, "{autos:?} {:?}", a.pos.step());
         // Annullare tutto cancella il file di una partita mai cominciata.
         while !a.history.is_empty() {
             a.undo();
         }
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Inserimento da tastiera: la carta entra appena si digita il seme, senza Invio.
+    #[test]
+    fn types_cards_without_enter() {
+        let mut a = Assistant::default();
+        a.type_char('3');
+        assert_eq!(a.pos.step(), Step::Trump, "manca ancora il seme");
+        a.type_char('c');
+        assert_eq!(a.pos.trump_card, Some(cards::make(1, 2)));
+        a.type_char('1');
+        assert_eq!(a.pos.first, Some(ME), "1 = comincio io");
+        a.type_char('x');
+        assert!(a.entry_error.is_some() && a.keys.is_empty());
+        for ch in "10bas3c".chars() {
+            a.type_char(ch);
+        }
+        assert_eq!(a.pos.hand.len(), 2, "il tre di coppe è la briscola scoperta: rifiutato");
+        assert!(a.pos.hand.contains(cards::make(3, 9)) && a.pos.hand.contains(cards::make(2, 0)));
+        assert!(a.entry_error.as_deref().unwrap().contains("non è possibile"));
+        a.type_char('r');
+        a.type_char('d');
+        assert_eq!(a.pos.step(), Step::MyMove);
+        // 2 = seconda carta della mano, nell'ordine in cui è mostrata.
+        let second = a.pos.hand.to_vec()[1];
+        a.type_char('2');
+        assert_eq!(a.pos.table, Some(second));
+        assert_eq!(a.pos.step(), Step::OppMove);
+    }
+
+    /// Spazio gioca il consiglio; se il motore sta ancora calcolando lo gioca appena arriva.
+    #[test]
+    fn space_plays_advice() {
+        let mut a = Assistant::default();
+        a.enter(cards::make(0, 4));
+        a.set_first(ME);
+        for c in [cards::make(1, 0), cards::make(2, 1), cards::make(3, 5)] {
+            a.enter(c);
+        }
+        a.play_best();
+        assert!(a.play_best_queued && a.pos.table.is_none());
+        let (tx, rx) = channel();
+        let evals = [cards::make(2, 1), cards::make(1, 0), cards::make(3, 5)]
+            .map(|card| MoveEval { card, win_prob: 0.5, exp_points: 60.0 })
+            .to_vec();
+        tx.send(Analysis { evals, reasons: Vec::new(), samples: 7 }).unwrap();
+        a.pending = Some(rx);
+        a.poll(7, &egui::Context::default());
+        assert_eq!(a.pos.table, Some(cards::make(2, 1)));
+        assert!(!a.play_best_queued);
+        // Annulla torna a prima della giocata.
+        a.undo();
+        assert_eq!(a.pos.step(), Step::MyMove);
+        assert_eq!(a.pos.hand.len(), 3);
     }
 
     #[test]

@@ -8,7 +8,7 @@
 //!       | eng:CHIAVE=VALORE,...        (varianti del motore attuale, vedi make_player)
 //!       | noisy:ERRORE:SPEC            (es. noisy:0.25:heuristic)
 //!       | net:ITERAZIONI[:PESO]        (ISMCTS potenziato con la rete di BRISCOLA_NET nelle foglie)
-//!       | infer:ITERAZIONI:TEMP[:MANI[:net]] (ISMCTS potenziato che deduce le carte avversarie
+//!       | infer:ITERAZIONI:TEMP[:MANI[:MINIMO]][:net] (ISMCTS potenziato che deduce le carte avversarie
 //!                                      con la rete di politica di BRISCOLA_POLICY)
 //!       | peek:ITERAZIONI              (baro: ISMCTS potenziato che vede la mano avversaria)
 //!       | vX.Y.Z/SPEC                  (versione rilasciata, es. v0.1.1/engine:1000)
@@ -70,6 +70,7 @@ struct Infer {
     search: IsmctsPlayer,
     policy: Arc<Net>,
     temp: f32,
+    floor: f32,
     pool: usize,
     game: Option<Game>,
     log: Log,
@@ -78,7 +79,8 @@ struct Infer {
 
 impl Agent for Infer {
     fn name(&self) -> String {
-        format!("{} · deduce le carte avversarie (temperatura {})", self.search.name(), self.temp)
+        let floor = if self.floor > 0.0 { format!(", minimo {:.0}%", self.floor * 100.0) } else { String::new() };
+        format!("{} · deduce le carte avversarie (temperatura {}{floor})", self.search.name(), self.temp)
     }
     fn start(&mut self, order: &[Card], first: u8) {
         self.game = Some(Game::from_order(order, first));
@@ -95,7 +97,7 @@ impl Agent for Infer {
         let root = if obs.deck_len == 0 {
             self.search.search(&obs, rng)
         } else {
-            let belief = Belief::infer(&obs, &self.log.events, &self.policy, self.temp, self.pool, rng);
+            let belief = Belief::infer(&obs, &self.log.events, &self.policy, self.temp, self.floor, self.pool, rng);
             self.search.search_with(&obs, rng, |r| obs.determinize_given(belief.sample(r), r))
         };
         root.iter().max_by(|a, b| a.visits.partial_cmp(&b.visits).unwrap()).unwrap().card
@@ -234,16 +236,21 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
         return Ok(Box::new(Current(Box::new(IsmctsPlayer::with_net(n, value_net()?, mix)), suffix)));
     }
     if let Some(rest) = spec.strip_prefix("infer:") {
-        // infer:ITERAZIONI:TEMPERATURA[:MANI[:net]]
-        let parts: Vec<&str> = rest.split(':').collect();
+        // infer:ITERAZIONI:TEMPERATURA[:MANI[:MINIMO]][:net]
+        let mut parts: Vec<&str> = rest.split(':').collect();
+        let with_net = parts.last() == Some(&"net");
+        if with_net {
+            parts.pop();
+        }
         let num = |i: usize, d: f64| parts.get(i).map_or(Ok(d), |s| s.parse::<f64>().map_err(|_| format!("numero non valido in '{spec}'")));
         let n = num(0, 0.0)? as u32;
-        let search = if parts.get(3) == Some(&"net") { IsmctsPlayer::with_net(n, value_net()?, 1.0) } else { IsmctsPlayer::strong(n) };
+        let search = if with_net { IsmctsPlayer::with_net(n, value_net()?, 1.0) } else { IsmctsPlayer::strong(n) };
         return Ok(Box::new(Infer {
             search,
             policy: policy_net()?,
             temp: num(1, 1.0)? as f32,
             pool: num(2, 1000.0)? as usize,
+            floor: num(3, 0.0)? as f32,
             game: None,
             log: Log::default(),
             me: None,

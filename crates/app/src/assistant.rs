@@ -3,7 +3,8 @@
 use crate::cards_ui::{self, BEST, CARD_SIZE, GOLD};
 use crate::record::{self, Advice, CardRec, Event, Recorder};
 use crate::vision::{memory::Memory, read_briscola, CardView, Img, Reader, Reading, Scene};
-use briscola_core::ai::{evaluate, EngineConfig, MoveEval};
+use briscola_core::ai::{evaluate_with_log, MoveEval};
+use briscola_core::infer;
 use briscola_core::cards::{self, Card, CardSet};
 use briscola_core::{Observation, Trick};
 use eframe::egui::{self, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
@@ -467,6 +468,33 @@ impl Assistant {
         }
     }
 
+    /// Come ha giocato l'avversario finora, per dedurne le carte: si ricava dalla cronologia,
+    /// confrontando ogni posizione con quella dopo la mossa.
+    fn opp_log(&self) -> Vec<infer::Event> {
+        let mut log = Vec::new();
+        let afters = self.history.iter().skip(1).map(|h| h.0).chain(std::iter::once(self.pos));
+        for (&(before, ..), after) in self.history.iter().zip(afters) {
+            let step = before.step();
+            if step == Step::OppMove {
+                let card = match before.table {
+                    None => after.table.expect("carta aperta dall'avversario"),
+                    Some(lead) => {
+                        let mut gone = after.played.minus(before.played);
+                        gone.remove(lead);
+                        gone.iter().next().expect("carta giocata dall'avversario")
+                    }
+                };
+                log.push(infer::Event::OppMove { seen: before.observation(), card });
+            }
+            // A ogni presa chiusa col mazzo non finito pesca anche l'avversario; l'ultima carta
+            // del mazzo è la briscola scoperta, e la prende lui se la presa l'ho fatta io.
+            if matches!(step, Step::OppMove | Step::MyMove) && before.table.is_some() && before.deck_len > 0 {
+                log.push(infer::Event::OppDraw { trump: before.deck_len == 2 && after.leader == ME });
+            }
+        }
+        log
+    }
+
     /// Avvia o raccoglie l'analisi della posizione corrente.
     fn poll(&mut self, samples: u32, ctx: &egui::Context) {
         if let Some(rx) = &self.pending {
@@ -488,10 +516,11 @@ impl Assistant {
         let stale = self.analysis.as_ref().is_some_and(|a| a.samples != samples);
         if wants && self.pending.is_none() && (self.analysis.is_none() || stale) {
             let obs = self.pos.observation();
+            let log = self.opp_log();
             let (tx, rx) = channel();
             std::thread::spawn(move || {
                 let mut rng = SmallRng::from_entropy();
-                let evals = evaluate(&obs, &crate::app::engine_cfg(samples), &mut rng);
+                let evals = evaluate_with_log(&obs, &crate::app::engine_cfg(samples), &log, &mut rng);
                 let reasons = explain(&obs, &evals);
                 let _ = tx.send(Analysis { evals, reasons, samples });
             });
@@ -1371,6 +1400,7 @@ pub fn tracker(ui: &mut egui::Ui, gone: CardSet, mine: CardSet) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use briscola_core::ai::{evaluate, EngineConfig};
     use briscola_core::Game;
     use rand::Rng;
 
@@ -1419,6 +1449,44 @@ mod tests {
     }
 
     /// Una partita inserita nell'assistente finisce per intero nel file, con esito e consigli.
+    /// Il registro delle mosse avversarie ricavato dalla cronologia è lo stesso che il banco
+    /// di prova tiene seguendo la partita vera.
+    #[test]
+    fn opponent_log_matches_real_game() {
+        let dir = std::env::temp_dir().join(format!("brismaster-test-log-{}", std::process::id()));
+        let mut rng = SmallRng::seed_from_u64(8);
+        for n in 0..60 {
+            let first = (n % 2) as u8;
+            let mut g = Game::new(&mut rng, first);
+            let mut a = Assistant::default();
+            a.rec.dir = dir.clone();
+            let mut log = infer::Log::default();
+            assert!(a.enter(g.trump_card));
+            a.set_first(first);
+            for c in g.hands[0].iter() {
+                assert!(a.enter(c));
+            }
+            while !g.is_over() {
+                let m = g.legal_moves().to_vec();
+                let c = m[rng.gen_range(0..m.len())];
+                let before = g.hands[0];
+                log.before_play(&g, ME, c);
+                g.play(c);
+                if !a.pos.played.contains(c) && a.pos.table != Some(c) {
+                    assert!(a.enter(c));
+                }
+                for d in g.hands[0].minus(before).iter() {
+                    if !a.pos.hand.contains(d) {
+                        assert!(a.enter(d));
+                    }
+                }
+            }
+            // A fine partita (prima l'app può aver già inserito da sola le carte obbligate).
+            assert_eq!(format!("{:?}", a.opp_log()), format!("{:?}", log.events));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn records_games() {
         let dir = std::env::temp_dir().join(format!("brismaster-test-{}", std::process::id()));

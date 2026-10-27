@@ -63,8 +63,11 @@ pub struct Belief {
 
 impl Belief {
     /// `samples` mani avversarie compatibili con `obs`, pesate con la politica `policy`
-    /// elevata alla `temp` (0 = nessuna deduzione, 1 = la politica com'è).
-    pub fn infer(obs: &Observation, log: &[Event], policy: &Net, temp: f32, samples: usize, rng: &mut SmallRng) -> Belief {
+    /// con temperatura `temp` (0 = nessuna deduzione, 1 = la politica com'è).
+    /// `floor` mescola ogni probabilità con la mossa a caso: (1 − floor)·p + floor/n, così una
+    /// mossa che il modello non si aspetta (un avversario che gioca in modo diverso) non può
+    /// escludere del tutto una mano.
+    pub fn infer(obs: &Observation, log: &[Event], policy: &Net, temp: f32, floor: f32, samples: usize, rng: &mut SmallRng) -> Belief {
         let mut hands = Vec::with_capacity(samples);
         let mut weights = Vec::with_capacity(samples);
         let mut probs = [0f32; 3];
@@ -100,7 +103,8 @@ impl Belief {
                             let n = policy.policy(&theirs, temp, &mut probs);
                             let i = held.iter().position(|c| c == card).unwrap();
                             debug_assert!(i < n);
-                            logw += (probs[i].max(1e-6) as f64).ln();
+                            let p = (1.0 - floor) * probs[i] + floor / n as f32;
+                            logw += (p.max(1e-6) as f64).ln();
                         }
                     }
                 }
@@ -167,7 +171,7 @@ mod tests {
                 continue;
             }
             let obs = Observation::of(&g, me);
-            let b = Belief::infer(&obs, &log.events, &net, 1.0, 50, &mut rng);
+            let b = Belief::infer(&obs, &log.events, &net, 1.0, 0.1, 50, &mut rng);
             assert!(b.ess() >= 1.0 && b.ess() <= 50.0 + 1e-9);
             let h = b.sample(&mut rng);
             assert_eq!(h.len(), g.hands[1 - me as usize].len());
@@ -175,7 +179,7 @@ mod tests {
             possible.insert(obs.trump_card);
             assert!(h.minus(possible).is_empty());
             // Senza deduzione tutti i pesi sono uguali.
-            let flat = Belief::infer(&obs, &log.events, &net, 0.0, 50, &mut rng);
+            let flat = Belief::infer(&obs, &log.events, &net, 0.0, 0.0, 50, &mut rng);
             assert!((flat.ess() - 50.0).abs() < 1e-6);
         }
     }

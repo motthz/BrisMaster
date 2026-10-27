@@ -195,6 +195,12 @@ pub fn sigmoid(x: f32) -> f32 {
 
 const MAGIC: &[u8; 4] = b"BRN2";
 
+/// Rete di politica allenata, inclusa nel programma (`nets/politica.bin`, da `train --kind policy`).
+pub fn policy() -> &'static Net {
+    static NET: std::sync::OnceLock<Net> = std::sync::OnceLock::new();
+    NET.get_or_init(|| Net::from_bytes(include_bytes!("../nets/politica.bin")).expect("rete di politica inclusa"))
+}
+
 impl Net {
     /// Rete con pesi casuali piccoli (inizializzazione di He), per l'allenamento.
     pub fn random(seed: u64, n_out: usize) -> Net {

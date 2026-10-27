@@ -2,6 +2,7 @@
 
 use crate::cards::*;
 use crate::game::{Game, Observation};
+use crate::infer::{Belief, Event};
 use crate::net::Net;
 use std::sync::Arc;
 use rand::rngs::SmallRng;
@@ -901,7 +902,30 @@ pub fn evaluate(obs: &Observation, cfg: &EngineConfig, rng: &mut SmallRng) -> Ve
 /// Valutazione con l'ISMCTS potenziato, su un solo albero (un thread): è il giocatore
 /// provato nei test massivi. Le mosse sono in ordine di visite: la prima è quella scelta.
 pub fn evaluate_ismcts(obs: &Observation, iterations: u32, rng: &mut SmallRng) -> Vec<MoveEval> {
-    let mut total = IsmctsPlayer::strong(iterations).search(obs, rng);
+    root_evals(obs, IsmctsPlayer::strong(iterations).search(obs, rng))
+}
+
+/// Parametri della deduzione delle carte avversarie usati dall'assistente (provati nei test massivi).
+pub const INFER_TEMP: f32 = 1.0;
+pub const INFER_FLOOR: f32 = 0.25;
+pub const INFER_HANDS: usize = 1000;
+
+/// Come `evaluate`, ma conoscendo come ha giocato l'avversario (`log`): con l'ISMCTS e il mazzo
+/// non finito i mondi si pescano dalle mani avversarie pesate dalla rete di politica.
+pub fn evaluate_with_log(obs: &Observation, cfg: &EngineConfig, log: &[Event], rng: &mut SmallRng) -> Vec<MoveEval> {
+    match cfg.ismcts {
+        Some(iterations) if obs.deck_len > 0 && !log.is_empty() => {
+            let belief = Belief::infer(obs, log, crate::net::policy(), INFER_TEMP, INFER_FLOOR, INFER_HANDS, rng);
+            let root = IsmctsPlayer::strong(iterations)
+                .search_with(obs, rng, |r| obs.determinize_given(belief.sample(r), r));
+            root_evals(obs, root)
+        }
+        _ => evaluate(obs, cfg, rng),
+    }
+}
+
+/// Valutazioni dai risultati della radice, in ordine di visite.
+fn root_evals(obs: &Observation, mut total: Vec<RootChild>) -> Vec<MoveEval> {
     total.sort_by(|a, b| b.visits.partial_cmp(&a.visits).unwrap());
     let mut out: Vec<MoveEval> = total
         .iter()

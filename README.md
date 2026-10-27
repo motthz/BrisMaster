@@ -84,10 +84,23 @@ Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro
 
 ## Scopa
 
-Nell'app scegli **Scopa** dal menu in alto. C'è solo l'assistente: indichi chi distribuisce e il punteggio
-della partita, le 4 carte in tavola, le carte che ricevi e ogni giocata dell'avversario (se poteva prendere
-in più modi, scegli cosa ha preso). Il motore ti dice cosa giocare, con la probabilità di vincere la partita
-e la differenza punti attesa nella smazzata.
+Nell'app scegli **Scopa** dal menu in alto. C'è solo l'assistente: indichi chi gioca per primo (tasti 1 e 2)
+e il punteggio della partita, le 4 carte in tavola, le carte che ricevi e ogni giocata dell'avversario (se
+poteva prendere in più modi, scegli cosa ha preso). Il motore ti dice cosa giocare, con la probabilità di
+vincere la partita e la differenza punti attesa nella smazzata, in pochi centesimi di secondo.
+
+Per le partite a tempo funziona come la briscola: le carte si scrivono senza Invio (`3c`, `Rd`), al tuo turno
+**Spazio** inserisce la mossa consigliata (carta e presa) e 1, 2, 3 la carta in quella posizione della mano;
+quando una carta può prendere in più modi, 1, 2, 3... scelgono la presa (Spazio quella consigliata). Ctrl+Z
+annulla, Invio passa alla smazzata dopo. Le giocate obbligate (la tua unica mossa, l'ultima carta
+dell'avversario) entrano da sole. C'è la **Finestra compatta** (tavolo, mano numerata e consiglio).
+
+Con **Leggi la partita dallo schermo** BrisMaster segue da solo la smazzata sul sito: le carte in tavola
+(anche molte), quelle che ricevi, le carte giocate e le prese, che legge da quali carte spariscono dal
+tavolo. Chi comincia lo capisce dalla prima giocata, e a fine smazzata riparte da solo con la distribuzione
+successiva. Se una presa sparisce senza che si sia vista la carta che l'ha fatta e poteva farla più di
+una carta, ti chiede quale (basta scriverla). Riconoscimento, conferme con Spazio e memoria delle carte
+sono gli stessi della briscola (e la memoria è in comune).
 
 Il motore campiona le possibili carte dell'avversario e del mazzo, gioca ogni mossa fino a fine smazzata
 e calcola il finale esatto quando il mazzo è finito; ogni smazzata vale per la probabilità di vincere la

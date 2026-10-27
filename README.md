@@ -118,6 +118,25 @@ Motore attuale, livello Difficile, 4.000 partite per avversario, tra parentesi l
 
 Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro avversari deboli o medi il motore vince nettamente più della metà delle partite, ma contro un giocatore forte quanto lui nessun algoritmo può garantire più del 50%: due copie dello stesso motore vincono per forza il 50% a testa.
 
+## Texas Hold'em
+
+Nella scheda **Texas Hold'em** c'è un assistente per il No Limit testa a testa (due giocatori). Scegli la tua posizione (bottone o grande buio) e le tue due carte, poi inserisci man mano le azioni dell'avversario, quelle che fai tu e le carte del board: quando tocca a te l'app indica l'azione consigliata e la probabilità con cui il motore sceglie ciascuna azione (fold, check/call, puntate di varie misure, all-in), con l'equità della mano contro una mano a caso. Ogni passo si annulla con Ctrl+Z.
+
+![BrisMaster: assistente di Texas Hold'em](docs/holdem.png)
+
+Il motore è allenato per bui 50/100 con 100 grandi bui a testa: con stack molto diversi o con più di due giocatori al tavolo i consigli valgono meno.
+
+**Come ragiona.** La strategia è calcolata in anticipo con CFR Monte Carlo (campionamento esterno) su una versione semplificata del gioco: le mani iniziali nelle 169 classi, dopo il flop 120 gruppi di mani per giro (per E[HS²] al flop e al turn, per forza esatta al river), e alcune misure di puntata per giro. Le puntate vere dell'avversario si riportano a quelle dell'albero con la traduzione pseudo-armonica.
+
+**Test.** `poker-sim` gioca il motore contro 11 stili a regole, giocatori distratti, versioni meno allenate di se stesso e un avversario allenato apposta per sfruttarlo, in duplicato (ogni smazzata due volte a posti invertiti, valore atteso negli all-in prima del river), con intervallo di confidenza al 95%. Rapporto in [bench/HOLDEM.md](bench/HOLDEM.md): 40.000 smazzate (80.000 mani) per avversario, il motore è in attivo contro tutti i 16 avversari con l'intervallo di confidenza interamente sopra lo zero, da +19 bb/100 contro lo stretto-aggressivo a regole a +245 contro il maniaco; contro una copia di se stesso dà 0 entro l'intervallo.
+
+```
+cargo run --release -p poker-sim -- report --deals 40000 --out bench/HOLDEM.md
+cargo run --release -p poker-sim -- match --player engine --opponent tag --deals 8000
+# riallenare la strategia inclusa nel programma (crates/poker/data/holdem.bin)
+cargo run --release -p poker-sim -- train --iters 300000000 --state stato.bin
+```
+
 ## Struttura
 
 | Cartella | Contenuto |
@@ -145,6 +164,8 @@ cargo run --release -p scopa-sim -- report --player engine:400 --deals 4000 --se
 cargo run --release -p scopa-sim -- --player engine:400 --opponent ismcts:1000 --deals 4000
 ```
 
+| `crates/poker` | Texas Hold'em: regole, valutatore, motore (CFR), bot di prova |
+| `crates/poker-sim` | Allenamento e banco di prova del Texas Hold'em |
 
 ## Pubblicare una nuova versione
 

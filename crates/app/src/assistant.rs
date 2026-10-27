@@ -2,7 +2,8 @@
 
 use crate::cards_ui::{self, BEST, CARD_SIZE, GOLD};
 use crate::record::{self, Advice, CardRec, Event, Recorder};
-use crate::vision::{memory::Memory, read_briscola, CardView, Img, Reader, Reading, Scene};
+use crate::vision::memory::{similarity, Memory};
+use crate::vision::{read_briscola, CardView, Img, Reader, Reading, Scene};
 use briscola_core::ai::{evaluate, EngineConfig, MoveEval};
 use briscola_core::cards::{self, Card, CardSet};
 use briscola_core::{Observation, Trick};
@@ -336,6 +337,9 @@ struct Vision {
     last: Option<(Card, Img, usize)>,
     /// Ultima scena letta: serve a ricordare la carta pescata quando l'utente la scrive a mano.
     scene: Option<Scene>,
+    /// Immagine della briscola di questa partita: se sullo schermo ne compare un'altra, il sito ha
+    /// distribuito una nuova partita.
+    trump_img: Option<Img>,
     /// Candidati annullati dall'utente: se ricompaiono si chiede conferma invece di inserirli.
     doubts: Vec<(Step, Card)>,
 }
@@ -648,14 +652,35 @@ impl Assistant {
         self.vision.seen = Some(sig);
     }
 
+    /// Vero se lo schermo mostra una partita nuova: briscola scoperta, tre carte in mano e tavolo
+    /// vuoto, quando la partita in corso è finita, ha il mazzo esaurito (la briscola non si
+    /// vedrebbe più) o aveva un'altra briscola. Così si riparte anche dopo una partita interrotta.
+    fn new_deal(&mut self, scene: &Scene) -> bool {
+        let Some(t) = &scene.trump else { return false };
+        if self.pos.trump_card.is_none() {
+            return false;
+        }
+        let fresh = scene.hand.len() == 3 && scene.opp_slot.is_none() && scene.my_slot.is_none();
+        let Some(known) = &self.vision.trump_img else {
+            // Prima lettura della briscola di questa partita (anche se l'utente l'ha scritta a mano).
+            self.vision.trump_img = Some(t.img.clone());
+            return fresh && self.pos.step() == Step::Over;
+        };
+        let other_trump = similarity(known, &t.img, true) < 0.75;
+        if !other_trump {
+            // Segue i piccoli cambiamenti (il mazzo che si assottiglia sopra la briscola).
+            self.vision.trump_img = Some(t.img.clone());
+        }
+        fresh && (self.pos.step() == Step::Over || self.pos.deck_len == 0 || other_trump)
+    }
+
     /// Un passo della partita a partire dalla lettura dello schermo.
     fn sync_step(&mut self, scene: &Scene) {
+        if self.new_deal(scene) {
+            self.reset();
+        }
         let step = self.pos.step();
         if step == Step::Over {
-            // Il sito ha distribuito una nuova partita.
-            if scene.trump.is_some() && scene.hand.len() == 3 {
-                self.reset();
-            }
             return;
         }
         if self.vision.confirm.is_some() {
@@ -1578,6 +1603,30 @@ mod tests {
         // La presa vecchia ancora in tavola non viene contata due volte.
         assert_eq!(a.pos.step(), Step::OppMove);
         assert_eq!(a.pos.tricks, 1);
+    }
+
+    /// Una partita interrotta a metà: quando compare un'altra briscola con tre carte nuove in mano
+    /// e il tavolo vuoto, si riparte da capo senza premere "Nuova partita".
+    #[test]
+    fn notices_new_deal_mid_game() {
+        let mut a = Assistant::default();
+        let c = |s, r| cards::make(s, r);
+        let hand = vec![seen(c(3, 1), 4.0), seen(c(2, 6), 4.0), seen(c(1, 0), 4.0)];
+        let scene = Scene { trump: Some(seen(c(0, 8), 4.0)), hand: hand.clone(), ..Default::default() };
+        show(&mut a, &scene);
+        a.set_first(ME);
+        show(&mut a, &scene);
+        assert_eq!(a.pos.step(), Step::MyMove);
+        // Stessa briscola, stessa mano: niente da rifare.
+        show(&mut a, &scene);
+        assert_eq!(a.pos.trump_card, Some(c(0, 8)));
+        assert_eq!(a.pos.first, Some(ME));
+        // Il sito distribuisce di nuovo: briscola diversa.
+        let new_hand = vec![seen(c(2, 0), 4.0), seen(c(3, 4), 4.0), seen(c(1, 5), 4.0)];
+        let deal = Scene { trump: Some(seen(c(1, 2), 4.0)), hand: new_hand, ..Default::default() };
+        show(&mut a, &deal);
+        assert_eq!(a.pos.trump_card, Some(c(1, 2)));
+        assert_eq!(a.pos.step(), Step::First);
     }
 
     /// Se la carta è incerta si chiede conferma; se l'utente annulla una carta letta male,

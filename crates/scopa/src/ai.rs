@@ -51,6 +51,29 @@ impl Weights {
         }
     }
 
+    /// Pesi adattati alla smazzata in corso: carte e denari non valgono più niente quando il
+    /// punto è già deciso (21 carte o 6 denari a qualcuno), i sette e i sei contano meno
+    /// quando la primiera è già praticamente assegnata.
+    pub fn in_context(&self, captured: [CardSet; 2]) -> Weights {
+        let mut w = *self;
+        let cards = [captured[0].len(), captured[1].len()];
+        if cards[0] >= 21 || cards[1] >= 21 {
+            w.card = 1;
+        }
+        let den = [(captured[0].0 & 0x3FF).count_ones(), (captured[1].0 & 0x3FF).count_ones()];
+        if den[0] >= 6 || den[1] >= 6 {
+            w.denaro = 0;
+        }
+        let sevens = |s: CardSet| (0..4u8).filter(|&su| s.contains(make(su, 6))).count();
+        let s = [sevens(captured[0]), sevens(captured[1])];
+        if s[0] >= 3 || s[1] >= 3 {
+            w.seven /= 3;
+            w.six /= 3;
+            w.ace /= 2;
+        }
+        w
+    }
+
     fn set_worth(&self, s: CardSet) -> i32 {
         s.iter().map(|c| self.worth(c)).sum()
     }
@@ -435,6 +458,91 @@ pub struct EngineConfig {
     pub tree: bool,
     /// Costante di esplorazione dell'albero.
     pub exploration: f64,
+    /// Deduzione delle carte avversarie dalle sue giocate nel giro (nessuna = mondi uniformi).
+    pub infer: Option<Infer>,
+    /// Nei rollout i pesi delle carte tengono conto dei punti già decisi nella smazzata.
+    pub ctx_policy: bool,
+    /// Nei rollout il finale esatto parte quando nel mazzo restano al più queste carte
+    /// (0 = solo a mazzo vuoto; 6 = anche l'ultimo giro con le carte da pescare note nel mondo).
+    pub solve_deck: u8,
+}
+
+/// Come si deducono le carte avversarie: si suppone che giochi come il Contacarte, ma non
+/// sempre (scelta "morbida" con temperatura), e si pesano i mondi con la probabilità delle
+/// giocate che ha fatto davvero.
+#[derive(Clone, Copy, Debug)]
+pub struct Infer {
+    /// Quanto è deciso il modello: probabilità ∝ exp(beta × valore in centesimi di punto).
+    pub beta: f64,
+    /// Quota di giocate a caso nel modello (protegge dagli avversari che non giocano così).
+    pub eps: f64,
+    /// Mondi candidati per ogni mondo usato: se ne sceglie uno in proporzione al peso.
+    pub candidates: u32,
+}
+
+impl Default for Infer {
+    fn default() -> Self {
+        Infer { beta: 0.03, eps: 0.1, candidates: 8 }
+    }
+}
+
+/// Probabilità che l'avversario, con in mano ora `hand`, abbia fatto le giocate del giro.
+pub fn play_likelihood(obs: &Observation, hand: CardSet, inf: &Infer, moves: &mut Vec<Move>) -> f64 {
+    let w = Weights::default();
+    let mut lik = 1.0;
+    // La mano al momento della giocata i: quella di ora più le carte giocate da lì in poi.
+    let mut h = hand;
+    for p in obs.opp_plays().iter().rev() {
+        h.insert(p.mv.card);
+        moves.clear();
+        moves_for(h, p.table, moves);
+        if moves.len() < 2 {
+            continue;
+        }
+        let unknown = CardSet::FULL.minus(h).minus(p.table).minus(p.seen);
+        let mut top = f64::MIN;
+        let mut chosen = f64::MIN;
+        let mut vals = [0f64; 64];
+        for (i, &m) in moves.iter().enumerate().take(64) {
+            let t = table_after(p.table, m);
+            let mut v = w.gain(m, p.table, false) as f64;
+            if !t.is_empty() {
+                v -= counted_risk(&w, t, unknown, p.my_len as u32, false);
+            }
+            v -= w.worth(m.card) as f64 * 1e-3;
+            vals[i] = v;
+            top = top.max(v);
+            if m == p.mv {
+                chosen = v;
+            }
+        }
+        let n = moves.len().min(64);
+        let z: f64 = vals[..n].iter().map(|v| (inf.beta * (v - top)).exp()).sum();
+        let pc = if chosen == f64::MIN { 0.0 } else { (inf.beta * (chosen - top)).exp() / z };
+        lik *= inf.eps / n as f64 + (1.0 - inf.eps) * pc;
+    }
+    lik
+}
+
+/// Un mondo compatibile con l'osservazione, scelto tenendo conto delle giocate avversarie.
+fn sample_world(obs: &Observation, cfg: &EngineConfig, buf: &mut Vec<Move>, rng: &mut SmallRng) -> Game {
+    let inf = match cfg.infer {
+        Some(inf) if obs.opp_plays_len > 0 && obs.opp_hand_len + obs.opp_plays_len == 3 && obs.deck_len > 0 => inf,
+        _ => return obs.determinize(rng),
+    };
+    let opp = 1 - obs.me as usize;
+    let mut best = obs.determinize(rng);
+    let mut total = play_likelihood(obs, best.hands[opp], &inf, buf);
+    for _ in 1..inf.candidates {
+        let g = obs.determinize(rng);
+        let l = play_likelihood(obs, g.hands[opp], &inf, buf);
+        total += l;
+        // Campionamento proporzionale al peso, un candidato alla volta.
+        if total > 0.0 && rng.gen::<f64>() * total < l {
+            best = g;
+        }
+    }
+    best
 }
 
 impl EngineConfig {
@@ -449,6 +557,9 @@ impl EngineConfig {
             threads: 1,
             tree: false,
             exploration: 0.7,
+            infer: None,
+            ctx_policy: false,
+            solve_deck: 0,
         }
     }
 }
@@ -490,7 +601,7 @@ fn rollout(
     rng: &mut SmallRng,
 ) -> [u8; 2] {
     while !g.is_over() {
-        if cfg.solve_endgame && g.deck_len == 0 && g.hands[0].len() + g.hands[1].len() > 1 {
+        if cfg.solve_endgame && g.deck_len <= cfg.solve_deck && g.hands[0].len() + g.hands[1].len() > 1 {
             // Finale esatto: la variante migliore per entrambi (differenza punti).
             return solve_line(g, me, i32::MIN, i32::MAX, bufs).1;
         }
@@ -501,6 +612,7 @@ fn rollout(
             moves[rng.gen_range(0..moves.len())]
         } else {
             match cfg.rollout {
+                Rollout::OpenHand if cfg.ctx_policy => open_hand_move(g, &cfg.policy.in_context(g.captured), moves),
                 Rollout::OpenHand => open_hand_move(g, &cfg.policy, moves),
                 Rollout::Greedy => {
                     let last = g.last_play();
@@ -545,7 +657,7 @@ fn simulate(obs: &Observation, moves: &[Move], cfg: &EngineConfig, samples: u32,
     let mut bufs = Vec::new();
     for _ in 0..samples {
         // Lo stesso mondo per tutte le mosse: confronto a parità di carte.
-        let world = obs.determinize(rng);
+        let world = sample_world(obs, cfg, &mut buf, rng);
         for (i, &m) in moves.iter().enumerate() {
             let mut g = world;
             g.play(m);
@@ -766,7 +878,7 @@ fn tree_search(
     let mut moves = Vec::new();
     let mut bufs = Vec::new();
     for _ in 0..iterations {
-        let mut g = obs.determinize(rng);
+        let mut g = sample_world(obs, cfg, &mut moves, rng);
         let mut path = vec![0usize];
         let mut cur = 0usize;
         loop {

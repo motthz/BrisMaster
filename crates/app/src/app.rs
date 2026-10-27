@@ -8,10 +8,17 @@ use eframe::egui::{self, Color32, FontId, Rect, RichText, Stroke, TextStyle};
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc::{channel, Receiver};
 
+/// Da questa precisione in su il consiglio viene dall'ISMCTS potenziato con altrettante
+/// iterazioni: a 20.000 batte il motore a 3000 mondi (53% su 8.000 partite, bench/RISULTATI.md).
+pub(crate) const ISMCTS_FROM: u32 = 20000;
+
 /// Configurazione del motore per l'app: i mondi si dividono su tutti i core del PC.
 pub(crate) fn engine_cfg(samples: u32) -> EngineConfig {
-    let mut cfg = EngineConfig::strength(samples);
+    let mut cfg = EngineConfig::strength(samples.min(3000));
     cfg.threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    if samples >= ISMCTS_FROM {
+        cfg.ismcts = Some(samples);
+    }
     cfg
 }
 
@@ -19,13 +26,14 @@ pub(crate) fn engine_cfg(samples: u32) -> EngineConfig {
 #[serde(default)]
 struct Settings {
     auto_update: bool,
-    /// Mondi simulati per ogni consiglio. Nome nuovo: chi aveva il vecchio valore (2000) passa a 3000.
+    /// Precisione dei consigli: mondi simulati, o iterazioni dell'ISMCTS da `ISMCTS_FROM` in su.
+    /// Nome nuovo: chi aveva il vecchio valore (2000) passa al nuovo predefinito.
     assist_worlds: u32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_update: true, assist_worlds: 3000 }
+        Settings { auto_update: true, assist_worlds: ISMCTS_FROM }
     }
 }
 

@@ -240,6 +240,20 @@ struct Node {
     visits: f64,
     avail: f64,
     reward: f64,
+    /// Vittorie (pareggio = ½) e punti finali di chi ha giocato la carta.
+    wins: f64,
+    points: f64,
+}
+
+/// Risultato della ricerca per una carta giocabile adesso.
+#[derive(Clone, Copy, Debug)]
+pub struct RootChild {
+    pub card: Card,
+    pub visits: f64,
+    /// Somme su tutte le visite: utilità, vittorie e punti finali.
+    pub reward: f64,
+    pub wins: f64,
+    pub points: f64,
 }
 
 pub struct IsmctsPlayer {
@@ -277,15 +291,15 @@ impl Player for IsmctsPlayer {
             return obs.hand.iter().next().unwrap();
         }
         let root = self.search(obs, rng);
-        root.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap().0
+        root.iter().max_by(|a, b| a.visits.partial_cmp(&b.visits).unwrap()).unwrap().card
     }
 }
 
 impl IsmctsPlayer {
-    /// Ricerca dalla posizione: per ogni carta giocabile, visite e utilità media.
-    pub fn search(&self, obs: &Observation, rng: &mut SmallRng) -> Vec<(Card, f64, f64)> {
+    /// Ricerca dalla posizione: per ogni carta giocabile, visite e risultati.
+    pub fn search(&self, obs: &Observation, rng: &mut SmallRng) -> Vec<RootChild> {
         let mut solver = Solver::default();
-        let mut nodes = vec![Node { card: 255, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0 }];
+        let mut nodes = vec![Node { card: 255, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0, wins: 0.0, points: 0.0 }];
         for _ in 0..self.iterations {
             let mut g = obs.determinize(rng);
             let mut path = vec![0usize];
@@ -308,7 +322,7 @@ impl IsmctsPlayer {
                     let c = v[rng.gen_range(0..v.len())];
                     let mover = g.to_move();
                     g.play(c);
-                    nodes.push(Node { card: c, mover, children: vec![], visits: 0.0, avail: 1.0, reward: 0.0 });
+                    nodes.push(Node { card: c, mover, children: vec![], visits: 0.0, avail: 1.0, reward: 0.0, wins: 0.0, points: 0.0 });
                     let id = nodes.len() - 1;
                     nodes[cur].children.push(id);
                     path.push(id);
@@ -345,11 +359,21 @@ impl IsmctsPlayer {
             };
             for &id in &path {
                 let n = &mut nodes[id];
+                let pts = finals[n.mover as usize];
                 n.visits += 1.0;
-                n.reward += utility(finals[n.mover as usize]);
+                n.reward += utility(pts);
+                n.wins += result(pts);
+                n.points += pts as f64;
             }
         }
-        nodes[0].children.iter().map(|&k| (nodes[k].card, nodes[k].visits, nodes[k].reward / nodes[k].visits)).collect()
+        nodes[0]
+            .children
+            .iter()
+            .map(|&k| {
+                let n = &nodes[k];
+                RootChild { card: n.card, visits: n.visits, reward: n.reward, wins: n.wins, points: n.points }
+            })
+            .collect()
     }
 }
 
@@ -445,6 +469,9 @@ pub struct EngineConfig {
     pub rollout_solve: Option<u8>,
     /// Politica dei rollout: `None` = euristica classica, altrimenti a carte scoperte.
     pub rollout_policy: Option<RolloutParams>,
+    /// Se impostato, finché c'è il mazzo la mossa si sceglie con l'ISMCTS potenziato con
+    /// queste iterazioni invece che con i mondi (`samples` vale solo a mazzo finito).
+    pub ismcts: Option<u32>,
 }
 
 impl EngineConfig {
@@ -459,6 +486,7 @@ impl EngineConfig {
             rollout_solve: Some(2),
             rollout_policy: Some(RolloutParams::default()),
             threads: 1,
+            ismcts: None,
         }
     }
 
@@ -473,6 +501,7 @@ impl EngineConfig {
             rollout_solve: None,
             rollout_policy: None,
             threads: 1,
+            ismcts: None,
         }
     }
 }
@@ -784,6 +813,11 @@ fn simulate(obs: &Observation, moves: &[Card], cfg: &EngineConfig, samples: u32,
 
 /// Valuta tutte le mosse legali dal punto di vista di chi deve muovere.
 pub fn evaluate(obs: &Observation, cfg: &EngineConfig, rng: &mut SmallRng) -> Vec<MoveEval> {
+    if let Some(iterations) = cfg.ismcts {
+        if obs.deck_len > 0 {
+            return evaluate_ismcts(obs, iterations, rng);
+        }
+    }
     let moves = obs.hand.to_vec();
     // Se il mazzo è vuoto le mani sono note: basta un solo mondo.
     let samples = if obs.deck_len == 0 { 1 } else { cfg.samples.max(1) };
@@ -822,6 +856,22 @@ pub fn evaluate(obs: &Observation, cfg: &EngineConfig, rng: &mut SmallRng) -> Ve
         .collect();
     out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
     out.into_iter().map(|(_, e)| e).collect()
+}
+
+/// Valutazione con l'ISMCTS potenziato, su un solo albero (un thread): è il giocatore
+/// provato nei test massivi. Le mosse sono in ordine di visite: la prima è quella scelta.
+pub fn evaluate_ismcts(obs: &Observation, iterations: u32, rng: &mut SmallRng) -> Vec<MoveEval> {
+    let mut total = IsmctsPlayer::strong(iterations).search(obs, rng);
+    total.sort_by(|a, b| b.visits.partial_cmp(&a.visits).unwrap());
+    let mut out: Vec<MoveEval> = total
+        .iter()
+        .map(|c| MoveEval { card: c.card, win_prob: c.wins / c.visits, exp_points: c.points / c.visits })
+        .collect();
+    // Con pochissime iterazioni una carta può non essere mai stata provata: va in fondo.
+    for c in obs.hand.iter().filter(|&c| !out.iter().any(|e| e.card == c)).collect::<Vec<_>>() {
+        out.push(MoveEval { card: c, win_prob: 0.0, exp_points: 0.0 });
+    }
+    out
 }
 
 pub struct EnginePlayer {
@@ -936,6 +986,18 @@ mod tests {
             g.hands[1].insert(c);
         }
         assert_eq!(open_hand_move(&g, &p), make(2, 3));
+    }
+
+    #[test]
+    fn ismcts_evaluation_is_complete() {
+        let mut rng = SmallRng::seed_from_u64(6);
+        let g = Game::new(&mut rng, 0);
+        let obs = Observation::of(&g, 0);
+        let mut cfg = EngineConfig::strength(100);
+        cfg.ismcts = Some(4000);
+        let evals = evaluate(&obs, &cfg, &mut rng);
+        assert_eq!(evals.len(), 3);
+        assert!(evals.iter().all(|e| (0.0..=1.0).contains(&e.win_prob) && e.exp_points <= 120.0));
     }
 
     #[test]

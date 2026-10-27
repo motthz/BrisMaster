@@ -1,7 +1,7 @@
 //! Misura i tempi di risposta del motore, fase per fase della partita.
 //!
 //! Uso:
-//!   bench [--positions N] [--samples MONDI] [--threads T] [--solve SOGLIA] [--rsolve SOGLIA|no] [--seed X]
+//!   bench [--positions N] [--samples MONDI] [--threads T] [--solve SOGLIA] [--rsolve SOGLIA|no] [--ismcts ITERAZIONI] [--seed X]
 //!
 //! Senza `--solve` si usa la soglia del motore predefinito.
 //!
@@ -47,6 +47,9 @@ fn main() {
     cfg.threads = threads;
     if let Some(i) = args.iter().position(|a| a == "--solve") {
         cfg.solve_deck_len = args[i + 1].parse().unwrap();
+    }
+    if let Some(i) = args.iter().position(|a| a == "--ismcts") {
+        cfg.ismcts = args[i + 1].parse().ok();
     }
     if let Some(i) = args.iter().position(|a| a == "--rsolve") {
         cfg.rollout_solve = args[i + 1].parse().ok();

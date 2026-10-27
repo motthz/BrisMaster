@@ -68,7 +68,14 @@ Tutte le righe: 4.000 mazzi giocati due volte a posti invertiti (**8.000 partite
 | Motore 6000 mondi contro ISMCTS 20.000 | 54,4% | 53,4 – 55,5 |
 | Motore 3000 mondi contro ISMCTS potenziato 10.000 | 48,1% | 47,1 – 49,1 |
 
-Per questo l'Assistente ora usa 3000 mondi di serie (scelte: Veloce 1000, Normale 3000, Massima 6000). Tempi di una mossa con 4 core (`bench --threads 4`, 400 posizioni):
+**ISMCTS potenziato come motore.** Con 20.000 iterazioni è il giocatore più forte che abbiamo:
+
+| Partita | Punteggio | IC 95% |
+|---|---:|---|
+| ISMCTS potenziato 20.000 contro motore 3000 mondi | **53,0%** | 52,0 – 53,9 |
+| ISMCTS potenziato 20.000 contro ISMCTS 20.000 | 54,9% | 53,9 – 56,0 |
+
+Per questo nell'Assistente la precisione Massima (quella di serie) usa l'ISMCTS potenziato con 20.000 iterazioni: 40 ms di media a mossa, al più 71 ms, su un thread (`bench --ismcts 20000`). Le altre scelte restano il motore a mondi: Veloce 1000, Normale 3000. Tempi di una mossa con 4 core (`bench --threads 4`, 400 posizioni):
 
 | Mondi | Media a metà partita | Media / max con 1-8 carte nel mazzo |
 |---:|---:|---:|

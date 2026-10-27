@@ -90,7 +90,7 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
             Box::new(EnginePlayer::new(EngineConfig::classic(num(&s[8..], "numero di mondi")? as u32)))
         }
         // Varianti per chiavi, a partire dal motore attuale:
-        // eng:mondi=1000,eps=0,solve=8,rsolve=2,pol=open,tb=8,tm=2,lb=0,os=4 (rsolve=no, pol=heuristic)
+        // eng:mondi=1000,eps=0,solve=8,rsolve=2,pol=open,tb=8,tm=2,lb=0,os=4,ismcts=N (rsolve=no, pol=heuristic)
         s if s.starts_with("eng:") => {
             let mut cfg = EngineConfig::strength(1000);
             for kv in s[4..].split(',').filter(|p| !p.is_empty()) {
@@ -106,6 +106,7 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
                     "tm" => policy(&mut cfg).trump_mult = num(v, "tm")? as i32,
                     "lb" => policy(&mut cfg).lead_bonus = num(v, "lb")? as i32,
                     "os" => policy(&mut cfg).opp_spend = num(v, "os")? as i32,
+                    "ismcts" => cfg.ismcts = Some(num(v, "ismcts")? as u32),
                     other => return Err(format!("opzione sconosciuta: {other}")),
                 }
             }

@@ -149,6 +149,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "blackjack-core"
+version = "0.3.0"
+dependencies = [
+ "rand",
+ "serde",
+]
+
+[[package]]
 name = "block2"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -184,32 +192,35 @@ dependencies = [
 
 [[package]]
 name = "briscola-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rand",
 ]
 
 [[package]]
 name = "briscola-sim"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "briscola-core 0.1.1",
  "briscola-core 0.2.0",
- "briscola-core 0.2.1",
+ "briscola-core 0.3.0",
  "rand",
  "rayon",
 ]
 
 [[package]]
 name = "brismaster"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
- "briscola-core 0.2.1",
+ "blackjack-core",
+ "briscola-core 0.3.0",
  "burraco",
  "chrono",
  "eframe",
+ "poker-core",
  "poker-it",
  "rand",
+ "scala40-core",
  "scopa-core",
  "self-replace",
  "semver",
@@ -227,7 +238,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "burraco"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rand",
  "rayon",
@@ -2004,8 +2015,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "poker-core"
+version = "0.3.0"
+dependencies = [
+ "rand",
+ "rayon",
+]
+
+[[package]]
 name = "poker-it"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rand",
  "rayon",
@@ -2013,9 +2032,18 @@ dependencies = [
 
 [[package]]
 name = "poker-it-sim"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "poker-it",
+ "rand",
+ "rayon",
+]
+
+[[package]]
+name = "poker-sim"
+version = "0.3.0"
+dependencies = [
+ "poker-core",
  "rand",
  "rayon",
 ]
@@ -2390,6 +2418,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "scala40-core"
+version = "0.3.0"
+dependencies = [
+ "rand",
+]
+
+[[package]]
+name = "scala40-sim"
+version = "0.3.0"
+dependencies = [
+ "rand",
+ "rayon",
+ "scala40-core",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2400,17 +2444,17 @@ dependencies = [
 
 [[package]]
 name = "scopa-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
- "briscola-core 0.2.1",
+ "briscola-core 0.3.0",
  "rand",
 ]
 
 [[package]]
 name = "scopa-sim"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
- "briscola-core 0.2.1",
+ "briscola-core 0.3.0",
  "rand",
  "rayon",
  "scopa-core",
@@ -2525,9 +2569,9 @@ dependencies = [
 
 [[package]]
 name = "settemezzo"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
- "briscola-core 0.2.0",
+ "briscola-core 0.3.0",
  "rand",
  "rayon",
 ]

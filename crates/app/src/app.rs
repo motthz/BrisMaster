@@ -180,9 +180,9 @@ impl BrisApp {
         }
     }
 
-    /// La finestra compatta c'è per la briscola e la scopa.
+    /// La finestra compatta c'è per la briscola, la scopa e il poker all'italiana.
     fn compact(&self) -> bool {
-        self.settings.compact && matches!(self.settings.game, Gioco::Briscola | Gioco::Scopa)
+        self.settings.compact && matches!(self.settings.game, Gioco::Briscola | Gioco::Scopa | Gioco::PokerIt)
     }
 
     /// Ridimensiona la finestra quando si entra o si esce dalla modalità compatta.
@@ -243,7 +243,16 @@ impl BrisApp {
                 Gioco::Scala40 => self.scala40.top_controls(ui),
                 Gioco::SetteMezzo => self.settemezzo.top_controls(ui, &mut self.settings.settemezzo),
                 Gioco::Blackjack => self.blackjack.top_controls(ui),
-                Gioco::PokerIt => self.poker_it.top_controls(ui),
+                Gioco::PokerIt => {
+                    if ui
+                        .button("Finestra compatta")
+                        .on_hover_text("Solo la mano, le azioni e il consiglio, da tenere accanto al browser")
+                        .clicked()
+                    {
+                        self.settings.compact = true;
+                    }
+                    self.poker_it.top_controls(ui);
+                }
                 Gioco::Burraco | Gioco::Holdem => {
                     ui.label(RichText::new("Assistente: descrivi la partita, il motore ti dice cosa fare").weak());
                 }
@@ -322,6 +331,7 @@ impl eframe::App for BrisApp {
             });
             egui::CentralPanel::default().show(ui, |ui| match self.settings.game {
                 Gioco::Scopa => self.scopa.compact(ui),
+                Gioco::PokerIt => self.poker_it.compact(ui),
                 _ => self.assistant.side_ui(ui, &mut self.settings.assist_worlds, true),
             });
             return;

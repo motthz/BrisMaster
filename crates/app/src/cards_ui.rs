@@ -13,7 +13,7 @@ const PAPER: Color32 = Color32::from_rgb(251, 247, 236);
 const INK: Color32 = Color32::from_rgb(45, 40, 35);
 pub const GOLD: Color32 = Color32::from_rgb(222, 178, 70);
 pub const BEST: Color32 = Color32::from_rgb(120, 230, 140);
-const FELT_TOP: Color32 = Color32::from_rgb(22, 92, 62);
+pub const FELT_TOP: Color32 = Color32::from_rgb(22, 92, 62);
 const FELT_BOTTOM: Color32 = Color32::from_rgb(10, 58, 40);
 
 /// Colore di riferimento di ogni seme (testo e bordi).

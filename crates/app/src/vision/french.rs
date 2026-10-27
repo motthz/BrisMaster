@@ -255,7 +255,8 @@ fn glyph(img: &Img, parts: &[&Comp]) -> Glyph {
     }
     // Buchi: zone vuote che non toccano il bordo del riquadro.
     let mut out = vec![false; w * h];
-    let mut stack: Vec<usize> = (0..w * h).filter(|&i| !m[i] && (i % w == 0 || i % w == w - 1 || i / w == 0 || i / w == h - 1)).collect();
+    let mut stack: Vec<usize> =
+        (0..w * h).filter(|&i| !m[i] && (i % w == 0 || i % w == w - 1 || i / w == 0 || i / w == h - 1)).collect();
     for &i in &stack {
         out[i] = true;
     }
@@ -365,7 +366,9 @@ pub fn structural(img: &Img, partial: bool) -> [f32; 40] {
     let mut out = [0.0f32; 40];
     let comps = components(img);
     let (w, h) = (img.w as f32, img.h as f32);
-    let colored = |c: &Comp| c.color != OTHER && c.h() as f32 >= 0.05 * h && (c.h() as f32) < 0.45 * h && (c.w() as f32) < 0.45 * w;
+    let colored = |c: &Comp| {
+        c.color != OTHER && c.h() as f32 >= 0.05 * h && (c.h() as f32) < 0.45 * h && (c.w() as f32) < 0.45 * w
+    };
     // Il primo carattere dell'indice: il segno colorato più vicino all'angolo in alto a sinistra.
     let Some(first) = comps
         .iter()
@@ -401,9 +404,8 @@ pub fn structural(img: &Img, partial: bool) -> [f32; 40] {
             d(a).partial_cmp(&d(b)).unwrap()
         });
     // I simboli al centro (quando la carta si vede intera) votano insieme al simbolo dell'indice.
-    let in_corner = |c: &Comp| {
-        (c.cx() < 0.3 * w && c.cy() < 0.4 * h) || (c.cx() > 0.7 * w && c.cy() > 0.6 * h) || in_parts(c)
-    };
+    let in_corner =
+        |c: &Comp| (c.cx() < 0.3 * w && c.cy() < 0.4 * h) || (c.cx() > 0.7 * w && c.cy() > 0.6 * h) || in_parts(c);
     let is_sym = |c: &Comp| suit_sym.is_some_and(|s| std::ptr::eq(s, c));
     // Le figure hanno al centro un disegno, non simboli da contare.
     let card_area = w * h;
@@ -502,7 +504,8 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
 
 /// La carta più probabile fra quelle per cui vale `allowed`, e quanto stacca la seconda.
 pub fn best(view: &CardView, allowed: impl Fn(Card) -> bool) -> Option<(Card, f32)> {
-    let mut v: Vec<(Card, f32)> = (0..NUM_CARDS as Card).filter(|&c| allowed(c)).map(|c| (c, view.scores[c as usize])).collect();
+    let mut v: Vec<(Card, f32)> =
+        (0..NUM_CARDS as Card).filter(|&c| allowed(c)).map(|c| (c, view.scores[c as usize])).collect();
     v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     let first = *v.first()?;
     let margin = v.get(1).map_or(f32::INFINITY, |s| first.1 - s.1);
@@ -551,11 +554,8 @@ pub fn scene(img: &Img) -> Option<PokerScene> {
     heights.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let card_h = heights[heights.len() / 2];
     let card_w = card_h * RATIO;
-    let row: Vec<&Blob> = faces
-        .iter()
-        .filter(|b| (0.8..=1.2).contains(&(extent(&b.rect).1 / card_h)))
-        .copied()
-        .collect();
+    let row: Vec<&Blob> =
+        faces.iter().filter(|b| (0.8..=1.2).contains(&(extent(&b.rect).1 / card_h))).copied().collect();
     let bottom = row.iter().map(|b| b.rect.cy).fold(f32::MIN, f32::max);
     let mut hand: Vec<&Blob> = row.into_iter().filter(|b| b.rect.cy >= bottom - 0.5 * card_h).collect();
     hand.sort_by(|a, b| a.rect.cx.partial_cmp(&b.rect.cx).unwrap());
@@ -565,7 +565,14 @@ pub fn scene(img: &Img) -> Option<PokerScene> {
         if w < 0.85 * card_w {
             // Striscia di una carta coperta in parte da quella alla sua destra.
             let x0 = b.rect.cx - w / 2.0;
-            let r = RotRect { cx: x0 + card_w / 2.0, cy: b.rect.cy, u: (1.0, 0.0), v: (0.0, 1.0), hw: card_w / 2.0, hh: h / 2.0 };
+            let r = RotRect {
+                cx: x0 + card_w / 2.0,
+                cy: b.rect.cy,
+                u: (1.0, 0.0),
+                v: (0.0, 1.0),
+                hw: card_w / 2.0,
+                hh: h / 2.0,
+            };
             views.push(view_of(img, &r, true));
             continue;
         }
@@ -581,7 +588,8 @@ pub fn scene(img: &Img) -> Option<PokerScene> {
             let right = if last { x0 + w } else { e + card_w };
             // Le carte coperte in parte si raddrizzano intere: dell'angolo in alto a sinistra basta la striscia visibile.
             let cw = if last { right - e } else { card_w };
-            let r = RotRect { cx: e + cw / 2.0, cy: b.rect.cy, u: (1.0, 0.0), v: (0.0, 1.0), hw: cw / 2.0, hh: h / 2.0 };
+            let r =
+                RotRect { cx: e + cw / 2.0, cy: b.rect.cy, u: (1.0, 0.0), v: (0.0, 1.0), hw: cw / 2.0, hh: h / 2.0 };
             views.push(view_of(img, &r, !last));
         }
     }
@@ -770,4 +778,3 @@ mod tests {
         assert!(s.hand.is_empty());
     }
 }
-

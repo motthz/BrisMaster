@@ -207,6 +207,7 @@ dependencies = [
  "briscola-core 0.2.1",
  "chrono",
  "eframe",
+ "poker-it",
  "rand",
  "scopa-core",
  "self-replace",
@@ -1991,6 +1992,23 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide 0.8.9",
+]
+
+[[package]]
+name = "poker-it"
+version = "0.2.1"
+dependencies = [
+ "rand",
+ "rayon",
+]
+
+[[package]]
+name = "poker-it-sim"
+version = "0.2.1"
+dependencies = [
+ "poker-it",
+ "rand",
+ "rayon",
 ]
 
 [[package]]

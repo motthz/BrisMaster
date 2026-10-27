@@ -4,6 +4,7 @@ mod app;
 mod assistant;
 mod blackjack;
 mod cards_ui;
+mod poker_it;
 mod record;
 mod scopa_ui;
 mod update;

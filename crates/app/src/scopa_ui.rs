@@ -214,6 +214,8 @@ struct Vision {
     scene: Option<ScopaScene>,
     /// Candidati annullati dall'utente: se ricompaiono si chiede conferma invece di inserirli.
     doubts: Vec<(Step, Card)>,
+    /// Scelta del monitor e dell'area del tavolo, e diagnosi.
+    picker: crate::vision::screen::AreaPicker,
     /// Distribuzione vista prima di sapere chi comincia (tre carte in mano, quattro in tavola).
     deal: Option<ScopaScene>,
     /// Carta dell'avversario vista di passaggio (anche in una sola lettura) prima che prendesse.
@@ -329,8 +331,13 @@ impl Assist {
     fn reset(&mut self) {
         let vision = std::mem::take(&mut self.vision);
         *self = Assist::default();
-        self.vision =
-            Vision { reader: vision.reader, memory: vision.memory, status: vision.status, ..Default::default() };
+        self.vision = Vision {
+            reader: vision.reader,
+            memory: vision.memory,
+            status: vision.status,
+            picker: vision.picker,
+            ..Default::default()
+        };
     }
 
     /// Punteggio della partita contando la smazzata appena finita.
@@ -1103,6 +1110,9 @@ fn vision_ui(a: &mut Assist, ui: &mut egui::Ui) {
         return;
     }
     ui.label(RichText::new(&a.vision.status).small().weak());
+    let last = a.vision.reader.as_ref().and_then(|r| r.last_frame());
+    let summary = a.vision.status.clone();
+    a.vision.picker.controls(ui, last, &summary);
     let ctx = ui.ctx().clone();
     if let Some(c) = &mut a.vision.confirm {
         let tex = c.texture.get_or_insert_with(|| {

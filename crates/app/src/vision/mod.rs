@@ -6,6 +6,7 @@ pub mod capture;
 pub mod classify;
 pub mod detect;
 pub mod memory;
+pub mod screen;
 
 /// Immagine RGB.
 #[derive(Clone, Debug)]
@@ -159,6 +160,7 @@ pub fn read_scopa(img: &Img, mem: &Memory) -> Option<ScopaScene> {
 pub struct Reader<S> {
     pub rx: Receiver<Reading<S>>,
     stop: Arc<AtomicBool>,
+    last: Arc<Mutex<Option<Img>>>,
 }
 
 impl<S: Send + 'static> Reader<S> {
@@ -172,18 +174,31 @@ impl<S: Send + 'static> Reader<S> {
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
+        let last = Arc::new(Mutex::new(None));
+        let frame = last.clone();
         std::thread::spawn(move || {
-            let mut monitor = 0;
+            let mut monitor = screen::area().lock().unwrap().monitor;
+            let mut chosen = None;
             while !flag.load(Ordering::Relaxed) {
                 let t0 = std::time::Instant::now();
+                let area = *screen::area().lock().unwrap();
+                if chosen != Some(area) {
+                    // Area appena scelta: si legge il suo monitor.
+                    monitor = area.monitor;
+                    chosen = Some(area);
+                }
                 let reading = match capture::grab(monitor) {
                     Ok((img, count)) => {
-                        let scene = read(&img, &mem.lock().unwrap());
+                        let table = screen::table(&img, &area);
+                        let scene = table.as_ref().and_then(|t| read(t, &mem.lock().unwrap()));
+                        *frame.lock().unwrap() = Some(table.unwrap_or(img));
                         match scene {
                             Some(s) => Reading::Scene(s),
                             None => {
-                                // Prova il monitor successivo.
-                                monitor = (monitor + 1) % count.max(1);
+                                // Senza un'area scelta, prova il monitor successivo.
+                                if area.rect.is_none() {
+                                    monitor = (monitor + 1) % count.max(1);
+                                }
                                 Reading::NoTable
                             }
                         }
@@ -197,7 +212,12 @@ impl<S: Send + 'static> Reader<S> {
                 std::thread::sleep(every.saturating_sub(t0.elapsed()));
             }
         });
-        Reader { rx, stop }
+        Reader { rx, stop, last }
+    }
+
+    /// L'ultima schermata letta (già ritagliata sul tavolo), per la diagnosi.
+    pub fn last_frame(&self) -> Option<Img> {
+        self.last.lock().unwrap().clone()
     }
 }
 

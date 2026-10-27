@@ -154,6 +154,11 @@ Il motore scompone la mano in combinazioni, coppie da completare e carte spaiate
 cargo run --release -p scala40-sim -- report --matches 4000 --out bench/SCALA40.md
 cargo run --release -p scala40-sim -- --player engine --opponent defensive --matches 1000
 ```
+## Burraco
+
+Dal menu in alto a sinistra si sceglie il gioco. Per il **burraco** (a due giocatori) c'è l'assistente: indichi le tue 11 carte e la carta scoperta, poi a ogni turno cosa peschi, cosa cala e scarta l'avversario e le carte del pozzetto quando lo prendi. Il motore ti dice se pescare dal tallone o raccogliere gli scarti, cosa calare e in che ordine, e cosa scartare, con la probabilità di vincere la smazzata per ogni alternativa. Le carte si inseriscono con un clic sulla griglia o da tastiera (`7c`, `Kq`, `10p`, `Af`, `jk` per il jolly); ogni passo si annulla con Ctrl+Z.
+
+Il motore del burraco (`crates/burraco`) è un giocatore esperto tarato con decine di migliaia di smazzate, più simulazioni Monte Carlo sulle due scelte decisive del turno: pescare o raccogliere e quale carta scartare. Su 8.000 smazzate per avversario vince tra il 58% e l'87% contro 9 stili diversi, sempre sopra il 55% con certezza statistica, e il 50% contro se stesso (come deve essere): dettagli in [bench/BURRACO.md](bench/BURRACO.md).
 
 ## Struttura
 
@@ -162,6 +167,7 @@ cargo run --release -p scala40-sim -- --player engine --opponent defensive --mat
 | `crates/core` | Regole, motore, avversari di riferimento, statistiche |
 | `crates/sim` | Banco di prova per le simulazioni massive |
 | `crates/blackjack` | Blackjack: regole, valore atteso esatto, strategia di base, simulatore |
+| `crates/burraco` | Burraco: regole, giocatori, motore, banco di prova (`burraco-sim`) |
 | `crates/app` | App Windows (egui) e aggiornamento automatico |
 | `crates/scopa` | Scopa: regole (partita a 11), motore e avversari |
 | `crates/scopa-sim` | Banco di prova della scopa |

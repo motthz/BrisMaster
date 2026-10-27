@@ -126,6 +126,7 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
         return match ver {
             "v0.1.0" | "v0.1.1" => v0_1_1::make(rest),
             "v0.2.0" | "v0.2.1" => v0_2_0::make(rest),
+            "v0.3.0" => v0_3_0::make(rest),
             _ => Err(format!(
                 "versione non disponibile: {ver} (disponibili: {})",
                 RELEASED.join(", ")
@@ -138,12 +139,14 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
 /// Versioni rilasciate con cui si può confrontare il motore (la più recente per ultima).
 /// v0.1.0 e v0.1.1 hanno lo stesso motore; dalla v0.2.0 il motore è quello forte (PR #4).
 /// v0.2.1 ha lo stesso motore della v0.2.0 (aggiunge solo la registrazione delle partite).
-pub const RELEASED: &[&str] = &["v0.1.1", "v0.2.0", "v0.2.1"];
+/// v0.3.0: finale risolto con tabella delle trasposizioni, ISMCTS potenziato nell'assistente.
+pub const RELEASED: &[&str] = &["v0.1.1", "v0.2.0", "v0.2.1", "v0.3.0"];
 
 /// Genera l'adattatore per una versione rilasciata del crate `briscola-core`.
 /// Per aggiungere una versione: dipendenza in Cargo.toml, `legacy!`, voce in `make_agent` e `RELEASED`.
+/// Dopo il tag si elencano i giocatori ISMCTS della versione: prefisso della SPEC => costruttore dal numero di iterazioni.
 macro_rules! legacy {
-    ($module:ident, $krate:ident, $tag:literal) => {
+    ($module:ident, $krate:ident, $tag:literal, $($prefix:literal => $ismcts:expr),+ $(,)?) => {
         mod $module {
             use super::Agent;
             use briscola_core::cards::Card;
@@ -162,8 +165,11 @@ macro_rules! legacy {
                 let player: Box<dyn Player> = match spec {
                     "heuristic" => Box::new(HeuristicPlayer),
                     s if s.starts_with("engine:") => Box::new(EnginePlayer::new(EngineConfig::strength(n(&s[7..])?))),
-                    s if s.starts_with("ismcts:") => Box::new(IsmctsPlayer { iterations: n(&s[7..])? }),
-                    _ => return Err(format!("{}: disponibili heuristic, engine:N, ismcts:N", $tag)),
+                    $(s if s.starts_with($prefix) => Box::new(($ismcts)(n(&s[$prefix.len()..])?)),)+
+                    _ => {
+                        let ismcts: &[&str] = &[$($prefix),+];
+                        return Err(format!("{}: disponibili heuristic, engine:N, {}", $tag, ismcts.join("N, ") + "N"));
+                    }
                 };
                 Ok(Box::new(Legacy { player, game: None }))
             }
@@ -188,8 +194,15 @@ macro_rules! legacy {
     };
 }
 
-legacy!(v0_1_1, core_v0_1_1, "v0.1.1");
-legacy!(v0_2_0, core_v0_2_0, "v0.2.0");
+legacy!(v0_1_1, core_v0_1_1, "v0.1.1", "ismcts:" => |i| core_v0_1_1::ai::IsmctsPlayer { iterations: i });
+legacy!(v0_2_0, core_v0_2_0, "v0.2.0", "ismcts:" => |i| core_v0_2_0::ai::IsmctsPlayer { iterations: i });
+legacy!(
+    v0_3_0,
+    core_v0_3_0,
+    "v0.3.0",
+    "ismcts+:" => core_v0_3_0::ai::IsmctsPlayer::strong,
+    "ismcts:" => core_v0_3_0::ai::IsmctsPlayer::new,
+);
 
 #[cfg(test)]
 mod tests {
@@ -197,7 +210,7 @@ mod tests {
 
     #[test]
     fn specs_parse() {
-        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "v0.2.0/engine:20", "v0.2.1/engine:20", "followsuit"] {
+        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "v0.2.0/engine:20", "v0.2.1/engine:20", "v0.3.0/engine:20", "v0.3.0/ismcts+:20", "v0.3.0/ismcts:20", "v0.2.0/ismcts:20", "followsuit"] {
             assert!(make_agent(s).is_ok(), "{s}");
         }
         assert!(make_agent("v9.9.9/engine:20").is_err());

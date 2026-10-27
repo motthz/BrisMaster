@@ -350,7 +350,8 @@ struct Confirm {
     step: Step,
     card: Card,
     img: Img,
-    partial: bool,
+    /// Fascia della carta che si vedeva sullo schermo.
+    vis: [f32; 2],
     texture: Option<egui::TextureHandle>,
 }
 
@@ -578,13 +579,17 @@ impl Assistant {
                     // La carta che l'utente scrive a mano si impara dall'immagine sullo schermo:
                     // la pescata (l'unica carta della mano non ancora nota) o quella dell'avversario.
                     let shown = match self.pos.step() {
-                        Step::Draw(_) => self.new_hand_view().map(|v| v.img.clone()),
+                        Step::Trump => {
+                            let trump = self.vision.scene.as_ref().and_then(|s| s.trump.as_ref());
+                            trump.map(|v| (v.img.clone(), v.vis))
+                        }
+                        Step::Draw(_) => self.new_hand_view().map(|v| (v.img.clone(), v.vis)),
                         Step::OppMove => self.opp_view_of(c),
                         _ => None,
                     };
                     if self.enter(c) {
-                        if let Some(img) = seen.filter(|v| !v.partial).map(|v| v.img).or(shown) {
-                            self.vision.memory.lock().unwrap().remember(&img, c);
+                        if let Some((img, vis)) = seen.map(|v| (v.img, v.vis)).or(shown) {
+                            self.vision.memory.lock().unwrap().remember(&img, vis, c);
                         }
                     } else {
                         self.entry_error = Some(format!("{} non è possibile adesso", cards::name(c)));
@@ -734,14 +739,12 @@ impl Assistant {
             let img = view.img.clone();
             let len = self.history.len();
             if self.enter(card) {
-                if !view.partial {
-                    self.vision.memory.lock().unwrap().remember(&img, card);
-                }
+                self.vision.memory.lock().unwrap().remember(&img, view.vis, card);
                 self.vision.last = Some((card, img, len));
             }
         } else {
             self.vision.confirm =
-                Some(Confirm { step, card, img: view.img.clone(), partial: view.partial, texture: None });
+                Some(Confirm { step, card, img: view.img.clone(), vis: view.vis, texture: None });
         }
     }
 
@@ -758,17 +761,17 @@ impl Assistant {
 
     /// L'immagine della carta dell'avversario sullo schermo, se somiglia a `c` più che alle carte
     /// già giocate (altrimenti è ancora quella della presa precedente).
-    fn opp_view_of(&self, c: Card) -> Option<Img> {
+    fn opp_view_of(&self, c: Card) -> Option<(Img, [f32; 2])> {
         let v = self.vision.scene.as_ref()?.opp_slot.as_ref()?;
         let old = self.pos.played.iter().map(|p| v.scores[p as usize]).fold(f32::MIN, f32::max);
-        (v.scores[c as usize] > old).then(|| v.img.clone())
+        (v.scores[c as usize] > old).then(|| (v.img.clone(), v.vis))
     }
 
     /// L'utente conferma la carta riconosciuta con poca sicurezza: si inserisce e si ricorda.
     fn accept_vision(&mut self) {
         let Some(c) = self.vision.confirm.take() else { return };
-        if c.step == self.pos.step() && self.enter(c.card) && !c.partial {
-            self.vision.memory.lock().unwrap().remember(&c.img, c.card);
+        if c.step == self.pos.step() && self.enter(c.card) {
+            self.vision.memory.lock().unwrap().remember(&c.img, c.vis, c.card);
         }
     }
 

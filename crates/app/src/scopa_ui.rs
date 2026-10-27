@@ -226,6 +226,8 @@ struct Confirm {
     step: Step,
     card: Card,
     img: Img,
+    /// Fascia della carta che si vedeva sullo schermo.
+    vis: [f32; 2],
     texture: Option<egui::TextureHandle>,
 }
 
@@ -601,10 +603,10 @@ impl Assist {
                     self.keys.clear();
                     let seen = self.vision.confirm.take();
                     // La carta scritta a mano si impara dall'immagine sullo schermo.
-                    let shown = self.unmatched_view(step).map(|v| v.img.clone());
+                    let shown = self.unmatched_view(step).map(|v| (v.img.clone(), v.vis));
                     if self.enter(c) {
-                        if let Some(img) = seen.map(|v| v.img).or(shown) {
-                            self.vision.memory.lock().unwrap().remember(&img, c);
+                        if let Some((img, vis)) = seen.map(|v| (v.img, v.vis)).or(shown) {
+                            self.vision.memory.lock().unwrap().remember(&img, vis, c);
                         }
                     } else {
                         self.entry_error = Some(format!("{} non è possibile adesso", name(c)));
@@ -826,11 +828,11 @@ impl Assist {
             let img = view.img.clone();
             let len = self.history.len();
             if self.enter(card) {
-                self.vision.memory.lock().unwrap().remember(&img, card);
+                self.vision.memory.lock().unwrap().remember(&img, view.vis, card);
                 self.vision.last = Some((card, img, len));
             }
         } else {
-            self.vision.confirm = Some(Confirm { step, card, img: view.img.clone(), texture: None });
+            self.vision.confirm = Some(Confirm { step, card, img: view.img.clone(), vis: view.vis, texture: None });
         }
     }
 
@@ -838,7 +840,7 @@ impl Assist {
     fn accept_vision(&mut self) {
         let Some(c) = self.vision.confirm.take() else { return };
         if c.step == self.step() && self.enter(c.card) {
-            self.vision.memory.lock().unwrap().remember(&c.img, c.card);
+            self.vision.memory.lock().unwrap().remember(&c.img, c.vis, c.card);
         }
     }
 

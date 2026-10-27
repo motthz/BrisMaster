@@ -2,7 +2,7 @@
 
 use crate::cards_ui::{self, BEST, CARD_SIZE, GOLD};
 use crate::record::{self, Advice, CardRec, Event, Recorder};
-use crate::vision::{memory::Memory, CardView, Img, Reader, Reading, Scene};
+use crate::vision::{memory::Memory, read_briscola, CardView, Img, Reader, Reading, Scene};
 use briscola_core::ai::{evaluate, EngineConfig, MoveEval};
 use briscola_core::cards::{self, Card, CardSet};
 use briscola_core::{Observation, Trick};
@@ -323,7 +323,7 @@ const AUTO_MARGIN: f32 = 1.4;
 /// Lettura della partita dallo schermo.
 #[derive(Default)]
 struct Vision {
-    reader: Option<Reader>,
+    reader: Option<Reader<Scene>>,
     memory: Arc<Mutex<Memory>>,
     status: String,
     /// Carte riconosciute all'ultima lettura: si agisce solo se la lettura si ripete uguale
@@ -590,10 +590,9 @@ impl Assistant {
     /// Accende o spegne la lettura dello schermo.
     fn set_vision(&mut self, on: bool, ctx: &egui::Context) {
         if on && self.vision.reader.is_none() {
-            if self.vision.memory.lock().unwrap().len() == 0 {
-                *self.vision.memory.lock().unwrap() = Memory::load();
-            }
-            self.vision.reader = Some(Reader::start(self.vision.memory.clone(), ctx.clone()));
+            self.vision.memory = Memory::shared();
+            let every = std::time::Duration::from_millis(350);
+            self.vision.reader = Some(Reader::start(self.vision.memory.clone(), ctx.clone(), every, read_briscola));
             self.vision.status = "Cerco il tavolo sullo schermo...".into();
         } else if !on {
             self.vision.reader = None;
@@ -1263,7 +1262,7 @@ fn unmatched_hand<'a>(scene: &'a Scene, pos: &Position) -> Vec<&'a CardView> {
 }
 
 /// Vero se i tasti digitati possono ancora diventare una carta (manca il seme).
-fn is_rank_prefix(keys: &str) -> bool {
+pub fn is_rank_prefix(keys: &str) -> bool {
     matches!(keys, "a" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "f" | "j" | "c" | "q" | "r" | "k" | "10")
 }
 

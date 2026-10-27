@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/core", "crates/sim", "crates/app", "crates/blackjack", "crates/burraco", "crates/poker", "crates/poker-it", "crates/poker-it-sim", "crates/poker-sim", "crates/scala40", "crates/scala40-sim", "crates/scopa", "crates/scopa-sim", "crates/settemezzo"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 license = "MIT"
 

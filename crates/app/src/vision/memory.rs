@@ -6,6 +6,7 @@ use super::{Img, CARD_H, CARD_W};
 use briscola_core::cards::Card;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 
 const TW: usize = 25;
 const TH: usize = 40;
@@ -80,6 +81,12 @@ pub const SAME: f32 = 0.9;
 impl Memory {
     pub fn path() -> PathBuf {
         crate::record::dir().parent().map(|p| p.to_path_buf()).unwrap_or_default().join("carte_viste.json")
+    }
+
+    /// La memoria comune a tutti i giochi (stesse carte), caricata la prima volta che serve.
+    pub fn shared() -> Arc<Mutex<Memory>> {
+        static SHARED: OnceLock<Arc<Mutex<Memory>>> = OnceLock::new();
+        SHARED.get_or_init(|| Arc::new(Mutex::new(Memory::load()))).clone()
     }
 
     pub fn load() -> Memory {

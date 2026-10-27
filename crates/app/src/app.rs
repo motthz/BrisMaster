@@ -79,6 +79,10 @@ struct Settings {
     assist_worlds: u32,
     burraco_samples: u32,
     settemezzo: settemezzo_ui::Prefs,
+    /// Finestra compatta (solo il pannello dell'assistente), da affiancare al browser.
+    compact: bool,
+    /// Finestra compatta sempre in primo piano.
+    on_top: bool,
 }
 
 impl Default for Settings {
@@ -89,6 +93,8 @@ impl Default for Settings {
             assist_worlds: ISMCTS_FROM,
             burraco_samples: 96,
             settemezzo: settemezzo_ui::Prefs::default(),
+            compact: false,
+            on_top: false,
         }
     }
 }
@@ -113,6 +119,8 @@ pub struct BrisApp {
     blackjack: BlackjackUi,
     poker_it: PokerIt,
     holdem: HoldemAssistant,
+    /// Dimensioni e livello della finestra applicati: (compatta, in primo piano).
+    window: Option<(bool, bool)>,
 }
 
 impl BrisApp {
@@ -140,6 +148,7 @@ impl BrisApp {
             blackjack: BlackjackUi::new(cc.storage.and_then(|s| eframe::get_value(s, "blackjack")).unwrap_or_default()),
             poker_it: PokerIt::load(cc.storage),
             holdem: HoldemAssistant::default(),
+            window: None,
             settings,
         };
         if app.settings.auto_update {
@@ -171,6 +180,40 @@ impl BrisApp {
         }
     }
 
+    /// La finestra compatta c'è per ora solo per la briscola.
+    fn compact(&self) -> bool {
+        self.settings.compact && self.settings.game == Gioco::Briscola
+    }
+
+    /// Ridimensiona la finestra quando si entra o si esce dalla modalità compatta.
+    fn apply_window(&mut self, ctx: &egui::Context) {
+        let want = (self.compact(), self.compact() && self.settings.on_top);
+        if self.window == Some(want) {
+            return;
+        }
+        let (min, size) = if want.0 { ([470.0, 560.0], [520.0, 760.0]) } else { ([1080.0, 700.0], [1280.0, 800.0]) };
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(min.into()));
+        // Al primo avvio la finestra grande ha già le sue dimensioni: si cambiano solo se serve.
+        if self.window.is_some() || want.0 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size.into()));
+        }
+        let level = if want.1 { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal };
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+        self.window = Some(want);
+    }
+
+    fn compact_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("BrisMaster · Briscola").strong().color(cards_ui::GOLD));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Finestra grande").clicked() {
+                    self.settings.compact = false;
+                }
+                ui.checkbox(&mut self.settings.on_top, "In primo piano");
+            });
+        });
+    }
+
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading(RichText::new("BrisMaster").strong().color(cards_ui::GOLD));
@@ -185,7 +228,16 @@ impl BrisApp {
             ui.separator();
             match self.settings.game {
                 Gioco::Briscola => {
-                    ui.label(RichText::new("Assistente: inserisci le carte, il motore ti dice cosa giocare").size(16.0));
+                    if ui
+                        .button("Finestra compatta")
+                        .on_hover_text("Solo il consiglio e l'inserimento, da tenere accanto al browser")
+                        .clicked()
+                    {
+                        self.settings.compact = true;
+                    }
+                    ui.label(
+                        RichText::new("Assistente: inserisci le carte, il motore ti dice cosa giocare").size(16.0),
+                    );
                 }
                 Gioco::Scala40 => self.scala40.top_controls(ui),
                 Gioco::SetteMezzo => self.settemezzo.top_controls(ui, &mut self.settings.settemezzo),
@@ -253,7 +305,6 @@ impl BrisApp {
             _ => {}
         }
     }
-
 }
 
 impl eframe::App for BrisApp {
@@ -261,6 +312,17 @@ impl eframe::App for BrisApp {
         let now = ui.input(|i| i.time);
         self.poll_background();
 
+        self.apply_window(&ui.ctx().clone());
+        if self.compact() {
+            egui::Panel::top("top").show(ui, |ui| {
+                ui.add_space(4.0);
+                self.compact_bar(ui);
+                ui.add_space(4.0);
+            });
+            let samples = &mut self.settings.assist_worlds;
+            egui::CentralPanel::default().show(ui, |ui| self.assistant.side_ui(ui, samples, true));
+            return;
+        }
         egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(6.0);
             self.top_bar(ui);
@@ -301,7 +363,9 @@ impl eframe::App for BrisApp {
                 }
                 _ => {
                     let samples = &mut self.settings.assist_worlds;
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| self.assistant.side_ui(ui, samples));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| {
+                        self.assistant.side_ui(ui, samples, false)
+                    });
                     ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| self.assistant.table_ui(ui));
                 }
             }

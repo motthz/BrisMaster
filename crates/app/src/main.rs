@@ -12,6 +12,7 @@ mod scala40_ui;
 mod scopa_ui;
 mod settemezzo_ui;
 mod update;
+mod vision;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

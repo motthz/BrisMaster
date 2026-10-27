@@ -7,11 +7,18 @@
 //!       | classic:MONDI                (motore della v0.1.1 compilato con la versione attuale)
 //!       | eng:CHIAVE=VALORE,...        (varianti del motore attuale, vedi make_player)
 //!       | noisy:ERRORE:SPEC            (es. noisy:0.25:heuristic)
+//!       | net:ITERAZIONI[:PESO]        (ISMCTS potenziato con la rete di BRISCOLA_NET nelle foglie)
+//!       | infer:ITERAZIONI:TEMP[:MANI[:net]] (ISMCTS potenziato che deduce le carte avversarie
+//!                                      con la rete di politica di BRISCOLA_POLICY)
+//!       | peek:ITERAZIONI              (baro: ISMCTS potenziato che vede la mano avversaria)
 //!       | vX.Y.Z/SPEC                  (versione rilasciata, es. v0.1.1/engine:1000)
 
 use crate::opponents::*;
 use briscola_core::ai::*;
 use briscola_core::cards::Card;
+use briscola_core::infer::{Belief, Log};
+use briscola_core::net::Net;
+use std::sync::{Arc, OnceLock};
 use briscola_core::{Game, Observation};
 use rand::rngs::SmallRng;
 
@@ -34,6 +41,91 @@ impl Agent for Current {
     }
     fn choose(&mut self, g: &Game, me: u8, rng: &mut SmallRng) -> Card {
         self.0.choose(&Observation::of(g, me), rng)
+    }
+}
+
+type NetResult = Result<Arc<Net>, String>;
+
+fn load_net(var: &str) -> NetResult {
+    let path = std::env::var(var).map_err(|_| format!("serve il file della rete in {var}"))?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
+    Net::from_bytes(&bytes).map(Arc::new)
+}
+
+/// Rete di valutazione per i giocatori `net:`: dal file in BRISCOLA_NET, letta una volta sola.
+fn value_net() -> NetResult {
+    static NET: OnceLock<NetResult> = OnceLock::new();
+    NET.get_or_init(|| load_net("BRISCOLA_NET")).clone()
+}
+
+/// Rete di politica per i giocatori `infer:`: dal file in BRISCOLA_POLICY.
+fn policy_net() -> NetResult {
+    static NET: OnceLock<NetResult> = OnceLock::new();
+    NET.get_or_init(|| load_net("BRISCOLA_POLICY")).clone()
+}
+
+/// ISMCTS che deduce le carte avversarie da come ha giocato: tiene il registro della
+/// partita (solo informazioni pubbliche e le proprie carte) e pesca i mondi dalle mani pesate.
+struct Infer {
+    search: IsmctsPlayer,
+    policy: Arc<Net>,
+    temp: f32,
+    pool: usize,
+    game: Option<Game>,
+    log: Log,
+    me: Option<u8>,
+}
+
+impl Agent for Infer {
+    fn name(&self) -> String {
+        format!("{} · deduce le carte avversarie (temperatura {})", self.search.name(), self.temp)
+    }
+    fn start(&mut self, order: &[Card], first: u8) {
+        self.game = Some(Game::from_order(order, first));
+        self.log = Log::default();
+        self.me = None;
+    }
+    fn choose(&mut self, g: &Game, me: u8, rng: &mut SmallRng) -> Card {
+        self.me = Some(me);
+        let obs = Observation::of(g, me);
+        if obs.hand.len() == 1 {
+            return obs.hand.iter().next().unwrap();
+        }
+        // A mazzo vuoto le carte avversarie sono note: non c'è niente da dedurre.
+        let root = if obs.deck_len == 0 {
+            self.search.search(&obs, rng)
+        } else {
+            let belief = Belief::infer(&obs, &self.log.events, &self.policy, self.temp, self.pool, rng);
+            self.search.search_with(&obs, rng, |r| obs.determinize_given(belief.sample(r), r))
+        };
+        root.iter().max_by(|a, b| a.visits.partial_cmp(&b.visits).unwrap()).unwrap().card
+    }
+    fn observe(&mut self, c: Card) {
+        let g = self.game.as_mut().expect("partita non iniziata");
+        // Il proprio posto si scopre alla prima mossa: se apre l'avversario, la sua prima carta
+        // si registra lì, quando il posto è ancora ignoto.
+        let me = self.me.unwrap_or(1 - g.to_move());
+        self.log.before_play(g, me, c);
+        g.play(c);
+    }
+}
+
+/// "Baro": ISMCTS potenziato che vede la mano dell'avversario (non l'ordine del mazzo).
+/// Non è un avversario realistico: dice quanto vale sapere le carte avversarie.
+struct Peek(IsmctsPlayer);
+
+impl Agent for Peek {
+    fn name(&self) -> String {
+        format!("Baro: vede le carte avversarie, ISMCTS potenziato ({} iterazioni)", self.0.iterations)
+    }
+    fn choose(&mut self, g: &Game, me: u8, rng: &mut SmallRng) -> Card {
+        let obs = Observation::of(g, me);
+        if obs.hand.len() == 1 {
+            return obs.hand.iter().next().unwrap();
+        }
+        let opp = g.hands[1 - me as usize];
+        let root = self.0.search_with(&obs, rng, |r| obs.determinize_given(opp, r));
+        root.iter().max_by(|a, b| a.visits.partial_cmp(&b.visits).unwrap()).unwrap().card
     }
 }
 
@@ -133,6 +225,34 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
             )),
         };
     }
+    if let Some(rest) = spec.strip_prefix("net:") {
+        let mut parts = rest.split(':');
+        let num = |s: Option<&str>, d: f64| s.map_or(Ok(d), |s| s.parse::<f64>().map_err(|_| format!("numero non valido in '{spec}'")));
+        let n = num(parts.next(), 0.0)? as u32;
+        let mix = num(parts.next(), 1.0)?;
+        let suffix = if mix < 1.0 { format!(" · rete al {:.0}%", mix * 100.0) } else { String::new() };
+        return Ok(Box::new(Current(Box::new(IsmctsPlayer::with_net(n, value_net()?, mix)), suffix)));
+    }
+    if let Some(rest) = spec.strip_prefix("infer:") {
+        // infer:ITERAZIONI:TEMPERATURA[:MANI[:net]]
+        let parts: Vec<&str> = rest.split(':').collect();
+        let num = |i: usize, d: f64| parts.get(i).map_or(Ok(d), |s| s.parse::<f64>().map_err(|_| format!("numero non valido in '{spec}'")));
+        let n = num(0, 0.0)? as u32;
+        let search = if parts.get(3) == Some(&"net") { IsmctsPlayer::with_net(n, value_net()?, 1.0) } else { IsmctsPlayer::strong(n) };
+        return Ok(Box::new(Infer {
+            search,
+            policy: policy_net()?,
+            temp: num(1, 1.0)? as f32,
+            pool: num(2, 1000.0)? as usize,
+            game: None,
+            log: Log::default(),
+            me: None,
+        }));
+    }
+    if let Some(n) = spec.strip_prefix("peek:") {
+        let n = n.parse::<u32>().map_err(|_| format!("numero non valido in '{spec}'"))?;
+        return Ok(Box::new(Peek(IsmctsPlayer::strong(n))));
+    }
     Ok(Box::new(Current(make_player(spec)?, variant_suffix(spec))))
 }
 
@@ -210,7 +330,7 @@ mod tests {
 
     #[test]
     fn specs_parse() {
-        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "v0.2.0/engine:20", "v0.2.1/engine:20", "v0.3.0/engine:20", "v0.3.0/ismcts+:20", "v0.3.0/ismcts:20", "v0.2.0/ismcts:20", "followsuit"] {
+        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "v0.2.0/engine:20", "v0.2.1/engine:20", "v0.3.0/engine:20", "v0.3.0/ismcts+:20", "v0.3.0/ismcts:20", "v0.2.0/ismcts:20", "followsuit", "peek:20"] {
             assert!(make_agent(s).is_ok(), "{s}");
         }
         assert!(make_agent("v9.9.9/engine:20").is_err());

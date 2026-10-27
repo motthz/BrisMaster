@@ -342,6 +342,8 @@ struct Vision {
     trump_img: Option<Img>,
     /// Candidati annullati dall'utente: se ricompaiono si chiede conferma invece di inserirli.
     doubts: Vec<(Step, Card)>,
+    /// Scelta del monitor e dell'area del tavolo, e diagnosi.
+    picker: crate::vision::screen::AreaPicker,
 }
 
 struct Confirm {
@@ -433,8 +435,13 @@ impl Assistant {
     fn reset(&mut self) {
         let vision = std::mem::take(&mut self.vision);
         *self = Assistant::default();
-        self.vision =
-            Vision { reader: vision.reader, memory: vision.memory, status: vision.status, ..Default::default() };
+        self.vision = Vision {
+            reader: vision.reader,
+            memory: vision.memory,
+            status: vision.status,
+            picker: vision.picker,
+            ..Default::default()
+        };
         self.vision.doubts.clear();
     }
 
@@ -765,6 +772,27 @@ impl Assistant {
         }
     }
 
+    /// Testo per la diagnosi: cosa si vede e cosa è stato riconosciuto.
+    fn vision_summary(&self) -> String {
+        let mut out = format!("{}\n", self.vision.status);
+        let Some(s) = &self.vision.scene else { return out };
+        let mut line = |what: &str, v: &CardView| {
+            let mut sc: Vec<(Card, f32)> = (0..40u8).map(|c| (c, v.scores[c as usize])).collect();
+            sc.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let top: Vec<String> = sc[..3].iter().map(|(c, x)| format!("{} {x:.1}", cards::name(*c))).collect();
+            out += &format!("{what}: {}{}\n", top.join(" · "), if v.partial { " (vista a metà)" } else { "" });
+        };
+        for (what, v) in [("Briscola", &s.trump), ("Avversario", &s.opp_slot), ("Tua giocata", &s.my_slot)] {
+            if let Some(v) = v {
+                line(what, v);
+            }
+        }
+        for v in &s.hand {
+            line("Mano", v);
+        }
+        out
+    }
+
     /// Interruttore, stato e richiesta di conferma della lettura dello schermo.
     fn vision_ui(&mut self, ui: &mut egui::Ui) {
         let mut on = self.vision.reader.is_some();
@@ -786,6 +814,9 @@ impl Assistant {
             return;
         }
         ui.label(RichText::new(&self.vision.status).small().weak());
+        let last = self.vision.reader.as_ref().and_then(|r| r.last_frame());
+        let summary = self.vision_summary();
+        self.vision.picker.controls(ui, last, &summary);
         let ctx = ui.ctx().clone();
         if let Some(c) = &mut self.vision.confirm {
             let tex = c.texture.get_or_insert_with(|| {

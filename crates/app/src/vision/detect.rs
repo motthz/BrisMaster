@@ -29,6 +29,12 @@ impl RotRect {
     pub fn area(&self) -> f32 {
         4.0 * self.hw * self.hh
     }
+    /// Vero se il punto è dentro il rettangolo.
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        let (dx, dy) = (x - self.cx, y - self.cy);
+        (dx * self.u.0 + dy * self.u.1).abs() <= self.hw && (dx * self.v.0 + dy * self.v.1).abs() <= self.hh
+    }
+
     /// Vero se il lato lungo è più vicino all'orizzontale che alla verticale.
     pub fn landscape(&self) -> bool {
         let long_axis = if self.hh >= self.hw { self.v } else { self.u };
@@ -143,26 +149,58 @@ fn canonical(mut r: RotRect) -> RotRect {
     r
 }
 
-/// Zone chiare abbastanza grandi da essere carte (o dorsi col bordo bianco).
+/// Zone chiare abbastanza grandi da essere carte (o dorsi col bordo bianco). Le carte della mano
+/// a ventaglio che si toccano diventano una zona sola: in quel caso si erode di più, finché la
+/// zona si divide in pezzi della misura di una carta (serve a qualunque zoom del sito).
 pub fn blobs(img: &Img) -> Vec<Blob> {
-    let (w, h) = (img.w, img.h);
-    let white: Vec<bool> = img.px.iter().map(|&p| is_white(p)).collect();
-    // Erosione 3x3: stacca le carte che si toccano appena.
-    let mut er = vec![false; w * h];
-    for y in 1..h.saturating_sub(1) {
-        for x in 1..w - 1 {
-            let i = y * w + x;
-            er[i] = white[i - w - 1]
-                && white[i - w]
-                && white[i - w + 1]
-                && white[i - 1]
-                && white[i]
-                && white[i + 1]
-                && white[i + w - 1]
-                && white[i + w]
-                && white[i + w + 1];
+    let base = blobs_r(img, 1);
+    let card = |b: &Blob| is_face(b) && (0.52..=0.74).contains(&(b.rect.short() / b.rect.long()));
+    let mut longs: Vec<f32> = base.iter().filter(|b| card(b)).map(|b| b.rect.long()).collect();
+    if longs.is_empty() {
+        return base;
+    }
+    longs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let card_l = longs[longs.len() / 2];
+    let card_area = card_l * card_l * RATIO;
+    let mut deeper: Vec<(usize, Vec<Blob>)> = Vec::new();
+    let mut out = Vec::new();
+    for b in base {
+        let merged = b.white > 0.3 && b.rect.area() > 1.35 * card_area && b.rect.long() < 4.0 * card_l;
+        if !merged {
+            out.push(b);
+            continue;
+        }
+        let mut split = None;
+        for r in [3, 5, 8, 12] {
+            if !deeper.iter().any(|(k, _)| *k == r) {
+                deeper.push((r, blobs_r(img, r)));
+            }
+            let level = &deeper.iter().find(|(k, _)| *k == r).unwrap().1;
+            let pieces: Vec<Blob> = level
+                .iter()
+                .filter(|p| b.rect.contains(p.rect.cx, p.rect.cy))
+                .filter(|p| (0.8..=1.2).contains(&(p.rect.long() / card_l)))
+                .filter(|p| (0.52..=0.74).contains(&(p.rect.short() / p.rect.long())))
+                .map(|p| Blob { felt: b.felt, white: b.white.max(p.white), ..*p })
+                .collect();
+            if pieces.len() >= 2 {
+                split = Some(pieces);
+                break;
+            }
+        }
+        match split {
+            Some(p) => out.extend(p),
+            None => out.push(b),
         }
     }
+    out
+}
+
+/// Zone chiare dopo un'erosione di raggio `r` (i rettangoli vengono poi riallargati di `r`).
+fn blobs_r(img: &Img, r: usize) -> Vec<Blob> {
+    let (w, h) = (img.w, img.h);
+    let white: Vec<bool> = img.px.iter().map(|&p| is_white(p)).collect();
+    let er = erode(&white, w, h, r);
     let min_area = ((w * h) as f32 * 0.0006) as usize;
     let mut seen = vec![false; w * h];
     let mut out = Vec::new();
@@ -203,11 +241,38 @@ pub fn blobs(img: &Img) -> Vec<Blob> {
         let Some(mut rect) = min_area_rect(edge) else {
             continue;
         };
-        // Restituisce il pixel tolto dall'erosione (e mezzo pixel di bordo).
-        rect.hw += 1.5;
-        rect.hh += 1.5;
+        // Restituisce i pixel tolti dall'erosione (e mezzo pixel di bordo).
+        rect.hw += r as f32 + 0.5;
+        rect.hh += r as f32 + 0.5;
         let white_frac = (count as f32 / rect.area()).min(1.0);
         out.push(Blob { rect, white: white_frac, felt: felt_ring(img, &rect) });
+    }
+    out
+}
+
+/// Erosione quadrata di raggio `r`, separabile: prima le righe, poi le colonne.
+fn erode(mask: &[bool], w: usize, h: usize, r: usize) -> Vec<bool> {
+    let run = |get: &dyn Fn(usize) -> bool, n: usize, out: &mut dyn FnMut(usize, bool)| {
+        // Pixel bianchi consecutivi a sinistra e a destra di ognuno.
+        let mut left = vec![0usize; n];
+        let mut c = 0;
+        for i in 0..n {
+            c = if get(i) { c + 1 } else { 0 };
+            left[i] = c;
+        }
+        let mut right = 0;
+        for i in (0..n).rev() {
+            right = if get(i) { right + 1 } else { 0 };
+            out(i, left[i] > r && right > r);
+        }
+    };
+    let mut rows = vec![false; w * h];
+    for y in 0..h {
+        run(&|x| mask[y * w + x], w, &mut |x, v| rows[y * w + x] = v);
+    }
+    let mut out = vec![false; w * h];
+    for x in 0..w {
+        run(&|y| rows[y * w + x], h, &mut |y, v| out[y * w + x] = v);
     }
     out
 }
@@ -259,11 +324,17 @@ pub fn warp(img: &Img, r: &RotRect) -> Img {
 /// Proporzione larghezza/altezza delle carte napoletane.
 const RATIO: f32 = 0.62;
 
+/// Faccia di una carta scoperta: chiara, appoggiata sul panno e con dei disegni dentro. I riquadri
+/// tutti bianchi dei pannelli del sito accanto al tavolo hanno poco panno attorno e niente disegni.
+pub fn is_face(b: &Blob) -> bool {
+    b.white > 0.3 && b.felt > 0.3 && (b.felt > 0.75 || b.white < 0.8)
+}
+
 /// Divide le carte scoperte trovate sullo schermo fra briscola, tavolo e mano (senza riconoscerle).
 pub fn scene(img: &Img) -> Scene {
     let all = blobs(img);
     // Facce scoperte: chiare e appoggiate sul panno.
-    let faces: Vec<&Blob> = all.iter().filter(|b| b.white > 0.3 && b.felt > 0.3).collect();
+    let faces: Vec<&Blob> = all.iter().filter(|b| is_face(b)).collect();
     let full = |b: &Blob| (0.52..=0.74).contains(&(b.rect.short() / b.rect.long()));
     let mut longs: Vec<f32> = faces.iter().filter(|b| full(b)).map(|b| b.rect.long()).collect();
     if longs.is_empty() {
@@ -388,7 +459,7 @@ fn felt_bottom(img: &Img) -> f32 {
 /// None se sullo schermo non c'è il tavolo; una scena vuota se c'è il tavolo ma nessuna carta.
 pub fn scopa(img: &Img) -> Option<ScopaScene> {
     let all = blobs(img);
-    let faces: Vec<&Blob> = all.iter().filter(|b| b.white > 0.3 && b.felt > 0.3).collect();
+    let faces: Vec<&Blob> = all.iter().filter(|b| is_face(b)).collect();
     let full = |b: &Blob| (0.52..=0.74).contains(&(b.rect.short() / b.rect.long()));
     let mut longs: Vec<f32> = faces.iter().filter(|b| full(b)).map(|b| b.rect.long()).collect();
     if longs.is_empty() {

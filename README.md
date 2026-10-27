@@ -135,6 +135,24 @@ cargo run --release -p poker-sim -- report --deals 40000 --out bench/HOLDEM.md
 cargo run --release -p poker-sim -- match --player engine --opponent tag --deals 8000
 # riallenare la strategia inclusa nel programma (crates/poker/data/holdem.bin)
 cargo run --release -p poker-sim -- train --iters 300000000 --state stato.bin
+## Scala 40
+
+Scegli **Scala 40** dal menu in alto a sinistra. È solo un assistente: descrivi tu la smazzata e il motore ti dice cosa fare.
+
+![BrisMaster: assistente di Scala 40](docs/scala40.png)
+
+1. Inserisci le tue carte dalla griglia (scheda *La mia mano*), la carta in cima al pozzo e, se vuoi, le carte già scartate.
+2. Metti in tavola le combinazioni già calate (scheda *Combinazione in tavola*, poi *Metti in tavola*) e indica chi ha già aperto e quante carte ha l'avversario.
+3. Prima di pescare l'app ti dice se prendere lo scarto e cosa farci; dopo aver pescato (spunta *Ho già pescato*) ti dice cosa calare, cosa attaccare, quale jolly prendere e cosa scartare, con il confronto tra gli scarti.
+4. *Fatto: applica il consiglio* aggiorna mano, tavolo e pozzo; al turno dell'avversario metti il suo scarto in cima al pozzo, poi aggiungi la carta che peschi.
+
+Regole usate: due giocatori, 13 carte, apertura con almeno 40 punti, la carta presa dal pozzo va usata subito, un jolly per combinazione, il jolly in tavola si può sostituire dopo aver aperto. Chi chiude non paga; l'altro paga le carte in mano (jolly 25, asso 11, figure 10) o 100 se non ha aperto; a 101 si perde.
+
+Il motore scompone la mano in combinazioni, coppie da completare e carte spaiate, conta quante carte ancora in gioco completano ogni coppia, pesa i punti che pagherebbe se l'avversario chiudesse e il rischio di scartare una carta che l'avversario può usare; per le scelte migliori guarda anche la media su tutte le pescate possibili del turno dopo. Su 8.000 partite complete per avversario (fino a 101 punti, in duplicato) supera il 55% contro 9 avversari su 10, contro se stesso fa il 49,4% (atteso 50%): tabelle in [bench/SCALA40.md](bench/SCALA40.md).
+
+```
+cargo run --release -p scala40-sim -- report --matches 4000 --out bench/SCALA40.md
+cargo run --release -p scala40-sim -- --player engine --opponent defensive --matches 1000
 ```
 
 ## Struttura
@@ -166,6 +184,8 @@ cargo run --release -p scopa-sim -- --player engine:400 --opponent ismcts:1000 -
 
 | `crates/poker` | Texas Hold'em: regole, valutatore, motore (CFR), bot di prova |
 | `crates/poker-sim` | Allenamento e banco di prova del Texas Hold'em |
+| `crates/scala40` | Scala 40: regole, combinazioni, motore, stili di avversario |
+| `crates/scala40-sim` | Banco di prova di Scala 40 |
 
 ## Pubblicare una nuova versione
 

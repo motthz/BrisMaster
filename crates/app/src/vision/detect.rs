@@ -44,10 +44,12 @@ pub struct Blob {
     pub white: f32,
     /// Frazione del contorno appena fuori dal rettangolo che è panno verde.
     pub felt: f32,
+    /// Frazione del contorno appena fuori dal rettangolo che non è bianca (panno di qualsiasi colore).
+    pub framed: f32,
 }
 
 #[inline]
-fn is_white(p: [u8; 3]) -> bool {
+pub fn is_white(p: [u8; 3]) -> bool {
     let (_, s, v) = hsv(p);
     s < 50 && v > 190
 }
@@ -207,13 +209,14 @@ pub fn blobs(img: &Img) -> Vec<Blob> {
         rect.hw += 1.5;
         rect.hh += 1.5;
         let white_frac = (count as f32 / rect.area()).min(1.0);
-        out.push(Blob { rect, white: white_frac, felt: felt_ring(img, &rect) });
+        let felt = ring(img, &rect, is_felt);
+        out.push(Blob { rect, white: white_frac, felt, framed: ring(img, &rect, |p| !is_white(p)) });
     }
     out
 }
 
-/// Frazione di panno verde su un anello appena fuori dal rettangolo.
-fn felt_ring(img: &Img, r: &RotRect) -> f32 {
+/// Frazione dei punti di un anello appena fuori dal rettangolo per cui vale `pred`.
+fn ring(img: &Img, r: &RotRect, pred: fn([u8; 3]) -> bool) -> f32 {
     let (mut n, mut ok) = (0, 0);
     let (hw, hh) = (r.hw * 1.12 + 3.0, r.hh * 1.12 + 3.0);
     for k in 0..64 {
@@ -230,7 +233,7 @@ fn felt_ring(img: &Img, r: &RotRect) -> f32 {
             continue;
         }
         n += 1;
-        if is_felt(img.at(x as usize, y as usize)) {
+        if pred(img.at(x as usize, y as usize)) {
             ok += 1;
         }
     }
@@ -347,7 +350,7 @@ fn full_trump(r: &RotRect, card_l: f32) -> (RotRect, bool) {
     (rect, missing > 0.1 * card_l)
 }
 
-fn view_of(img: &Img, r: &RotRect, partial: bool) -> CardView {
+pub(super) fn view_of(img: &Img, r: &RotRect, partial: bool) -> CardView {
     CardView { img: warp(img, r), partial, scores: [0.0; 40] }
 }
 

@@ -77,11 +77,11 @@ pub fn paint_face(p: &Painter, rect: Rect, c: Card, glow: Option<Color32>, dim: 
     }
 }
 
-/// Carta della mano: faccia o dorso. Restituisce la risposta per i clic.
-pub fn card(ui: &mut egui::Ui, c: Option<Card>, glow: Option<Color32>, raised: bool, clickable: bool, dim: bool) -> egui::Response {
-    let (slot, resp) = ui.allocate_exact_size(CARD + vec2(0.0, 18.0), if clickable { Sense::click() } else { Sense::hover() });
+/// Carta della mano grande `size`: faccia o dorso. Restituisce la risposta per i clic.
+pub fn card(ui: &mut egui::Ui, size: Vec2, c: Option<Card>, glow: Option<Color32>, raised: bool, clickable: bool, dim: bool) -> egui::Response {
+    let (slot, resp) = ui.allocate_exact_size(size + vec2(0.0, 18.0), if clickable { Sense::click() } else { Sense::hover() });
     let lift = if raised { 0.0 } else if clickable && resp.hovered() { 12.0 } else { 18.0 };
-    let rect = Rect::from_min_size(pos2(slot.min.x, slot.min.y + lift), CARD);
+    let rect = Rect::from_min_size(pos2(slot.min.x, slot.min.y + lift), size);
     match c {
         Some(c) => paint_face(ui.painter(), rect, c, glow, dim),
         None => paint_back(ui.painter(), rect),

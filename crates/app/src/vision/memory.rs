@@ -85,17 +85,26 @@ pub fn similarity(a: &Img, b: &Img, partial: bool) -> f32 {
 
 impl Memory {
     pub fn path() -> PathBuf {
-        crate::record::dir().parent().map(|p| p.to_path_buf()).unwrap_or_default().join("carte_viste.json")
+        Memory::file("carte_viste.json")
     }
 
-    /// La memoria comune a tutti i giochi (stesse carte), caricata la prima volta che serve.
+    fn file(name: &str) -> PathBuf {
+        crate::record::dir().parent().map(|p| p.to_path_buf()).unwrap_or_default().join(name)
+    }
+
+    /// La memoria comune ai giochi con le carte napoletane, caricata la prima volta che serve.
     pub fn shared() -> Arc<Mutex<Memory>> {
         static SHARED: OnceLock<Arc<Mutex<Memory>>> = OnceLock::new();
-        SHARED.get_or_init(|| Arc::new(Mutex::new(Memory::load()))).clone()
+        SHARED.get_or_init(|| Arc::new(Mutex::new(Memory::load(Memory::path())))).clone()
     }
 
-    pub fn load() -> Memory {
-        let path = Memory::path();
+    /// La memoria delle carte francesi (poker): solo l'angolo con valore e seme, in carte_francesi.json.
+    pub fn shared_french() -> Arc<Mutex<Memory>> {
+        static SHARED: OnceLock<Arc<Mutex<Memory>>> = OnceLock::new();
+        SHARED.get_or_init(|| Arc::new(Mutex::new(Memory::load(Memory::file("carte_francesi.json"))))).clone()
+    }
+
+    pub fn load(path: PathBuf) -> Memory {
         let mut m: Memory =
             std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         m.path = Some(path);

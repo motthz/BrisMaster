@@ -185,11 +185,17 @@ Scegli **Poker all'italiana** dal menu: è il poker a 5 carte con il cambio, tes
 
 Regole usate: invito 1 fiche, limite fisso 2 prima del cambio e 4 dopo, al massimo 3 puntate per giro; il colore batte il full, A-7-8-9-10 è la scala più bassa, a parità decide il seme (cuori, quadri, fiori, picche).
 
-Il motore è una strategia calcolata in anticipo con CFR Monte Carlo. Su 100.000 mazzi per avversario (200.000 mani, in duplicato) è in attivo contro 14 avversari su 15 e pari contro il più forte, allenato con 20 milioni di iterazioni apposta per sfruttarlo: rapporto in [bench/POKER_IT.md](bench/POKER_IT.md).
+**Il motore impara l'avversario.** Scrivi il nome dell'avversario a inizio mano (facoltativo: l'app ricorda ogni avversario tra una sessione e l'altra) e, a fine mano, se l'hai viste, le carte che ha mostrato. Mano dopo mano il motore conta quanto lascia, quanto punta, quante carte cambia e che mani mostra, riconosce a quale stile somiglia (chi vede sempre, chi bluffa, chi gioca solo mani forti...) e sposta i consigli verso la risposta allenata per quello stile. In alto nel pannello compare una riga come «vede quasi sempre: niente bluff, punta per valore». Finché non ha visto abbastanza, gioca l'equilibrio.
+
+Il motore di base è una strategia di equilibrio calcolata con CFR Monte Carlo (300 milioni di iterazioni); le risposte agli 8 stili sono allenate in modo prudente, così chi cambia gioco o studia il motore non può approfittarne molto. Nel poker il 60% si legge come **6 sessioni su 10 chiuse in attivo**: nelle prove (sessioni da 100 e 500 mani, rapporto in [bench/POKER_IT.md](bench/POKER_IT.md)) contro persone simulate con stili mai visti in allenamento il motore guadagna +0,29 fiche a mano e chiude in attivo il 69% delle sessioni da 100 mani e l'85% di quelle da 500 (il solo equilibrio: +0,12, 60% e 72%). Contro un avversario quasi perfetto il guadagno è zero: nessun algoritmo può fare di meglio, il guadagno viene dagli errori degli avversari.
 
 ```
 cargo run --release -p poker-it-sim -- report --deals 100000 --out bench/POKER_IT.md
 cargo run --release -p poker-it-sim -- match --player engine --opponent bar --deals 10000
+cargo run --release -p poker-it-sim -- sessions --player adaptive --opponent pop --sessions 1000 --len 100
+# riallenare l'equilibrio e le risposte agli stili (crates/poker-it/data)
+cargo run --release -p poker-it-sim -- train --iters 300000000
+cargo run --release -p poker-it-sim -- profiles --iters 20000000
 ```
 
 ## Texas Hold'em

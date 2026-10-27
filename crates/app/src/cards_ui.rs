@@ -107,6 +107,8 @@ pub struct Look {
     pub dim: bool,
     /// Sollevata (passaggio del mouse).
     pub lifted: bool,
+    /// Senza i punti della briscola (negli altri giochi).
+    pub no_points: bool,
 }
 
 /// Disegna la faccia di una carta nel rettangolo dato.
@@ -133,7 +135,7 @@ pub fn paint_face(p: &Painter, rect: Rect, c: Card, look: Look) {
 
     // Punti della carta in alto a destra.
     let pts = cards::points(c);
-    if pts > 0 {
+    if pts > 0 && !look.no_points {
         let pill = Rect::from_center_size(rect.right_top() + vec2(-0.16 * h, 0.11 * h), vec2(0.2 * h, 0.12 * h));
         p.rect_filled(pill, 0.06 * h, GOLD);
         p.text(pill.center(), Align2::CENTER_CENTER, pts.to_string(), FontId::proportional(0.085 * h), INK);
@@ -219,7 +221,7 @@ pub fn card(ui: &mut egui::Ui, c: Option<Card>, size: Vec2, glow: Option<Color32
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     match c {
         Some(c) => {
-            let look = Look { glow, dim: false, lifted: clickable && resp.hovered() };
+            let look = Look { glow, dim: false, lifted: clickable && resp.hovered(), ..Default::default() };
             paint_face(ui.painter(), rect, c, look);
         }
         None => paint_back(ui.painter(), rect),

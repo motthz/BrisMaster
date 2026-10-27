@@ -212,6 +212,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "settemezzo",
  "ureq",
 ]
 
@@ -2474,6 +2475,15 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "settemezzo"
+version = "0.2.0"
+dependencies = [
+ "briscola-core 0.2.0",
+ "rand",
+ "rayon",
 ]
 
 [[package]]

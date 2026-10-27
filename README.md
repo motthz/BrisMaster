@@ -19,6 +19,31 @@ Gli aggiornamenti sono automatici: all'avvio l'app controlla le release di quest
 - **Assistente**: inserisci a mano la briscola, chi comincia, le tue carte, le carte che peschi e quelle giocate dall'avversario. Per ogni tua mossa il motore indica la carta da giocare, la probabilità di vittoria di ogni alternativa e una spiegazione a parole (prendere o lasciare, tagliare, quante briscole e carichi sono ancora fuori, quanti punti ti mancano). Le carte si inseriscono con un clic sulla griglia o da tastiera (`3c`, `AD`, `Rs`, `cavallo bastoni`, poi Invio), e ogni passo si annulla con Ctrl+Z. L'app tiene il conto delle carte uscite, dei punti e del mazzo, e sa da sola a chi va la briscola scoperta all'ultima pescata.
 - **Carte uscite**: tabella delle carte già giocate e dei punti ancora in gioco.
 
+## Sette e mezzo
+
+Nella scheda **Sette e mezzo** inserisci la tua carta coperta e le carte che ricevi (con un clic sulla griglia o da tastiera, `7c`, `Fs`, `Rd`) e l'app ti dice se **chiedere carta o stare**, con la probabilità di vincere la mano e la vincita media di ciascuna scelta. Se il mazzo non viene rimescolato a ogni mano puoi aggiungere le *altre carte viste* (degli altri giocatori o delle mani precedenti): il consiglio ne tiene conto.
+
+![BrisMaster: Sette e mezzo](docs/settemezzo.png)
+
+- **Regole**: matta (Re di Denari, vale ½ oppure da 1 a 7) e sette e mezzo reale pagato doppio, entrambi disattivabili. Il pareggio va al banco.
+- **Come gioca il banco**: *a soglia 5, 5½ o 6* (si ferma appena ci arriva, senza guardare le tue carte) oppure *esperto* (guarda le tue carte scoperte e decide per vincere il più possibile). Se non sai come gioca il tuo banco scegli *esperto*: è la scelta più prudente.
+- **Calcolo esatto**: il consiglio non è una stima. Il programma enumera tutte le carte che possono uscire a te e al banco e sceglie la mossa con la vincita media più alta.
+
+Il banco resta in vantaggio anche giocando in modo perfetto (vince i pareggi e chi sballa perde subito): la strategia ottimale perde il meno possibile. Rendimento per mano, giocando sempre come consigliato, rispetto alla migliore regola fissa ("chiedo finché ho meno di…"):
+
+| Banco | Strategia di BrisMaster | Migliore regola fissa |
+|---|---:|---:|
+| A soglia 5 | −11,5% | −13,1% |
+| A soglia 5½ | −7,2% | −10,3% |
+| A soglia 6 | −2,4% | −8,3% |
+| Esperto | −6,1% | −7,3% |
+
+Valori esatti, verificati con 1.000.000 di mani simulate per ogni strategia e ogni banco. Rapporto completo, con criteri e intervalli di confidenza, in [bench/SETTEMEZZO.md](bench/SETTEMEZZO.md):
+
+```
+cargo run --release -p settemezzo -- --hands 1000000 --out bench/SETTEMEZZO.md
+```
+
 ## Come ragiona il motore
 
 Il motore usa il **Monte Carlo determinizzato** (PIMC):

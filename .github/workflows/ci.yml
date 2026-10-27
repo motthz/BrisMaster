@@ -16,6 +16,16 @@ jobs:
         run: cargo test --workspace --release
       - name: Build app
         run: cargo build --release -p brismaster
+      # Lo stesso installatore della release, per accorgersi subito se lo script non compila.
+      - name: Installatore
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          & $iscc "/DAppVersion=0.0.0" "/DExeDir=..\target\release" installer\BrisMaster.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # Il motore della pull request contro quello dell'ultima release, sugli stessi mazzi.
   # Fallisce se la nuova versione è significativamente più debole (IC 95% tutto sotto il 50%).

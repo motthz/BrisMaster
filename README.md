@@ -44,6 +44,21 @@ Valori esatti, verificati con 1.000.000 di mani simulate per ogni strategia e og
 cargo run --release -p settemezzo -- --hands 1000000 --out bench/SETTEMEZZO.md
 ```
 
+## Blackjack
+
+Scegli **Blackjack** nella tendina in alto a sinistra. Inserisci la carta scoperta del banco e le tue carte (clic sul tastierino o da tastiera: `A` o `1` per l'asso, `2`-`9`, `0` `T` `J` `Q` `K` per il 10) e l'app ti dice cosa fare: carta, stai, raddoppia, dividi o arrenditi, con il valore atteso di ogni scelta. Le carte che peschi si aggiungono allo stesso modo e il consiglio si aggiorna; dopo una divisione l'app segue le due mani una alla volta. Backspace annulla, Invio inizia una nuova mano.
+
+![BrisMaster: consigliere del blackjack](docs/blackjack.png)
+
+Il consiglio dipende dalle regole del tavolo: scegli quelle giuste nella tendina (Europeo, Atlantic City, Las Vegas) o personalizzale in *Regole del tavolo*. Per ogni decisione l'app calcola in modo esatto il valore atteso di ogni azione, togliendo dal sabot le carte sul tavolo.
+
+Il blackjack si gioca contro il banco, che ha sempre un piccolo vantaggio: giocando come dice l'app con le regole online tipiche si perde in media lo 0,65% di quanto si punta, contro il 5-6% di chi gioca "a sensazione". Nel lungo periodo non si vince; nelle sessioni brevi circa 47 sessioni da 100 mani su 100 si chiudono in attivo. Il rapporto completo, con 100 milioni di mani per strategia, è in [bench/BLACKJACK.md](bench/BLACKJACK.md):
+
+```
+cargo run --release -p blackjack-core --bin blackjack-sim -- report --hands 100000000 --out bench/BLACKJACK.md
+cargo run --release -p blackjack-core --bin blackjack-sim -- chart --rules 0   # tabella della strategia di base
+```
+
 ## Come ragiona il motore
 
 Il motore usa il **Monte Carlo determinizzato** (PIMC):
@@ -109,6 +124,7 @@ Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro
 |---|---|
 | `crates/core` | Regole, motore, avversari di riferimento, statistiche |
 | `crates/sim` | Banco di prova per le simulazioni massive |
+| `crates/blackjack` | Blackjack: regole, valore atteso esatto, strategia di base, simulatore |
 | `crates/app` | App Windows (egui) e aggiornamento automatico |
 
 ## Pubblicare una nuova versione

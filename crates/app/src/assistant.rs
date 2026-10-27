@@ -2,6 +2,7 @@
 
 use crate::cards_ui::{self, BEST, CARD_SIZE, GOLD};
 use crate::record::{self, Advice, CardRec, Event, Recorder};
+use crate::vision::{memory::Memory, CardView, Img, Reader, Reading, Scene};
 use briscola_core::ai::{evaluate, EngineConfig, MoveEval};
 use briscola_core::cards::{self, Card, CardSet};
 use briscola_core::{Observation, Trick};
@@ -9,6 +10,7 @@ use eframe::egui::{self, vec2, Align2, Color32, FontId, Rect, RichText, Sense, S
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use std::sync::mpsc::{channel, Receiver};
+use std::sync::{Arc, Mutex};
 
 pub const ME: u8 = 0;
 pub const OPP: u8 = 1;
@@ -312,6 +314,38 @@ pub struct Assistant {
     entry_error: Option<String>,
     /// Spazio premuto mentre il motore calcolava: gioca il consiglio appena arriva.
     play_best_queued: bool,
+    vision: Vision,
+}
+
+/// Distacco minimo fra la carta più probabile e la seconda per inserirla senza chiedere.
+const AUTO_MARGIN: f32 = 1.4;
+
+/// Lettura della partita dallo schermo.
+#[derive(Default)]
+struct Vision {
+    reader: Option<Reader>,
+    memory: Arc<Mutex<Memory>>,
+    status: String,
+    /// Carte riconosciute all'ultima lettura: si agisce solo se la lettura si ripete uguale
+    /// (niente carte a metà animazione).
+    seen: Option<Vec<Option<Card>>>,
+    /// Carta riconosciuta con poca sicurezza, in attesa che l'utente confermi o la corregga.
+    confirm: Option<Confirm>,
+    /// Ultima carta inserita dalla lettura (con la lunghezza della cronologia prima di inserirla),
+    /// per dimenticarla se l'utente la annulla.
+    last: Option<(Card, Img, usize)>,
+    /// Ultima scena letta: serve a ricordare la carta pescata quando l'utente la scrive a mano.
+    scene: Option<Scene>,
+    /// Candidati annullati dall'utente: se ricompaiono si chiede conferma invece di inserirli.
+    doubts: Vec<(Step, Card)>,
+}
+
+struct Confirm {
+    step: Step,
+    card: Card,
+    img: Img,
+    partial: bool,
+    texture: Option<egui::TextureHandle>,
 }
 
 impl Default for Assistant {
@@ -327,6 +361,7 @@ impl Default for Assistant {
             keys: String::new(),
             entry_error: None,
             play_best_queued: false,
+            vision: Vision::default(),
         }
     }
 }
@@ -339,6 +374,8 @@ impl Assistant {
         self.keys.clear();
         self.entry_error = None;
         self.play_best_queued = false;
+        self.vision.seen = None;
+        self.vision.confirm = None;
     }
 
     fn set_first(&mut self, p: u8) {
@@ -351,6 +388,17 @@ impl Assistant {
 
     /// Annulla l'ultima azione dell'utente, insieme a quelle che l'app ha fatto da sola dopo.
     fn undo(&mut self) {
+        self.undo_entries();
+        // Se si è annullata una carta inserita dalla lettura dello schermo, era sbagliata.
+        if let Some((c, img, len)) = self.vision.last.take() {
+            if self.history.len() <= len {
+                self.vision.memory.lock().unwrap().forget(&img);
+                self.vision.doubts.push((self.pos.step(), c));
+            }
+        }
+    }
+
+    fn undo_entries(&mut self) {
         while let Some((p, n, e, auto)) = self.history.pop() {
             self.pos = p;
             self.tricks.truncate(n);
@@ -379,7 +427,11 @@ impl Assistant {
     }
 
     fn reset(&mut self) {
+        let vision = std::mem::take(&mut self.vision);
         *self = Assistant::default();
+        self.vision =
+            Vision { reader: vision.reader, memory: vision.memory, status: vision.status, ..Default::default() };
+        self.vision.doubts.clear();
     }
 
     /// Inserisce una carta indicata dall'utente. Falso se non è possibile adesso.
@@ -467,6 +519,7 @@ impl Assistant {
             let step = self.pos.step();
             match ev {
                 egui::Event::Key { key, pressed: true, modifiers, .. } if modifiers.is_none() => match key {
+                    egui::Key::Space | egui::Key::Enter if self.vision.confirm.is_some() => self.accept_vision(),
                     egui::Key::Space | egui::Key::Enter if step == Step::MyMove => self.play_best(),
                     egui::Key::Enter if step == Step::Over => self.reset(),
                     egui::Key::Backspace => {
@@ -475,6 +528,9 @@ impl Assistant {
                     egui::Key::Escape => {
                         self.keys.clear();
                         self.entry_error = None;
+                        if let Some(c) = self.vision.confirm.take() {
+                            self.vision.doubts.push((c.step, c.card));
+                        }
                     }
                     _ => {}
                 },
@@ -507,7 +563,16 @@ impl Assistant {
                 self.entry_error = None;
                 if let Some(c) = cards_ui::parse_card(&self.keys) {
                     self.keys.clear();
-                    if !self.enter(c) {
+                    let seen = self.vision.confirm.take();
+                    let drawn = self.new_hand_view().map(|v| v.img.clone());
+                    let was_draw = matches!(self.pos.step(), Step::Draw(_));
+                    if self.enter(c) {
+                        if let Some(v) = seen.filter(|v| !v.partial) {
+                            self.vision.memory.lock().unwrap().remember(&v.img, c);
+                        } else if let Some(img) = drawn.filter(|_| was_draw) {
+                            self.vision.memory.lock().unwrap().remember(&img, c);
+                        }
+                    } else {
                         self.entry_error = Some(format!("{} non è possibile adesso", cards::name(c)));
                     }
                 } else if !is_rank_prefix(&self.keys) {
@@ -517,6 +582,198 @@ impl Assistant {
             }
             Step::Over => {}
         }
+    }
+
+    /// Accende o spegne la lettura dello schermo.
+    fn set_vision(&mut self, on: bool, ctx: &egui::Context) {
+        if on && self.vision.reader.is_none() {
+            if self.vision.memory.lock().unwrap().len() == 0 {
+                *self.vision.memory.lock().unwrap() = Memory::load();
+            }
+            self.vision.reader = Some(Reader::start(self.vision.memory.clone(), ctx.clone()));
+            self.vision.status = "Cerco il tavolo sullo schermo...".into();
+        } else if !on {
+            self.vision.reader = None;
+            self.vision.confirm = None;
+            self.vision.status.clear();
+        }
+    }
+
+    /// Raccoglie l'ultima lettura dello schermo e la confronta con la partita.
+    fn poll_vision(&mut self) {
+        let Some(reader) = &self.vision.reader else { return };
+        let mut latest = None;
+        while let Ok(r) = reader.rx.try_recv() {
+            latest = Some(r);
+        }
+        match latest {
+            Some(Reading::Scene(scene)) => {
+                self.vision.status = format!(
+                    "Vedo: briscola {} · {} carte in mano · {} in tavola",
+                    if scene.trump.is_some() { "sì" } else { "no" },
+                    scene.hand.len(),
+                    scene.opp_slot.is_some() as u8 + scene.my_slot.is_some() as u8
+                );
+                self.sync(&scene);
+                self.vision.scene = Some(scene);
+            }
+            Some(Reading::NoTable) => {
+                self.vision.status = "Non vedo il tavolo: tieni la partita aperta e visibile sullo schermo".into()
+            }
+            Some(Reading::Error(e)) => self.vision.status = format!("Lettura dello schermo non riuscita: {e}"),
+            None => {}
+        }
+    }
+
+    /// Inserisce nella partita quello che si vede sullo schermo, se è uguale alla lettura precedente.
+    fn sync(&mut self, scene: &Scene) {
+        let best = |v: &CardView| v.best(CardSet::FULL).map(|b| b.0);
+        let mut sig: Vec<Option<Card>> =
+            [&scene.trump, &scene.opp_slot, &scene.my_slot].iter().map(|v| v.as_ref().and_then(best)).collect();
+        sig.extend(scene.hand.iter().map(best));
+        if self.vision.seen.as_ref() != Some(&sig) {
+            self.vision.seen = Some(sig);
+            return;
+        }
+        // Più passi in una volta: briscola, chi comincia, le tre carte, la prima giocata...
+        for _ in 0..8 {
+            let before = (self.pos.step(), self.history.len());
+            self.sync_step(scene);
+            if (self.pos.step(), self.history.len()) == before || self.vision.confirm.is_some() {
+                break;
+            }
+        }
+        self.vision.seen = Some(sig);
+    }
+
+    /// Un passo della partita a partire dalla lettura dello schermo.
+    fn sync_step(&mut self, scene: &Scene) {
+        let step = self.pos.step();
+        if step == Step::Over {
+            // Il sito ha distribuito una nuova partita.
+            if scene.trump.is_some() && scene.hand.len() == 3 {
+                self.reset();
+            }
+            return;
+        }
+        if self.vision.confirm.is_some() {
+            return;
+        }
+        let pos = self.pos;
+        let allowed = pos.allowed();
+        let mut known = pos.played.union(pos.hand);
+        if let Some(t) = pos.table {
+            known.insert(t);
+        }
+        // Carta candidata per il passo corrente: (carta, distacco, immagine, vista a metà).
+        let candidate = match step {
+            Step::Trump => scene.trump.as_ref().and_then(|v| v.best(allowed).map(|(c, m)| (c, m, v))),
+            Step::First => {
+                // Chi gioca la prima carta ha cominciato.
+                if scene.opp_slot.is_some() {
+                    self.set_first(OPP);
+                } else if scene.my_slot.is_some() {
+                    self.set_first(ME);
+                }
+                return;
+            }
+            Step::Draw(_) => unmatched_hand(scene, &pos)
+                .into_iter()
+                .filter_map(|v| v.best(allowed.union(pos.played)).map(|(c, m)| (c, m, v)))
+                .filter(|(c, _, _)| allowed.contains(*c))
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()),
+            Step::OppMove => scene
+                .opp_slot
+                .as_ref()
+                .and_then(|v| v.best(allowed.union(known)).map(|(c, m)| (c, m, v)))
+                .filter(|(c, _, _)| allowed.contains(*c)),
+            Step::MyMove => scene
+                .my_slot
+                .as_ref()
+                .and_then(|v| v.best(known).map(|(c, m)| (c, m, v)))
+                .filter(|(c, _, _)| pos.hand.contains(*c)),
+            Step::Over => None,
+        };
+        let Some((card, margin, view)) = candidate else { return };
+        let doubtful = self.vision.doubts.contains(&(step, card));
+        if margin >= AUTO_MARGIN && !doubtful {
+            let img = view.img.clone();
+            let len = self.history.len();
+            if self.enter(card) {
+                if !view.partial {
+                    self.vision.memory.lock().unwrap().remember(&img, card);
+                }
+                self.vision.last = Some((card, img, len));
+            }
+        } else {
+            self.vision.confirm =
+                Some(Confirm { step, card, img: view.img.clone(), partial: view.partial, texture: None });
+        }
+    }
+
+    /// La carta della mano sullo schermo che non è nessuna di quelle già in mano: la pescata.
+    fn new_hand_view(&self) -> Option<&CardView> {
+        let scene = self.vision.scene.as_ref()?;
+        let rest = unmatched_hand(scene, &self.pos);
+        if rest.len() == 1 {
+            Some(rest[0])
+        } else {
+            None
+        }
+    }
+
+    /// L'utente conferma la carta riconosciuta con poca sicurezza: si inserisce e si ricorda.
+    fn accept_vision(&mut self) {
+        let Some(c) = self.vision.confirm.take() else { return };
+        if c.step == self.pos.step() && self.enter(c.card) && !c.partial {
+            self.vision.memory.lock().unwrap().remember(&c.img, c.card);
+        }
+    }
+
+    /// Interruttore, stato e richiesta di conferma della lettura dello schermo.
+    fn vision_ui(&mut self, ui: &mut egui::Ui) {
+        let mut on = self.vision.reader.is_some();
+        ui.horizontal(|ui| {
+            if ui
+                .checkbox(&mut on, RichText::new("Leggi la partita dallo schermo").strong())
+                .on_hover_text("BrisMaster guarda il tavolo del sito e inserisce da solo le carte. Non tocca il sito: le carte le giochi sempre tu.")
+                .changed()
+            {
+                self.set_vision(on, ui.ctx());
+            }
+            if on {
+                let n = self.vision.memory.lock().unwrap().len();
+                ui.label(RichText::new(format!("{n}/40 carte in memoria")).small().weak())
+                    .on_hover_text("Le carte già riconosciute si ricordano da sole e la volta dopo si riconoscono al primo colpo");
+            }
+        });
+        if !on {
+            return;
+        }
+        ui.label(RichText::new(&self.vision.status).small().weak());
+        let ctx = ui.ctx().clone();
+        if let Some(c) = &mut self.vision.confirm {
+            let tex = c.texture.get_or_insert_with(|| {
+                let rgba: Vec<u8> = c.img.px.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect();
+                let image = egui::ColorImage::from_rgba_unmultiplied([c.img.w, c.img.h], &rgba);
+                ctx.load_texture("vision_confirm", image, Default::default())
+            });
+            egui::Frame::new()
+                .fill(Color32::from_rgb(60, 48, 20))
+                .stroke(Stroke::new(1.5, GOLD))
+                .corner_radius(8.0)
+                .inner_margin(8.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Image::new(&*tex).fit_to_exact_size(vec2(50.0, 80.0)));
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(format!("Mi sembra {}", cards::name(c.card))).size(17.0).strong());
+                            ui.label("Spazio = giusto · se sbaglio scrivi la carta (es. Rd) · Esc = ignora");
+                        });
+                    });
+                });
+        }
+        ui.add_space(6.0);
     }
 
     /// Gioca la carta consigliata, o la prenota se il motore sta ancora calcolando.
@@ -692,6 +949,7 @@ impl Assistant {
     pub fn side_ui(&mut self, ui: &mut egui::Ui, samples: &mut u32, compact: bool) {
         let ctx = ui.ctx().clone();
         self.keyboard(&ctx);
+        self.poll_vision();
         self.poll(*samples, &ctx);
         let step = self.pos.step();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -699,6 +957,7 @@ impl Assistant {
                 self.compact_header(ui);
                 ui.separator();
             }
+            self.vision_ui(ui);
             match step {
                 Step::Trump => {
                     title(ui, "Qual è la briscola?", "Indica la carta scoperta sotto il mazzo.");
@@ -978,6 +1237,20 @@ impl Assistant {
     }
 }
 
+/// Carte della mano sullo schermo tolte quelle che corrispondono alle carte già in mano
+/// (a ciascuna carta nota la vista che le somiglia di più).
+fn unmatched_hand<'a>(scene: &'a Scene, pos: &Position) -> Vec<&'a CardView> {
+    let mut views: Vec<&CardView> = scene.hand.iter().collect();
+    for k in pos.hand.iter() {
+        let best = (0..views.len())
+            .max_by(|&a, &b| views[a].scores[k as usize].partial_cmp(&views[b].scores[k as usize]).unwrap());
+        if let Some(i) = best {
+            views.remove(i);
+        }
+    }
+    views
+}
+
 /// Vero se i tasti digitati possono ancora diventare una carta (manca il seme).
 fn is_rank_prefix(keys: &str) -> bool {
     matches!(keys, "a" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "f" | "j" | "c" | "q" | "r" | "k" | "10")
@@ -1242,6 +1515,83 @@ mod tests {
         a.undo();
         assert_eq!(a.pos.step(), Step::MyMove);
         assert_eq!(a.pos.hand.len(), 3);
+    }
+
+    /// Una carta vista sullo schermo, riconosciuta come `c` con distacco `margin`.
+    fn seen(c: Card, margin: f32) -> CardView {
+        let mut scores = [0.0; 40];
+        scores[c as usize] = margin;
+        // Un disegno diverso per ogni carta, per la memoria delle immagini.
+        let mut img = Img::new(crate::vision::CARD_W, crate::vision::CARD_H);
+        for (i, p) in img.px.iter_mut().enumerate() {
+            let v = ((i / 7) as u32).wrapping_mul(c as u32 + 3).wrapping_mul(2654435761).wrapping_shr(24) as u8;
+            *p = [v, v / 2, 255 - v];
+        }
+        CardView { img, partial: false, scores }
+    }
+
+    /// Ogni lettura arriva due volte, come dallo schermo (la prima si scarta per prudenza).
+    fn show(a: &mut Assistant, scene: &Scene) {
+        a.sync(scene);
+        a.sync(scene);
+    }
+
+    /// La partita si segue da sola dallo schermo; le carte fantasma (già giocate ma ancora
+    /// disegnate in mano dal sito) si ignorano.
+    #[test]
+    fn follows_the_screen() {
+        let mut a = Assistant::default();
+        let c = |s, r| cards::make(s, r);
+        let mut scene = Scene { trump: Some(seen(c(0, 8), 4.0)), ..Default::default() };
+        show(&mut a, &scene);
+        assert_eq!(a.pos.trump_card, Some(c(0, 8)));
+        scene.hand = vec![seen(c(3, 1), 4.0), seen(c(2, 6), 4.0), seen(c(1, 0), 4.0)];
+        show(&mut a, &scene);
+        assert_eq!(a.pos.step(), Step::First, "chi comincia si capisce dalla prima carta giocata");
+        scene.opp_slot = Some(seen(c(3, 2), 4.0));
+        show(&mut a, &scene);
+        assert_eq!(a.pos.first, Some(OPP));
+        assert_eq!(a.pos.hand.len(), 3);
+        assert_eq!(a.pos.table, Some(c(3, 2)));
+        assert_eq!(a.pos.step(), Step::MyMove);
+        // Rispondo col 2 di bastoni: sparisce dalla mano e compare in tavola.
+        scene.hand.remove(0);
+        scene.my_slot = Some(seen(c(3, 1), 4.0));
+        show(&mut a, &scene);
+        assert_eq!(a.pos.tricks, 1);
+        assert!(matches!(a.pos.step(), Step::Draw(1)));
+        // Pesco; il sito disegna ancora il 2 di bastoni in mano (carta fantasma).
+        scene.hand = vec![seen(c(3, 1), 4.0), seen(c(2, 6), 4.0), seen(c(1, 0), 4.0), seen(c(0, 3), 4.0)];
+        show(&mut a, &scene);
+        assert!(a.pos.hand.contains(c(0, 3)));
+        assert!(!a.pos.hand.contains(c(3, 1)), "la carta fantasma non torna in mano");
+        // La presa vecchia ancora in tavola non viene contata due volte.
+        assert_eq!(a.pos.step(), Step::OppMove);
+        assert_eq!(a.pos.tricks, 1);
+    }
+
+    /// Se la carta è incerta si chiede conferma; se l'utente annulla una carta letta male,
+    /// la memoria la dimentica e la volta dopo si chiede invece di inserirla.
+    #[test]
+    fn asks_when_unsure() {
+        let mut a = Assistant::default();
+        let scene = Scene { trump: Some(seen(cards::make(0, 7), 1.0)), ..Default::default() };
+        show(&mut a, &scene);
+        assert!(a.pos.trump_card.is_none());
+        assert_eq!(a.vision.confirm.as_ref().map(|c| c.card), Some(cards::make(0, 7)));
+        a.accept_vision();
+        assert_eq!(a.pos.trump_card, Some(cards::make(0, 7)));
+        assert_eq!(a.vision.memory.lock().unwrap().len(), 1, "confermata: ora la ricorda");
+
+        let mut b = Assistant::default();
+        let scene = Scene { trump: Some(seen(cards::make(2, 2), 4.0)), ..Default::default() };
+        show(&mut b, &scene);
+        assert_eq!(b.pos.trump_card, Some(cards::make(2, 2)));
+        b.undo();
+        assert!(b.pos.trump_card.is_none());
+        assert_eq!(b.vision.memory.lock().unwrap().len(), 0, "annullata: dimenticata");
+        show(&mut b, &scene);
+        assert!(b.pos.trump_card.is_none() && b.vision.confirm.is_some(), "ora chiede conferma");
     }
 
     #[test]

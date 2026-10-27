@@ -5,6 +5,7 @@
 pub mod capture;
 pub mod classify;
 pub mod detect;
+pub mod french;
 pub mod memory;
 
 /// Immagine RGB.

@@ -1042,6 +1042,25 @@ mod tests {
     }
 
     #[test]
+    fn inference_doubts_a_missed_scopa() {
+        // In tavola un 3 e un 4: l'avversario ha lasciato in tavola un Re invece di fare scopa.
+        // Una mano con un 7 (scopa lasciata) è molto meno probabile di una senza.
+        let table = set(&[make(1, 2), make(2, 3)]);
+        let king = make(3, 9);
+        let mut obs = Observation::new_hand(0, 0, [0, 0]);
+        obs.hand = set(&[make(0, 0), make(0, 1), make(0, 4)]);
+        obs.table = table;
+        obs.to_move = 1;
+        obs.apply(Move { card: king, take: CardSet::EMPTY });
+        assert_eq!(obs.opp_plays().len(), 1);
+        let inf = Infer::default();
+        let mut buf = Vec::new();
+        let with_seven = play_likelihood(&obs, set(&[make(1, 6), make(2, 8)]), &inf, &mut buf);
+        let without = play_likelihood(&obs, set(&[make(1, 1), make(2, 8)]), &inf, &mut buf);
+        assert!(with_seven * 5.0 < without, "{with_seven} contro {without}");
+    }
+
+    #[test]
     fn match_table_is_sane() {
         let t = MatchTable::standard();
         assert!((t.value(0, 0) - 0.5).abs() < 0.05);

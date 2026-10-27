@@ -78,6 +78,11 @@ fn ncc(a: &[u8], b: &[u8], rows: usize) -> f32 {
 /// Somiglianza oltre la quale la carta è considerata la stessa.
 pub const SAME: f32 = 0.9;
 
+/// Somiglianza fra due carte raddrizzate (solo la metà alta se `partial`).
+pub fn similarity(a: &Img, b: &Img, partial: bool) -> f32 {
+    ncc(&thumb(a), &thumb(b), if partial { TOP } else { TH })
+}
+
 impl Memory {
     pub fn path() -> PathBuf {
         crate::record::dir().parent().map(|p| p.to_path_buf()).unwrap_or_default().join("carte_viste.json")

@@ -50,14 +50,13 @@ const EXTRA: &[(&str, &str)] = &[
     ("ismcts:5000", "ISMCTS con 5000 iterazioni, l'avversario algoritmico più forte"),
 ];
 
-/// Gli avversari più forti: ricerca ad albero con molte iterazioni e varianti potenziate del motore.
+/// Gli avversari più forti: ricerca ad albero con molte iterazioni, anche con le simulazioni del motore.
 const STRONG: &[(&str, &str)] = &[
     ("ismcts:10000", "ISMCTS con 10.000 iterazioni"),
     ("ismcts:20000", "ISMCTS con 20.000 iterazioni"),
+    ("ismcts+:5000", "ISMCTS potenziato: le simulazioni del motore (a carte scoperte, finale esatto), 5.000 iterazioni"),
+    ("ismcts+:10000", "ISMCTS potenziato con 10.000 iterazioni, l'avversario più forte che sappiamo costruire"),
     ("engine:3000", "Lo stesso motore con il triplo delle simulazioni"),
-    ("engine:1000:0.0", "Lo stesso motore con simulazioni senza mosse casuali"),
-    ("engine:1000:0.3", "Lo stesso motore con simulazioni più varie (30% di mosse casuali)"),
-    ("engine:1000:0.1:6", "Lo stesso motore che calcola il finale esatto già con 6 carte nel mazzo"),
 ];
 
 fn pct(x: f64) -> String {
@@ -306,7 +305,7 @@ fn report(player: &str, deals: u64, self_deals: u64, seed: u64) -> String {
     writeln!(
         sec3,
         "Gli avversari più difficili che il banco di prova sa costruire: ricerca ad albero con molte più iterazioni, \
-         e varianti del motore stesso con più simulazioni o un finale calcolato prima. Contro le varianti di se stesso \
+         ISMCTS potenziato con le stesse simulazioni del motore, e il motore stesso con più simulazioni. Contro le varianti di se stesso \
          il motore parte vicino al 50% per costruzione: superarle del 55% richiede un motore nettamente migliore, non solo più calcolo.\n"
     ).unwrap();
     all_rows.extend(panel_rows(player, STRONG, deals, seed, &mut sec3));

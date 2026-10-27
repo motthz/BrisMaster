@@ -6,6 +6,13 @@ license.workspace = true
 
 [dependencies]
 briscola-core = { path = "../core" }
+settemezzo = { path = "../settemezzo" }
+blackjack-core = { path = "../blackjack", features = ["serde"] }
+scopa-core = { path = "../scopa" }
+poker-it = { path = "../poker-it" }
+poker-core = { path = "../poker" }
+scala40-core = { path = "../scala40" }
+burraco = { path = "../burraco" }
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "persistence", "x11", "wayland"] }
 rand = { version = "0.8", features = ["small_rng"] }
 self-replace = "1.5.0"

@@ -3,6 +3,7 @@
 //! SPEC: random | heuristic | aggressive | cautious | trumphappy | counter
 //!       | followsuit | loadleader | notrump
 //!       | engine:MONDI[:EPSILON[:SOGLIA[:PESO_PUNTI]]] | ismcts:ITERAZIONI
+//!       | ismcts+:ITERAZIONI           (ISMCTS con le simulazioni del motore: a carte scoperte, finale esatto)
 //!       | classic:MONDI                (motore della v0.1.1 compilato con la versione attuale)
 //!       | eng:CHIAVE=VALORE,...        (varianti del motore attuale, vedi make_player)
 //!       | noisy:ERRORE:SPEC            (es. noisy:0.25:heuristic)
@@ -69,9 +70,8 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
         "followsuit" => Box::new(FollowSuitPlayer),
         "loadleader" => Box::new(LoadLeaderPlayer),
         "notrump" => Box::new(NoTrumpPlayer),
-        s if s.starts_with("ismcts:") => {
-            Box::new(IsmctsPlayer { iterations: num(&s[7..], "numero di iterazioni")? as u32 })
-        }
+        s if s.starts_with("ismcts:") => Box::new(IsmctsPlayer::new(num(&s[7..], "numero di iterazioni")? as u32)),
+        s if s.starts_with("ismcts+:") => Box::new(IsmctsPlayer::strong(num(&s[8..], "numero di iterazioni")? as u32)),
         s if s.starts_with("engine:") => {
             let parts: Vec<&str> = s[7..].split(':').collect();
             let mut cfg = EngineConfig::strength(num(parts[0], "numero di mondi")? as u32);
@@ -90,7 +90,7 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
             Box::new(EnginePlayer::new(EngineConfig::classic(num(&s[8..], "numero di mondi")? as u32)))
         }
         // Varianti per chiavi, a partire dal motore attuale:
-        // eng:mondi=1000,eps=0,solve=8,rsolve=2,pol=open,tb=8,tm=2,lb=0,os=4 (rsolve=no, pol=heuristic)
+        // eng:mondi=1000,eps=0,solve=8,rsolve=2,pol=open,tb=8,tm=2,lb=0,os=4,ismcts=N (rsolve=no, pol=heuristic)
         s if s.starts_with("eng:") => {
             let mut cfg = EngineConfig::strength(1000);
             for kv in s[4..].split(',').filter(|p| !p.is_empty()) {
@@ -106,6 +106,7 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
                     "tm" => policy(&mut cfg).trump_mult = num(v, "tm")? as i32,
                     "lb" => policy(&mut cfg).lead_bonus = num(v, "lb")? as i32,
                     "os" => policy(&mut cfg).opp_spend = num(v, "os")? as i32,
+                    "ismcts" => cfg.ismcts = Some(num(v, "ismcts")? as u32),
                     other => return Err(format!("opzione sconosciuta: {other}")),
                 }
             }

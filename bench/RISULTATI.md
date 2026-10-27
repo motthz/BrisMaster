@@ -47,6 +47,60 @@ Scartate:
 | Stessi numeri casuali per tutte le mosse candidate | 48,7% | nessun guadagno |
 | Solo risolutore da 6, 8 o 10 carte, rollout euristici | 49-50% | nessun guadagno senza rollout migliori |
 
+## Avversari più forti e nuove prove (ottobre 2026, dopo la v0.2.0)
+
+Tutte le righe: 4.000 mazzi giocati due volte a posti invertiti (**8.000 partite**), seme `20261022`. Punteggio: vittoria 1, pareggio ½.
+
+**Nuovo avversario: ISMCTS potenziato** (`ismcts+:N`). La stessa ricerca ad albero dell'ISMCTS, ma con le simulazioni del motore: a carte scoperte, senza mosse casuali, finale risolto in modo esatto da 2 carte nel mazzo. A parità di tempo di calcolo gioca alla pari con il nostro motore, e con più iterazioni lo batte: è l'avversario più forte che il banco di prova sa costruire.
+
+| Partita | Punteggio | IC 95% |
+|---|---:|---|
+| Motore 1000 mondi contro ISMCTS 20.000 | 54,5% | 53,5 – 55,6 |
+| ISMCTS potenziato 3.000 (stesso tempo per mossa) contro motore 1000 mondi | 49,4% | 48,4 – 50,4 |
+| Motore 1000 mondi contro ISMCTS potenziato 10.000 | **47,5%** | 46,5 – 48,5 |
+
+**Più mondi.** Il calcolo in più aiuta fino a circa 3000 mondi, poi non più:
+
+| Partita | Punteggio | IC 95% |
+|---|---:|---|
+| Motore 1000 mondi contro ISMCTS 20.000 | 54,5% | 53,5 – 55,6 |
+| Motore 3000 mondi contro ISMCTS 20.000 | **55,6%** | 54,5 – 56,6 |
+| Motore 6000 mondi contro ISMCTS 20.000 | 54,4% | 53,4 – 55,5 |
+| Motore 3000 mondi contro ISMCTS potenziato 10.000 | 48,1% | 47,1 – 49,1 |
+
+**ISMCTS potenziato come motore.** Con 20.000 iterazioni è il giocatore più forte che abbiamo:
+
+| Partita | Punteggio | IC 95% |
+|---|---:|---|
+| ISMCTS potenziato 20.000 contro motore 3000 mondi | **53,0%** | 52,0 – 53,9 |
+| ISMCTS potenziato 20.000 contro ISMCTS 20.000 | 54,9% | 53,9 – 56,0 |
+
+Per questo nell'Assistente la precisione Massima (quella di serie) usa l'ISMCTS potenziato con 20.000 iterazioni: 40 ms di media a mossa, al più 71 ms, su un thread (`bench --ismcts 20000`). Le altre scelte restano il motore a mondi: Veloce 1000, Normale 3000. Tempi di una mossa con 4 core (`bench --threads 4`, 400 posizioni):
+
+| Mondi | Media a metà partita | Media / max con 1-8 carte nel mazzo |
+|---:|---:|---:|
+| 1000 | 5 ms | 6 / 37 ms |
+| 3000 | 13 ms | 14 / 90 ms |
+| 6000 | 24 ms | 26 / 187 ms |
+
+**Varianti del motore provate e scartate** (a 300 mondi contro lo stesso motore a 300 mondi, 8.000 partite ciascuna; il 50% è la parità):
+
+| Variante | Punteggio | IC 95% |
+|---|---:|---|
+| Chi apre nelle simulazioni non guarda la mano avversaria (risposta attesa su una mano a caso) | 48,5% | 47,5 – 49,5 |
+| Peso dei punti 0,004 invece di 1/1200 | 49,4% | 48,3 – 50,4 |
+| Solo la vittoria conta (peso dei punti 0) | 49,3% | 48,3 – 50,3 |
+| Costo base della briscola 4 invece di 8 | 50,2% | 49,2 – 51,3 |
+| Costo base della briscola 12 | 50,1% | 49,1 – 51,1 |
+| Costo per forza della briscola 1 invece di 2 | 50,1% | 49,1 – 51,1 |
+| Costo per forza della briscola 3 | 49,1% | 48,1 – 50,1 |
+| Finale esatto nelle simulazioni da 4 carte invece di 2 | 49,8% | 48,8 – 50,9 |
+| Ibrido: media delle stime del motore (500 mondi) e dell'ISMCTS potenziato (1.500), contro il motore a 1000 mondi | 50,2% | 49,2 – 51,2 |
+
+I parametri attuali sono già al loro ottimo: nessuna variante si stacca dal 50%. Il motore si rafforza solo con più calcolo.
+
+**Risolutore più veloce.** Il risolutore esatto dei mondi del finale ora usa una tabella delle trasposizioni: calcola i punti che restano da fare (che non dipendono da quelli già presi), così ritrova le posizioni raggiunte per strade diverse e, a mazzo finito, quelle comuni a mondi diversi. Con 1000 mondi e 1-8 carte nel mazzo una mossa scende da 113 a 22 ms di media (max da 738 a 152 ms) su un thread. Le mosse sono identiche: l'impronta delle valutazioni di `bench` resta `21bca65cad5db0ff`. Nel finale con più di 4 carte nel mazzo il motore ora usa anche tutti i core.
+
 ## Motore della v0.1.1
 
 Motore: **PIMC con 1000 mondi per mossa** e risolutore esatto con 4 carte o meno nel mazzo (il livello *Difficile* dell'app).

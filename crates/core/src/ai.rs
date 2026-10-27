@@ -240,21 +240,66 @@ struct Node {
     visits: f64,
     avail: f64,
     reward: f64,
+    /// Vittorie (pareggio = ½) e punti finali di chi ha giocato la carta.
+    wins: f64,
+    points: f64,
+}
+
+/// Risultato della ricerca per una carta giocabile adesso.
+#[derive(Clone, Copy, Debug)]
+pub struct RootChild {
+    pub card: Card,
+    pub visits: f64,
+    /// Somme su tutte le visite: utilità, vittorie e punti finali.
+    pub reward: f64,
+    pub wins: f64,
+    pub points: f64,
 }
 
 pub struct IsmctsPlayer {
     pub iterations: u32,
+    /// Politica delle simulazioni: `None` = euristica con il 10% di mosse casuali (classica),
+    /// altrimenti a carte scoperte senza mosse casuali.
+    pub policy: Option<RolloutParams>,
+    /// Con al più queste carte nel mazzo la simulazione si ferma e il resto si risolve esatto.
+    pub rollout_solve: Option<u8>,
+}
+
+impl IsmctsPlayer {
+    /// ISMCTS classico: simulazioni euristiche con mosse casuali fino alla fine.
+    pub fn new(iterations: u32) -> Self {
+        IsmctsPlayer { iterations, policy: None, rollout_solve: None }
+    }
+
+    /// ISMCTS potenziato: le stesse simulazioni del motore principale (a carte scoperte,
+    /// finale risolto con alfa-beta da 2 carte nel mazzo).
+    pub fn strong(iterations: u32) -> Self {
+        IsmctsPlayer { iterations, policy: Some(RolloutParams::default()), rollout_solve: Some(2) }
+    }
 }
 
 impl Player for IsmctsPlayer {
     fn name(&self) -> String {
-        format!("ISMCTS ({} iterazioni)", self.iterations)
+        if self.policy.is_some() {
+            format!("ISMCTS potenziato ({} iterazioni)", self.iterations)
+        } else {
+            format!("ISMCTS ({} iterazioni)", self.iterations)
+        }
     }
     fn choose(&mut self, obs: &Observation, rng: &mut SmallRng) -> Card {
         if obs.hand.len() == 1 {
             return obs.hand.iter().next().unwrap();
         }
-        let mut nodes = vec![Node { card: 255, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0 }];
+        let root = self.search(obs, rng);
+        root.iter().max_by(|a, b| a.visits.partial_cmp(&b.visits).unwrap()).unwrap().card
+    }
+}
+
+impl IsmctsPlayer {
+    /// Ricerca dalla posizione: per ogni carta giocabile, visite e risultati.
+    pub fn search(&self, obs: &Observation, rng: &mut SmallRng) -> Vec<RootChild> {
+        let mut solver = Solver::default();
+        let mut nodes = vec![Node { card: 255, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0, wins: 0.0, points: 0.0 }];
         for _ in 0..self.iterations {
             let mut g = obs.determinize(rng);
             let mut path = vec![0usize];
@@ -277,7 +322,7 @@ impl Player for IsmctsPlayer {
                     let c = v[rng.gen_range(0..v.len())];
                     let mover = g.to_move();
                     g.play(c);
-                    nodes.push(Node { card: c, mover, children: vec![], visits: 0.0, avail: 1.0, reward: 0.0 });
+                    nodes.push(Node { card: c, mover, children: vec![], visits: 0.0, avail: 1.0, reward: 0.0, wins: 0.0, points: 0.0 });
                     let id = nodes.len() - 1;
                     nodes[cur].children.push(id);
                     path.push(id);
@@ -297,15 +342,38 @@ impl Player for IsmctsPlayer {
                 path.push(best);
                 cur = best;
             }
-            rollout(&mut g, 0.1, rng);
+            let finals = match self.policy {
+                None => {
+                    rollout(&mut g, 0.1, rng);
+                    g.points
+                }
+                Some(p) => {
+                    rollout_until(&mut g, Some(&p), 0.0, self.rollout_solve, rng);
+                    if g.is_over() {
+                        g.points
+                    } else {
+                        let p0 = solver.solve(&g, 0);
+                        [p0, 120 - p0]
+                    }
+                }
+            };
             for &id in &path {
                 let n = &mut nodes[id];
+                let pts = finals[n.mover as usize];
                 n.visits += 1.0;
-                n.reward += utility(g.points[n.mover as usize]);
+                n.reward += utility(pts);
+                n.wins += result(pts);
+                n.points += pts as f64;
             }
         }
-        let root = &nodes[0];
-        root.children.iter().max_by(|&&a, &&b| nodes[a].visits.partial_cmp(&nodes[b].visits).unwrap()).map(|&k| nodes[k].card).unwrap()
+        nodes[0]
+            .children
+            .iter()
+            .map(|&k| {
+                let n = &nodes[k];
+                RootChild { card: n.card, visits: n.visits, reward: n.reward, wins: n.wins, points: n.points }
+            })
+            .collect()
     }
 }
 
@@ -401,6 +469,9 @@ pub struct EngineConfig {
     pub rollout_solve: Option<u8>,
     /// Politica dei rollout: `None` = euristica classica, altrimenti a carte scoperte.
     pub rollout_policy: Option<RolloutParams>,
+    /// Se impostato, finché c'è il mazzo la mossa si sceglie con l'ISMCTS potenziato con
+    /// queste iterazioni invece che con i mondi (`samples` vale solo a mazzo finito).
+    pub ismcts: Option<u32>,
 }
 
 impl EngineConfig {
@@ -415,6 +486,7 @@ impl EngineConfig {
             rollout_solve: Some(2),
             rollout_policy: Some(RolloutParams::default()),
             threads: 1,
+            ismcts: None,
         }
     }
 
@@ -429,6 +501,7 @@ impl EngineConfig {
             rollout_solve: None,
             rollout_policy: None,
             threads: 1,
+            ismcts: None,
         }
     }
 }
@@ -537,6 +610,126 @@ fn solve(g: &Game, me: u8, mut alpha: i32, mut beta: i32) -> i32 {
     best
 }
 
+/// Risolutore alfa-beta con tabella delle trasposizioni, per i molti mondi di una valutazione.
+///
+/// Calcola i punti che il giocatore 0 farà da qui alla fine (non dipendono dai punti già
+/// presi), così le posizioni ritrovate per strade diverse, o in mondi diversi a mazzo vuoto,
+/// si riprendono dalla tabella. Dà sempre lo stesso valore di `solve`.
+pub struct Solver {
+    tt: Vec<TtEntry>,
+    /// Impronta del mazzo coperto del mondo corrente, per ogni lunghezza del mazzo.
+    zdeck: [u64; NUM_CARDS + 1],
+}
+
+#[derive(Clone, Copy, Default)]
+struct TtEntry {
+    key: u64,
+    lo: u8,
+    hi: u8,
+}
+
+const TT_BITS: u32 = 16;
+
+#[inline]
+fn mix(mut x: u64) -> u64 {
+    // splitmix64
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+impl Default for Solver {
+    fn default() -> Self {
+        Solver { tt: vec![TtEntry::default(); 1 << TT_BITS], zdeck: [0; NUM_CARDS + 1] }
+    }
+}
+
+impl Solver {
+    /// Punti finali di `me` giocando perfettamente da `g`.
+    pub fn solve(&mut self, g: &Game, me: u8) -> u8 {
+        // Impronta di ogni prefisso del mazzo: il mazzo coperto è deck[0..deck_len].
+        let mut h = 0u64;
+        for k in 0..g.deck_len as usize {
+            h = mix(h ^ g.deck[k] as u64 ^ (k as u64) << 8);
+            self.zdeck[k + 1] = h;
+        }
+        let rem = 120 - g.points[0] as i32 - g.points[1] as i32;
+        let v0 = self.ab(g, -1, rem + 1);
+        let mine = if me == 0 { v0 } else { rem - v0 };
+        (g.points[me as usize] as i32 + mine) as u8
+    }
+
+    #[inline]
+    fn key(&self, g: &Game) -> u64 {
+        let small = g.leader as u64 | (g.table.map_or(63, |c| c as u64) << 1) | (g.deck_len as u64) << 8 | (g.trump as u64) << 16;
+        mix(g.hands[0].0) ^ mix(g.hands[1].0 ^ 0x5555_0000_0000_0000) ^ mix(small ^ 0xABCD_0000) ^ self.zdeck[g.deck_len as usize]
+    }
+
+    /// Punti futuri del giocatore 0, con finestra (alpha, beta), fail-soft.
+    fn ab(&mut self, g: &Game, mut alpha: i32, mut beta: i32) -> i32 {
+        if g.is_over() {
+            return 0;
+        }
+        let key = self.key(g);
+        let slot = (key >> (64 - TT_BITS)) as usize;
+        let e = self.tt[slot];
+        let (mut lo, mut hi) = (0i32, 120 - g.points[0] as i32 - g.points[1] as i32);
+        if e.key == key {
+            lo = e.lo as i32;
+            hi = e.hi as i32;
+            if lo >= beta || lo == hi {
+                return lo;
+            }
+            if hi <= alpha {
+                return hi;
+            }
+            alpha = alpha.max(lo);
+            beta = beta.min(hi);
+        }
+        let maximizing = g.to_move() == 0;
+        let mut moves = [0 as Card; 3];
+        let mut n = 0;
+        for c in g.legal_moves().iter() {
+            let key = points(c) * 4 + strength(c);
+            let mut j = n;
+            while j > 0 && points(moves[j - 1]) * 4 + strength(moves[j - 1]) < key {
+                moves[j] = moves[j - 1];
+                j -= 1;
+            }
+            moves[j] = c;
+            n += 1;
+        }
+        let (a0, b0) = (alpha, beta);
+        let mut best = if maximizing { i32::MIN } else { i32::MAX };
+        for &c in &moves[..n] {
+            let mut next = *g;
+            let gained = next.play(c).map_or(0, |t| if t.winner == 0 { t.points as i32 } else { 0 });
+            let v = gained + self.ab(&next, alpha - gained, beta - gained);
+            if maximizing {
+                best = best.max(v);
+                alpha = alpha.max(v);
+            } else {
+                best = best.min(v);
+                beta = beta.min(v);
+            }
+            if alpha >= beta {
+                break;
+            }
+        }
+        if best <= a0 {
+            hi = hi.min(best);
+        } else if best >= b0 {
+            lo = lo.max(best);
+        } else {
+            lo = best;
+            hi = best;
+        }
+        self.tt[slot] = TtEntry { key, lo: lo as u8, hi: hi as u8 };
+        best
+    }
+}
+
 /// Somme dei risultati per ogni mossa candidata (al più 3), su un gruppo di mondi.
 #[derive(Clone, Copy, Default)]
 struct Sums {
@@ -582,16 +775,17 @@ fn simulate(obs: &Observation, moves: &[Card], cfg: &EngineConfig, samples: u32,
     // Nel finale i mondi distinti sono pochi (al più 120 con 4 carte nel mazzo) e il
     // risolutore è deterministico: ogni mondo già visto si riprende dalla memoria.
     let mut memo: std::collections::HashMap<u128, [u8; 3]> = Default::default();
+    let mut solver = Solver::default();
     for _ in 0..samples {
         // Lo stesso mondo per tutte le mosse: confronto a parità di carte.
         let world = obs.determinize(rng);
         if exact {
-            let solve_all = || {
+            let mut solve_all = || {
                 let mut finals = [0u8; 3];
                 for (i, &c) in moves.iter().enumerate() {
                     let mut g = world;
                     g.play(c);
-                    finals[i] = solve(&g, me, i32::MIN, i32::MAX) as u8;
+                    finals[i] = solver.solve(&g, me);
                 }
                 finals
             };
@@ -609,7 +803,7 @@ fn simulate(obs: &Observation, moves: &[Card], cfg: &EngineConfig, samples: u32,
                 let policy = cfg.rollout_policy.as_ref();
                 rollout_until(&mut g, policy, cfg.rollout_epsilon, cfg.rollout_solve, rng);
                 let final_pts =
-                    if g.is_over() { g.points[me as usize] } else { solve(&g, me, i32::MIN, i32::MAX) as u8 };
+                    if g.is_over() { g.points[me as usize] } else { solver.solve(&g, me) };
                 sums.add(i, final_pts, cfg);
             }
         }
@@ -619,12 +813,17 @@ fn simulate(obs: &Observation, moves: &[Card], cfg: &EngineConfig, samples: u32,
 
 /// Valuta tutte le mosse legali dal punto di vista di chi deve muovere.
 pub fn evaluate(obs: &Observation, cfg: &EngineConfig, rng: &mut SmallRng) -> Vec<MoveEval> {
+    if let Some(iterations) = cfg.ismcts {
+        if obs.deck_len > 0 {
+            return evaluate_ismcts(obs, iterations, rng);
+        }
+    }
     let moves = obs.hand.to_vec();
     // Se il mazzo è vuoto le mani sono note: basta un solo mondo.
     let samples = if obs.deck_len == 0 { 1 } else { cfg.samples.max(1) };
-    // Nel finale (risolutore + memoria) il lavoro è già minimo: i thread non servono.
-    let exact = obs.deck_len <= cfg.solve_deck_len;
-    let threads = if exact { 1 } else { (cfg.threads.max(1) as u32).min(samples / 64).max(1) };
+    // Con 4 carte o meno nel mazzo i mondi distinti sono pochi e la memoria li riprende:
+    // il lavoro è già minimo e i thread non servono.
+    let threads = if obs.deck_len <= 4 { 1 } else { (cfg.threads.max(1) as u32).min(samples / 64).max(1) };
     let sums = if threads == 1 {
         simulate(obs, &moves, cfg, samples, rng)
     } else {
@@ -657,6 +856,22 @@ pub fn evaluate(obs: &Observation, cfg: &EngineConfig, rng: &mut SmallRng) -> Ve
         .collect();
     out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
     out.into_iter().map(|(_, e)| e).collect()
+}
+
+/// Valutazione con l'ISMCTS potenziato, su un solo albero (un thread): è il giocatore
+/// provato nei test massivi. Le mosse sono in ordine di visite: la prima è quella scelta.
+pub fn evaluate_ismcts(obs: &Observation, iterations: u32, rng: &mut SmallRng) -> Vec<MoveEval> {
+    let mut total = IsmctsPlayer::strong(iterations).search(obs, rng);
+    total.sort_by(|a, b| b.visits.partial_cmp(&a.visits).unwrap());
+    let mut out: Vec<MoveEval> = total
+        .iter()
+        .map(|c| MoveEval { card: c.card, win_prob: c.wins / c.visits, exp_points: c.points / c.visits })
+        .collect();
+    // Con pochissime iterazioni una carta può non essere mai stata provata: va in fondo.
+    for c in obs.hand.iter().filter(|&c| !out.iter().any(|e| e.card == c)).collect::<Vec<_>>() {
+        out.push(MoveEval { card: c, win_prob: 0.0, exp_points: 0.0 });
+    }
+    out
 }
 
 pub struct EnginePlayer {
@@ -732,6 +947,22 @@ mod tests {
     }
 
     #[test]
+    fn table_solver_matches_plain_solver() {
+        let mut rng = SmallRng::seed_from_u64(12);
+        let mut solver = Solver::default();
+        for _ in 0..400 {
+            let mut g = Game::new(&mut rng, 0);
+            let steps = rng.gen_range(16..38);
+            for _ in 0..steps {
+                let m = g.legal_moves().to_vec();
+                g.play(m[rng.gen_range(0..m.len())]);
+            }
+            let me = rng.gen_range(0..2);
+            assert_eq!(solver.solve(&g, me) as i32, solve(&g, me, i32::MIN, i32::MAX));
+        }
+    }
+
+    #[test]
     fn open_hand_policy_basics() {
         let p = RolloutParams::default();
         let mut order: Vec<Card> = (0..40).collect();
@@ -755,6 +986,18 @@ mod tests {
             g.hands[1].insert(c);
         }
         assert_eq!(open_hand_move(&g, &p), make(2, 3));
+    }
+
+    #[test]
+    fn ismcts_evaluation_is_complete() {
+        let mut rng = SmallRng::seed_from_u64(6);
+        let g = Game::new(&mut rng, 0);
+        let obs = Observation::of(&g, 0);
+        let mut cfg = EngineConfig::strength(100);
+        cfg.ismcts = Some(4000);
+        let evals = evaluate(&obs, &cfg, &mut rng);
+        assert_eq!(evals.len(), 3);
+        assert!(evals.iter().all(|e| (0.0..=1.0).contains(&e.win_prob) && e.exp_points <= 120.0));
     }
 
     #[test]

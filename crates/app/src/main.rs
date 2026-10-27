@@ -2,8 +2,15 @@
 
 mod app;
 mod assistant;
+mod blackjack;
+mod burraco_ui;
 mod cards_ui;
+mod poker;
+mod poker_it;
 mod record;
+mod scala40_ui;
+mod scopa_ui;
+mod settemezzo_ui;
 mod update;
 
 fn main() -> eframe::Result {

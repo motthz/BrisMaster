@@ -709,12 +709,12 @@ impl Assistant {
                 egui::ComboBox::from_id_salt("precision")
                     .selected_text(precision_label(*samples))
                     .show_ui(ui, |ui| {
-                        for s in [500, 2000, 6000] {
+                        for s in [1000, 3000, crate::app::ISMCTS_FROM] {
                             ui.selectable_value(samples, s, precision_label(s));
                         }
                     })
                     .response
-                    .on_hover_text("Quante distribuzioni delle carte coperte simula il motore");
+                    .on_hover_text("Quanto calcola il motore: Veloce e Normale simulano distribuzioni delle carte coperte, Massima usa la ricerca ad albero (la più forte, circa un decimo di secondo)");
             });
         });
         if self.pos.hand.len() == 1 {
@@ -778,10 +778,14 @@ impl Assistant {
             });
         }
         ui.label(
-            RichText::new(format!(
-                "Stime su {} distribuzioni delle carte che non vedi, usando solo ciò che sai.",
-                a.samples
-            ))
+            RichText::new(if a.samples >= crate::app::ISMCTS_FROM {
+                format!(
+                    "Stime della ricerca ad albero ({} partite simulate sulle carte che non vedi), usando solo ciò che sai.",
+                    a.samples
+                )
+            } else {
+                format!("Stime su {} distribuzioni delle carte che non vedi, usando solo ciò che sai.", a.samples)
+            })
             .small()
             .weak(),
         );
@@ -790,9 +794,9 @@ impl Assistant {
 
 fn precision_label(s: u32) -> String {
     match s {
-        0..=999 => format!("Veloce ({s})"),
-        1000..=2999 => format!("Normale ({s})"),
-        _ => format!("Massima ({s})"),
+        0..=1000 => format!("Veloce ({s} mondi)"),
+        s if s < crate::app::ISMCTS_FROM => format!("Normale ({s} mondi)"),
+        _ => format!("Massima (ISMCTS {s})"),
     }
 }
 

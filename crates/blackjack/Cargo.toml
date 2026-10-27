@@ -1,0 +1,9 @@
+[package]
+name = "blackjack-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rand = { version = "0.8", features = ["small_rng"] }
+serde = { version = "1", features = ["derive"], optional = true }

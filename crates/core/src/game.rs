@@ -198,6 +198,21 @@ impl Observation {
         u
     }
 
+    /// Come `determinize`, ma con la mano avversaria data (deve essere compatibile con
+    /// quello che so): a caso resta solo l'ordine del mazzo.
+    pub fn determinize_given<R: Rng>(&self, opp_hand: CardSet, rng: &mut R) -> Game {
+        let mut g = self.determinize(rng);
+        let opp = 1 - self.me as usize;
+        debug_assert_eq!(opp_hand.len(), g.hands[opp].len());
+        let mut rest = self.unknown().minus(opp_hand).to_vec();
+        rest.shuffle(rng);
+        g.hands[opp] = opp_hand;
+        if self.deck_len > 0 {
+            g.deck[1..self.deck_len as usize].copy_from_slice(&rest);
+        }
+        g
+    }
+
     /// Ricostruisce uno stato completo compatibile con quello che so,
     /// distribuendo a caso le carte ignote.
     pub fn determinize<R: Rng>(&self, rng: &mut R) -> Game {

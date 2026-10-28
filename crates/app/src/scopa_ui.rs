@@ -7,7 +7,7 @@ use crate::vision::{memory::Memory, read_scopa, CardView, Img, Reader, Reading, 
 use eframe::egui::{self, vec2, Color32, Rect, RichText, Stroke, Vec2};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
-use scopa_core::ai::{evaluate, EngineConfig, MoveEval};
+use scopa_core::ai::{evaluate, EngineConfig, Infer, MoveEval};
 use scopa_core::game::{
     self, for_each_capture, match_winner, name, short, Card, CardSet, HandScore, Move, Observation, TARGET,
 };
@@ -19,9 +19,10 @@ const HUMAN: u8 = 0;
 const AI: u8 = 1;
 const CARD: Vec2 = Vec2::new(78.0, 120.0);
 
-/// Motore per l'app: i mondi si dividono su tutti i core.
+/// Motore per l'app: deduce le carte avversarie dalle sue giocate e divide i mondi su tutti i core.
 fn engine_cfg(samples: u32) -> EngineConfig {
     let mut cfg = EngineConfig::strength(samples);
+    cfg.infer = Some(Infer::default());
     cfg.threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     cfg
 }
@@ -30,12 +31,13 @@ fn engine_cfg(samples: u32) -> EngineConfig {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct ScopaSettings {
-    assist_samples: u32,
+    /// Mondi del motore (chiave nuova: chi aveva i vecchi 1000 passa ai 1600 di serie).
+    assist_worlds: u32,
 }
 
 impl Default for ScopaSettings {
     fn default() -> Self {
-        ScopaSettings { assist_samples: 1000 }
+        ScopaSettings { assist_worlds: 1600 }
     }
 }
 
@@ -913,7 +915,7 @@ impl ScopaUi {
         let right = Rect::from_min_max(egui::pos2(split + 14.0, full.min.y + 10.0), full.max - vec2(10.0, 0.0));
         cards_ui::paint_felt(ui.painter(), left);
         ui.painter().vline(split, full.y_range(), Stroke::new(1.0, Color32::from_gray(60)));
-        let samples = &mut self.settings.assist_samples;
+        let samples = &mut self.settings.assist_worlds;
         let a = &mut self.assist;
         ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| assist_side(a, ui, samples, false));
         ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| assist_table(a, ui));
@@ -921,7 +923,7 @@ impl ScopaUi {
 
     /// Finestra compatta: solo l'inserimento e il consiglio, con un riepilogo del tavolo in cima.
     pub fn compact(&mut self, ui: &mut egui::Ui) {
-        assist_side(&mut self.assist, ui, &mut self.settings.assist_samples, true);
+        assist_side(&mut self.assist, ui, &mut self.settings.assist_worlds, true);
     }
 }
 

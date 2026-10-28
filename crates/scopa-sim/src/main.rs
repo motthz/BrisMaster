@@ -26,8 +26,8 @@ use std::time::Instant;
 
 /// Margine del criterio sul numero di partite: ±1 punto percentuale.
 const MARGIN: f64 = 0.01;
-/// Obiettivo dichiarato: almeno il 55% di partite vinte contro ogni avversario.
-const TARGET: f64 = 0.55;
+/// Obiettivo dichiarato: almeno il 60% di partite vinte contro ogni avversario.
+const TARGET: f64 = 0.60;
 
 /// Stili di gioco umani e algoritmi deboli.
 const STYLES: &[(&str, &str)] = &[
@@ -201,9 +201,9 @@ fn convergence(per_deal: &[MatchStats], margin: f64, md: &mut String) -> Option<
 fn target_mark(s: &MatchStats) -> &'static str {
     let (lo, hi) = s.score_ci95();
     if lo > TARGET {
-        "✅ sopra il 55%"
+        "✅ sopra il 60%"
     } else if hi < TARGET {
-        "❌ sotto il 55%"
+        "❌ sotto il 60%"
     } else {
         "≈ al limite"
     }
@@ -318,11 +318,11 @@ fn report(player: &str, deals: u64, self_deals: u64, seed: u64) -> String {
         deals * 2
     )
     .unwrap();
-    writeln!(md, "## Riepilogo: obiettivo 55% contro ogni avversario\n").unwrap();
+    writeln!(md, "## Riepilogo: obiettivo 60% contro ogni avversario\n").unwrap();
     let above = all_rows.iter().filter(|(_, s)| s.score_ci95().0 > TARGET).count();
     writeln!(
         md,
-        "Sopra il 55% con certezza statistica (intero IC 95% sopra il 55%): **{above} avversari su {}**. \
+        "Sopra il 60% con certezza statistica (intero IC 95% sopra il 60%): **{above} avversari su {}**. \
          Il motore contro se stesso è escluso: lì il 50% è il risultato esatto per costruzione.\n",
         all_rows.len()
     )

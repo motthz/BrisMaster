@@ -36,7 +36,28 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
                     "counted" => cfg.rollout = Rollout::Counted,
                     "diffgreedy" => (cfg.match_aware, cfg.rollout) = (false, Rollout::Greedy),
                     "diffcounted" => (cfg.match_aware, cfg.rollout) = (false, Rollout::Counted),
+                    "infer" | "-" => {}
+                    "ctx" => cfg.ctx_policy = true,
+                    "ctxinfer" => cfg.ctx_policy = true,
                     _ => return Err(format!("variante sconosciuta: {m}")),
+                }
+                if m == "infer" || m == "ctxinfer" {
+                    cfg.infer = Some(Infer::default());
+                }
+            }
+            // Opzioni chiave=valore dopo la variante: beta=, ieps=, cand= (attivano la deduzione)
+            for kv in parts.iter().skip(3) {
+                let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+                if k == "sd" {
+                    cfg.solve_deck = num(v, "sd")? as u8;
+                    continue;
+                }
+                let inf = cfg.infer.get_or_insert_with(Infer::default);
+                match k {
+                    "beta" => inf.beta = num(v, "beta")?,
+                    "ieps" => inf.eps = num(v, "ieps")?,
+                    "cand" => inf.candidates = num(v, "cand")? as u32,
+                    _ => return Err(format!("opzione sconosciuta: {k}")),
                 }
             }
             Box::new(EnginePlayer::new(cfg))
@@ -61,6 +82,7 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
                     }
                     "diff" => cfg.match_aware = false,
                     "nosolve" => cfg.solve_endgame = false,
+                    "infer" => cfg.infer = Some(Infer::default()),
                     _ => return Err(format!("opzione sconosciuta: {k}")),
                 }
             }

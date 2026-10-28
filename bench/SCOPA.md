@@ -1,5 +1,51 @@
 # Scopa: rapporto dei test massivi
 
+## Motore della 0.5.0: deduzione delle carte avversarie
+
+**Cosa cambia.** Nel giro in corso l'avversario ha in mano le stesse carte finché non le gioca. Le sue giocate dicono quindi qualcosa sulle carte che gli restano: se ha lasciato in tavola un Re quando con un 7 poteva fare scopa, quasi certamente un 7 non ce l'ha. Il motore ora sceglie i mondi simulati in proporzione a quanto rendono probabili le giocate fatte davvero dall'avversario. Il modello suppone che giochi come il Contacarte, ma in modo "morbido" e con un 10% di mosse qualsiasi, così non si fida troppo di chi gioca a caso o in modo strano (`Infer`, beta 0,03, 8 candidati per mondo).
+
+**Prova massiva della deduzione.** Lo stesso motore a 400 mondi, con e senza deduzione, contro tutti i 16 avversari del rapporto: 8000 partite per riga (4000 sequenze di mazzi in duplicato), seme `20261023`, **gli stessi mazzi** del rapporto della 0.3.0 qui sotto. Obiettivo: almeno il 60% (IC 95% intorno a ±0,9 punti).
+
+| Avversario | Senza deduzione (0.3.0) | Con deduzione | Differenza (punti) | 60% |
+|---|---:|---:|---:|:---:|
+| Casuale | 98,2% | **98,2%** | 0,0 | ✅ |
+| Goloso | 77,5% | **79,2%** | +1,7 | ✅ |
+| Euristico | 80,8% | **81,8%** | +1,0 | ✅ |
+| Cacciatore di scope | 83,9% | **84,5%** | +0,6 | ✅ |
+| Primierista | 79,2% | **81,2%** | +2,0 | ✅ |
+| Denarista | 79,8% | **81,1%** | +1,3 | ✅ |
+| Contacarte | 62,7% | **63,9%** | +1,2 | ✅ |
+| Euristico con 30% di errori | 89,0% | **89,6%** | +0,6 | ✅ |
+| Contacarte con 10% di errori | 68,8% | **70,3%** | +1,5 | ✅ |
+| ISMCTS (1000 iterazioni) | 55,4% | **56,4%** | +1,0 | ❌ |
+| ISMCTS (5000 iterazioni) | 49,6% | **53,0%** | +3,4 | ❌ |
+| Motore ad albero (1000 iterazioni) | 52,8% | **54,8%** | +2,0 | ❌ |
+| Motore PIMC (100 mondi) | 53,8% | **54,7%** | +0,9 | ❌ |
+| Motore PIMC (1000 mondi) | 49,3% | **51,5%** | +2,2 | ❌ |
+| Motore PIMC (400 mondi) con 10% di errori | 57,8% | **59,1%** | +1,3 | ≈ |
+| Motore PIMC (400 mondi) · gioca per la differenza punti | 50,2% | **52,0%** | +1,8 | ❌ |
+
+La deduzione è migliore o uguale contro **tutti** i 16 avversari, anche contro chi gioca a caso o sbaglia spesso: non è controproducente. Il guadagno più grande è contro gli avversari forti (ISMCTS 5000: +3,4 punti).
+
+**Il motore dell'assistente.** Nell'app la scopa usa ora 1600 mondi con la deduzione (circa 36 ms a mossa su un core, divisi su tutti i core: molto sotto il secondo, adatto ai 4 minuti a testa). Sempre 8000 partite per riga, stessi mazzi:
+
+| Avversario | Partite vinte | IC 95% | 60% |
+|---|---:|---|:---:|
+| Contacarte | **65,5%** | 64,6% – 66,4% | ✅ |
+| ISMCTS (20000 iterazioni), nuovo avversario più duro | **52,4%** | 51,6% – 53,2% | ❌ |
+| Motore della 0.3.0 nell'app (1000 mondi, senza deduzione) | **51,8%** | 51,0% – 52,5% | ❌ |
+| Motore a 3000 mondi senza deduzione (quasi il doppio del calcolo) | **51,4%** | 50,7% – 52,2% | ❌ |
+
+**Dove il 60% non è raggiungibile.** Contro tutti gli stili umani il motore è sopra il 60% (dal 63,9% del Contacarte al 98% del gioco casuale). Contro gli algoritmi forti no: sono giocatori della stessa famiglia e quasi della stessa forza, e nella scopa la fortuna delle carte pesa molto, quindi il risultato resta tra il 51% e il 57%. Contro una copia di sé stesso è il 50% per costruzione. Più mondi non aiutano: oltre i 400-1000 mondi il motore non migliora più (1600 contro 3000 mondi: 51,4%).
+
+**Provato e scartato** (4000 partite contro il motore a 400 mondi): pesi delle carte adattati a ciò che è già deciso nella smazzata (48,7%), finale esatto già dall'ultimo giro con il mazzo noto nel mondo simulato (50,1%, tre volte più lento), simulazioni senza vedere le carte avversarie (50,4%), 5% di mosse casuali nelle simulazioni (50,3%).
+
+Come riprodurlo: `cargo run --release -p scopa-sim -- --panel --player engine:400:0:infer --deals 4000 --seed 20261023` per la tabella della deduzione, `--player engine:1600:0:infer --opponent SPEC --deals 4000 --seed 20261023` per le righe dell'assistente (con `SCOPA_SIM_CACHE` per riprendere il calcolo a blocchi; in tutto circa 20 ore su 4 core).
+
+---
+
+# Rapporto precedente: motore della 0.3.0
+
 Motore provato: **Motore PIMC (400 mondi)** (`engine:400`), commit `e93dd5e`, 2026-10-23.
 Ogni partita va a 11 punti (scopa classica a due: carte, denari, settebello, primiera e scope). Ogni riga: 4000 sequenze di mazzi giocate due volte a posti invertiti (8000 partite), seme `20261023`, gli stessi mazzi per tutti gli avversari.
 

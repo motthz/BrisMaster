@@ -6,13 +6,15 @@
 
 use crate::draw::{strength, summary};
 use crate::reference::START_QUANTILES;
-use crate::game::{Action, Observation, Phase};
+use crate::game::{Action, Hand, Observation, Phase};
 use rand::rngs::SmallRng;
 use rand::Rng;
 
 pub trait Agent: Send {
     fn name(&self) -> String;
     fn act(&mut self, obs: &Observation, rng: &mut SmallRng) -> Action;
+    /// Avviso a mano finita (`seat` è il proprio posto): serve a chi impara l'avversario.
+    fn hand_over(&mut self, _h: &Hand, _seat: u8) {}
 }
 
 /// Quantile (0..1) di una mano di partenza: quante mani di partenza sono peggiori.
@@ -96,6 +98,23 @@ impl RuleBot {
             _ => return None,
         }
         Some(b)
+    }
+
+    /// Un giocatore "umano" preso a caso da una popolazione: soglie, bluff e testardaggine
+    /// variano da persona a persona (per i test contro avversari mai visti).
+    pub fn random_person(rng: &mut SmallRng) -> RuleBot {
+        let mut b = RuleBot::base("pop");
+        let mut u = |lo: f32, hi: f32| lo + (hi - lo) * rng.gen::<f32>();
+        b.open = u(0.4, 0.92);
+        b.call = u(0.25, 0.8);
+        b.raise = u(b.open.max(b.call) + 0.05, 0.98);
+        b.bet2 = u(0.45, 0.93);
+        b.call2 = u(0.25, 0.8);
+        b.raise2 = u(b.bet2.max(b.call2) + 0.03, 0.99);
+        b.bluff = u(0.0, 0.3);
+        b.standpat_bluff = u(0.0, 0.12);
+        b.never_fold = u(0.0, 1.0) < 0.1;
+        b
     }
 
     pub fn random_action(obs: &Observation, rng: &mut SmallRng) -> Action {
@@ -188,6 +207,10 @@ impl Agent for Noisy {
         } else {
             self.inner.act(obs, rng)
         }
+    }
+
+    fn hand_over(&mut self, h: &Hand, seat: u8) {
+        self.inner.hand_over(h, seat);
     }
 }
 

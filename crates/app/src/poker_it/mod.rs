@@ -11,7 +11,10 @@ use poker_it::cards::{rank, suit, Card, NUM_CARDS, RANK_SHORT, SUIT_NAMES};
 use poker_it::draw::{strength, summary};
 use poker_it::eval::{describe, evaluate};
 use poker_it::game::{BIG_BET, CAP, SMALL_BET};
-use poker_it::{Action, Engine, Hand, Observation, Phase};
+use poker_it::adaptive::describe as describe_style;
+use poker_it::opponent::Stats;
+use poker_it::{Action, Adaptive, Hand, Observation, Phase};
+use std::collections::BTreeMap;
 
 /// A che punto è l'inserimento della mano.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,7 +28,13 @@ enum Stage {
 }
 
 pub struct PokerIt {
-    engine: Engine,
+    /// Il motore che impara l'avversario mano dopo mano.
+    engine: Adaptive,
+    /// Nome dell'avversario e quello che si è visto di ogni avversario (salvato tra le sessioni).
+    opponent: String,
+    known: BTreeMap<String, Stats>,
+    /// Le carte che l'avversario ha mostrato allo showdown (facoltative).
+    shown: Vec<Card>,
     stage: Stage,
     /// Il tuo posto: 0 parla e cambia per primo, 1 per secondo.
     me: u8,
@@ -42,9 +51,14 @@ pub struct PokerIt {
 }
 
 impl PokerIt {
-    pub fn load(_: Option<&dyn eframe::Storage>) -> PokerIt {
+    pub fn load(storage: Option<&dyn eframe::Storage>) -> PokerIt {
+        let saved: BTreeMap<String, Vec<f32>> = storage.and_then(|s| eframe::get_value(s, "poker_it_avversari")).unwrap_or_default();
+        let known = saved.into_iter().filter_map(|(k, v)| Some((k, Stats::from_vec(&v)?))).collect();
         PokerIt {
-            engine: Engine::bundled(),
+            engine: Adaptive::bundled(),
+            opponent: String::new(),
+            known,
+            shown: Vec::new(),
             stage: Stage::Setup,
             me: 0,
             cards: Vec::new(),
@@ -58,11 +72,40 @@ impl PokerIt {
         }
     }
 
-    pub fn save(&self, _: &mut dyn eframe::Storage) {}
+    pub fn save(&self, storage: &mut dyn eframe::Storage) {
+        let v: BTreeMap<&String, Vec<f32>> = self.known.iter().map(|(k, s)| (k, s.to_vec())).collect();
+        eframe::set_value(storage, "poker_it_avversari", &v);
+    }
 
+    /// Nuova mano: se quella di prima è finita, il motore la impara.
     fn reset(&mut self) {
-        let me = self.me;
-        *self = PokerIt { me, ..PokerIt::load(None) };
+        self.learn();
+        let fresh = PokerIt::load(None);
+        let engine = std::mem::replace(&mut self.engine, fresh.engine);
+        let known = std::mem::take(&mut self.known);
+        let opponent = std::mem::take(&mut self.opponent);
+        *self = PokerIt { me: self.me, engine, known, opponent, ..fresh };
+    }
+
+    fn learn(&mut self) {
+        let Some(h) = self.hand.as_ref().filter(|h| h.is_over()) else { return };
+        let shown: Option<[Card; 5]> = (h.showdown() && self.shown.len() == 5).then(|| {
+            let mut c: [Card; 5] = self.shown.clone().try_into().unwrap();
+            c.sort_unstable();
+            c
+        });
+        self.engine.learn(&h.history, 1 - self.me, shown.as_ref());
+        let name = self.opponent.trim();
+        if !name.is_empty() {
+            self.known.insert(name.to_string(), self.engine.seen.clone());
+        }
+        self.hand = None;
+    }
+
+    /// Cambio di avversario: si riparte da quello che si sa di lui.
+    fn set_opponent(&mut self, name: String) {
+        self.engine.seen = self.known.get(name.trim()).cloned().unwrap_or_default();
+        self.opponent = name;
     }
 
     fn snapshot(&mut self) {
@@ -161,6 +204,18 @@ impl PokerIt {
                     ui.selectable_value(&mut self.me, 0, "Io");
                     ui.selectable_value(&mut self.me, 1, "L'avversario");
                 });
+                ui.horizontal(|ui| {
+                    ui.add_space((ui.available_width() - 360.0).max(0.0) / 2.0);
+                    ui.label(RichText::new("Avversario:").color(white(220)));
+                    let mut name = self.opponent.clone();
+                    if ui.add(egui::TextEdit::singleline(&mut name).hint_text("nome (facoltativo)").desired_width(160.0)).changed() {
+                        self.set_opponent(name);
+                    }
+                    let n = self.engine.seen.hands;
+                    if n > 0 {
+                        ui.label(RichText::new(format!("{n} mani viste")).color(white(170)).small());
+                    }
+                });
                 ui.add_space(8.0);
                 ui.label(RichText::new(format!("Le tue 5 carte ({} di 5): clicca nella griglia", self.cards.len())).color(white(220)));
                 self.cards_row(ui, &self.cards.clone(), None);
@@ -236,6 +291,17 @@ impl PokerIt {
         ui.vertical_centered(|ui| {
             if h.is_over() {
                 ui.label(RichText::new("Mano finita").size(18.0).color(white(220)));
+                if h.showdown() {
+                    ui.label(
+                        RichText::new(format!(
+                            "Carte mostrate dall'avversario ({} di 5, facoltative: aiutano il motore a capire come gioca)",
+                            self.shown.len()
+                        ))
+                        .color(white(200)),
+                    );
+                    let shown = self.shown.clone();
+                    self.cards_row(ui, &shown, None);
+                }
                 if ui.button(RichText::new("Nuova mano").size(18.0)).clicked() {
                     self.reset();
                 }
@@ -245,6 +311,21 @@ impl PokerIt {
                 self.action_buttons(ui, &h, my_turn);
             }
         });
+        self.shown_picker(ui);
+    }
+
+    /// Griglia per le carte mostrate dall'avversario a fine mano.
+    fn shown_picker(&mut self, ui: &mut egui::Ui) {
+        let Some(h) = self.hand.as_ref().filter(|h| h.showdown()) else { return };
+        if self.shown.len() >= 5 {
+            return;
+        }
+        let used: Vec<Card> = h.hands[self.me as usize].iter().chain(&self.gone).chain(&self.shown).copied().collect();
+        let mut pick = None;
+        ui.horizontal(|ui| pick = picker(ui, "pk_shown", |c| !used.contains(&c)));
+        if let Some(c) = pick {
+            self.shown.push(c);
+        }
     }
 
     /// Fila di carte; con `select` le carte sono cliccabili per il cambio (`select` = scarto consigliato).
@@ -346,6 +427,32 @@ impl PokerIt {
         self.advice.as_ref().unwrap().1.clone()
     }
 
+    /// Che tipo di giocatore sembra l'avversario, secondo le mani viste finora.
+    fn opponent_read(&self, ui: &mut egui::Ui) {
+        let seen = &self.engine.seen;
+        let name = if self.opponent.trim().is_empty() { "L'avversario".to_string() } else { self.opponent.trim().to_string() };
+        let text = match self.engine.best_guess() {
+            _ if seen.hands == 0 => format!("{name}: ancora nessuna mano vista, gioco equilibrato."),
+            Some((p, w)) if p.name != "eq" && w >= 0.5 => {
+                let (what, how) = describe_style(&p.name);
+                format!("{name} {what} ({:.0}% dopo {} mani): {how}.", w * 100.0, seen.hands)
+            }
+            _ => format!("{name}: {} mani viste, stile non ancora chiaro, gioco equilibrato.", seen.hands),
+        };
+        ui.label(RichText::new(text).color(GOLD));
+        let mut facts = Vec::new();
+        if let Some(f) = seen.fold_to_bet() {
+            facts.push(format!("lascia il {:.0}% delle volte se punti", f * 100.0));
+        }
+        if let Some(b) = seen.weak_when_betting() {
+            facts.push(format!("quando punta e mostra, ha una mano debole il {:.0}% delle volte", b * 100.0));
+        }
+        if !facts.is_empty() {
+            ui.label(RichText::new(facts.join("; ")).weak().small());
+        }
+        ui.add_space(4.0);
+    }
+
     fn best_discard(&self) -> Option<u8> {
         let (_, adv) = self.advice.as_ref()?;
         adv.as_ref()?.iter().max_by(|a, b| a.1.total_cmp(&b.1)).and_then(|(a, _)| match a {
@@ -356,6 +463,7 @@ impl PokerIt {
 
     fn side_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Cosa fare");
+        self.opponent_read(ui);
         let adv = self.current_advice();
         match (&self.hand, self.stage) {
             (_, Stage::Setup) => {

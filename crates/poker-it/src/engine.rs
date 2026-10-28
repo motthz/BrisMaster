@@ -39,19 +39,33 @@ impl Engine {
     /// Le azioni concrete possibili con la probabilità che il motore dà a ciascuna.
     /// Nel cambio le azioni sono i migliori scarti da 0 a 5 carte.
     pub fn advice(&self, obs: &Observation) -> Option<Vec<(Action, f32)>> {
-        let probs = self.strat.probs(obs)?;
-        let acts = abstraction::actions(obs);
-        let d = (obs.phase == Phase::Draw).then(|| summary(&obs.hand));
-        Some(
-            acts.into_iter()
-                .zip(probs)
-                .map(|(a, p)| match (a, &d) {
-                    (Action::Draw(k), Some(d)) => (Action::Draw(d.best[k as usize]), p),
-                    _ => (a, p),
-                })
-                .collect(),
-        )
+        Some(concrete(obs, self.strat.probs(obs)?))
     }
+}
+
+/// Dalle probabilità delle azioni astratte alle azioni concrete.
+pub fn concrete(obs: &Observation, probs: Vec<f32>) -> Vec<(Action, f32)> {
+    let acts = abstraction::actions(obs);
+    let d = (obs.phase == Phase::Draw).then(|| summary(&obs.hand));
+    acts.into_iter()
+        .zip(probs)
+        .map(|(a, p)| match (a, &d) {
+            (Action::Draw(k), Some(d)) => (Action::Draw(d.best[k as usize]), p),
+            _ => (a, p),
+        })
+        .collect()
+}
+
+/// Estrae un'azione dal consiglio.
+pub fn pick(adv: &[(Action, f32)], rng: &mut SmallRng) -> Action {
+    let mut x: f32 = rng.gen();
+    for &(a, p) in adv {
+        x -= p;
+        if x < 0.0 {
+            return a;
+        }
+    }
+    adv.last().unwrap().0
 }
 
 impl Agent for Engine {
@@ -60,16 +74,9 @@ impl Agent for Engine {
     }
 
     fn act(&mut self, obs: &Observation, rng: &mut SmallRng) -> Action {
-        let Some(adv) = self.advice(obs) else {
-            return self.fallback.act(obs, rng);
-        };
-        let mut x: f32 = rng.gen();
-        for &(a, p) in &adv {
-            x -= p;
-            if x < 0.0 {
-                return a;
-            }
+        match self.advice(obs) {
+            Some(adv) => pick(&adv, rng),
+            None => self.fallback.act(obs, rng),
         }
-        adv.last().unwrap().0
     }
 }

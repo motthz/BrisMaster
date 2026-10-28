@@ -1,28 +1,65 @@
 //! Come il motore riassume quello che sa: la storia pubblica della mano più un "secchio"
 //! che raggruppa le mani simili.
 //!
-//! - Prima del cambio il secchio è il percentile atteso dopo il miglior cambio (16 livelli
-//!   a quantili uguali) e quante carte cambierebbe (0, 1, 2, 3 o più): 64 secchi.
-//! - Dopo il cambio è la forza della mano servita, in 32 livelli più fitti verso le mani
+//! - Prima del cambio il secchio è il percentile atteso dopo il miglior cambio (in livelli
+//!   a quantili uguali) e quante carte cambierebbe (0, 1, 2, 3 o più).
+//! - Dopo il cambio è la forza della mano servita, in livelli più fitti verso le mani
 //!   forti, dove le differenze contano di più.
+//!
+//! Il numero di livelli fa parte della strategia salvata (`Abstraction`), così strategie
+//! allenate con astrazioni diverse possono giocare una contro l'altra.
 //!
 //! Nel cambio il motore sceglie solo quante carte cambiare (0..=5): quali carte lo dice
 //! l'analisi del cambio (le carte che danno il percentile atteso più alto).
 
-use crate::draw::DrawSummary;
+use crate::cards::all_hands;
+use crate::draw::{summary, DrawSummary};
 use crate::game::{Action, Observation, Phase};
+use rayon::prelude::*;
 
-pub const PRE_LEVELS: usize = 16;
-pub const POST_LEVELS: usize = 32;
+/// Livelli usati dal motore attuale.
+pub const PRE_LEVELS: usize = 32;
+pub const POST_LEVELS: usize = 64;
 
-pub fn pre_bucket(d: &DrawSummary, thresholds: &[f32]) -> u8 {
-    let q = thresholds.partition_point(|&t| t <= d.max_ev()).min(PRE_LEVELS - 1);
-    (q * 4 + d.natural().min(3)) as u8
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Abstraction {
+    /// Soglie dei livelli prima del cambio (uno in meno dei livelli).
+    pub thresholds: Vec<f32>,
+    pub post_levels: usize,
 }
 
-pub fn post_bucket(strength: f32) -> u8 {
-    let x = 1.0 - (1.0 - strength).max(0.0).sqrt();
-    ((x * POST_LEVELS as f32) as usize).min(POST_LEVELS - 1) as u8
+impl Abstraction {
+    /// Soglie a quantili uguali del percentile atteso dopo il miglior cambio, su tutte le mani.
+    pub fn new(pre_levels: usize, post_levels: usize) -> Abstraction {
+        assert!(pre_levels * 4 <= 256 && post_levels < 256);
+        let mut v: Vec<f32> = all_hands().par_iter().map(|h| summary(h).max_ev()).collect();
+        v.sort_unstable_by(f32::total_cmp);
+        let thresholds = (1..pre_levels).map(|i| v[i * v.len() / pre_levels]).collect();
+        Abstraction { thresholds, post_levels }
+    }
+
+    pub fn standard() -> Abstraction {
+        Abstraction::new(PRE_LEVELS, POST_LEVELS)
+    }
+
+    pub fn pre_levels(&self) -> usize {
+        self.thresholds.len() + 1
+    }
+
+    /// Numero di secchi prima e dopo il cambio.
+    pub fn pre_buckets(&self) -> usize {
+        self.pre_levels() * 4
+    }
+
+    pub fn pre(&self, d: &DrawSummary) -> u8 {
+        let q = self.thresholds.partition_point(|&t| t <= d.max_ev()).min(self.pre_levels() - 1);
+        (q * 4 + d.natural().min(3)) as u8
+    }
+
+    pub fn post(&self, strength: f32) -> u8 {
+        let x = 1.0 - (1.0 - strength).max(0.0).sqrt();
+        ((x * self.post_levels as f32) as usize).min(self.post_levels - 1) as u8
+    }
 }
 
 #[inline]

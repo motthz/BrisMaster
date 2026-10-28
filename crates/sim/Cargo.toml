@@ -15,3 +15,4 @@ rayon = "1.10"
 core_v0_1_1 = { package = "briscola-core", git = "https://github.com/motthz/brismaster", tag = "v0.1.1" }
 core_v0_2_0 = { package = "briscola-core", git = "https://github.com/motthz/brismaster", tag = "v0.2.0" }
 core_v0_3_0 = { package = "briscola-core", git = "https://github.com/motthz/brismaster", tag = "v0.3.0" }
+core_v0_5_0 = { package = "briscola-core", git = "https://github.com/motthz/brismaster", tag = "v0.5.0" }

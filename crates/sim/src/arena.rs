@@ -139,6 +139,48 @@ pub fn run_deals(player: &str, opponent: &str, deals: std::ops::Range<u64>, seed
         .collect())
 }
 
+/// Una partita vista dal giocatore: com'era la sua mano iniziale e come è finita.
+#[derive(Clone, Copy, Debug)]
+pub struct GameRec {
+    /// 0 se ha aperto la prima presa, 1 se ha risposto.
+    pub seat: u8,
+    /// Briscole e punti nelle sue prime tre carte.
+    pub trumps: u8,
+    pub hand_points: u8,
+    /// Punti finali del giocatore (l'avversario ne ha 120 meno questi).
+    pub points: u8,
+}
+
+/// Come `run_deals` (stessi mazzi, stesse partite), ma restituisce ogni partita con la mano iniziale.
+pub fn run_games(player: &str, opponent: &str, deals: std::ops::Range<u64>, seed: u64) -> Result<Vec<GameRec>, String> {
+    make_agent(player)?;
+    make_agent(opponent)?;
+    Ok(deals
+        .into_par_iter()
+        .flat_map_iter(|d| {
+            let mut deal_rng = SmallRng::seed_from_u64(seed ^ d.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut order: Vec<Card> = (0..NUM_CARDS as u8).collect();
+            order.shuffle(&mut deal_rng);
+            let start = Game::from_order(&order, 0);
+            (0..2usize)
+                .map(|seat| {
+                    let me = make_agent(player).unwrap();
+                    let opp = make_agent(opponent).unwrap();
+                    let mut agents = if seat == 0 { [me, opp] } else { [opp, me] };
+                    let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(d * 2 + seat as u64));
+                    let hand = start.hands[seat];
+                    GameRec {
+                        seat: seat as u8,
+                        trumps: hand.iter().filter(|&c| briscola_core::cards::suit(c) == start.trump).count() as u8,
+                        hand_points: hand.iter().map(briscola_core::cards::points).sum(),
+                        points: play(&order, &mut agents, &mut rng)[seat],
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect())
+}
+
 /// Statistiche cumulative sui primi `n` mazzi, per ogni `n` in `checkpoints`.
 pub fn prefixes(per_deal: &[MatchStats], checkpoints: &[u64]) -> Vec<MatchStats> {
     checkpoints

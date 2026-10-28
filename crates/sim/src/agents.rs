@@ -11,9 +11,17 @@
 //!       | infer:ITERAZIONI:TEMP[:MANI[:MINIMO]][:net] (ISMCTS potenziato che deduce le carte avversarie
 //!                                      con la rete di politica di BRISCOLA_POLICY)
 //!       | peek:ITERAZIONI              (baro: ISMCTS potenziato che vede la mano avversaria)
+//!       | vedetutto:ITERAZIONI         (super-baro: vede la mano avversaria e l'ordine del mazzo)
+//!       | stile:NOME | persona:N       (giocatori umani da manopole, vedi persona.rs)
+//!       | fretta:ERRORE:SPEC           (sbaglia sempre di più verso la fine, fino a ERRORE)
+//!       | tilt:ERRORE:SPEC             (sbaglia con probabilità ERRORE quando è sotto di 10 punti)
+//!       | camaleonte:N                 (cambia stile ogni 4 prese)
+//!       | politica                     (rete di politica pura: gioca la carta più probabile)
+//!       | misto:ITERAZIONI             (ISMCTS potenziato che sceglie a caso in proporzione alle visite)
 //!       | vX.Y.Z/SPEC                  (versione rilasciata, es. v0.1.1/engine:1000)
 
 use crate::opponents::*;
+use crate::persona::{Chameleon, Clock, Persona, Tilt};
 use briscola_core::ai::*;
 use briscola_core::cards::Card;
 use briscola_core::infer::{Belief, Log};
@@ -131,6 +139,66 @@ impl Agent for Peek {
     }
 }
 
+/// "Super-baro": ISMCTS potenziato che vede tutto, mano avversaria e ordine del mazzo.
+/// È il tetto assoluto: gioca a informazione completa.
+struct SeeAll(IsmctsPlayer);
+
+impl Agent for SeeAll {
+    fn name(&self) -> String {
+        format!("Super-baro: vede mano avversaria e mazzo, ISMCTS potenziato ({} iterazioni)", self.0.iterations)
+    }
+    fn choose(&mut self, g: &Game, me: u8, rng: &mut SmallRng) -> Card {
+        let obs = Observation::of(g, me);
+        if obs.hand.len() == 1 {
+            return obs.hand.iter().next().unwrap();
+        }
+        let root = self.0.search_with(&obs, rng, |_| *g);
+        root.iter().max_by(|a, b| a.visits.partial_cmp(&b.visits).unwrap()).unwrap().card
+    }
+}
+
+/// Strategia mista: ISMCTS potenziato che sceglie la carta a caso in proporzione alle visite
+/// al quadrato. Gioca quasi sempre bene ma non si fa prevedere.
+struct Mixed(IsmctsPlayer);
+
+impl Player for Mixed {
+    fn name(&self) -> String {
+        format!("Imprevedibile: ISMCTS potenziato ({} iterazioni) che sceglie a caso tra le mosse buone", self.0.iterations)
+    }
+    fn choose(&mut self, obs: &Observation, rng: &mut SmallRng) -> Card {
+        use rand::Rng;
+        if obs.hand.len() == 1 {
+            return obs.hand.iter().next().unwrap();
+        }
+        let root = self.0.search(obs, rng);
+        let total: f64 = root.iter().map(|r| r.visits * r.visits).sum();
+        let mut x = rng.gen::<f64>() * total;
+        for r in &root {
+            x -= r.visits * r.visits;
+            if x <= 0.0 {
+                return r.card;
+            }
+        }
+        root.last().unwrap().card
+    }
+}
+
+/// Rete di politica pura (quella inclusa nel programma): gioca la carta che la rete ritiene
+/// più probabile per un giocatore forte. Niente ricerca: è un "istinto" allenato.
+struct PolicyPlayer;
+
+impl Player for PolicyPlayer {
+    fn name(&self) -> String {
+        "Rete di politica pura (istinto, senza ricerca)".into()
+    }
+    fn choose(&mut self, obs: &Observation, _rng: &mut SmallRng) -> Card {
+        let mut p = [0f32; 3];
+        let n = briscola_core::net::policy().policy(obs, 1.0, &mut p);
+        let i = (0..n).max_by(|&a, &b| p[a].partial_cmp(&p[b]).unwrap()).unwrap();
+        obs.hand.iter().nth(i).unwrap()
+    }
+}
+
 /// Le varianti del motore hanno lo stesso nome: si aggiungono i parametri diversi dal normale.
 fn variant_suffix(spec: &str) -> String {
     let Some(rest) = spec.strip_prefix("engine:") else { return String::new() };
@@ -206,6 +274,28 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
             }
             Box::new(EnginePlayer::new(cfg))
         }
+        s if s.starts_with("stile:") => Box::new(Persona::style(&s[6..]).ok_or(format!("stile sconosciuto: {}", &s[6..]))?),
+        s if s.starts_with("persona:") => Box::new(Persona::numbered(num(&s[8..], "numero del personaggio")? as u64)),
+        s if s.starts_with("fretta:") || s.starts_with("tilt:") => {
+            let (kind, rest) = s.split_once(':').unwrap();
+            let (err, base) = rest.split_once(':').ok_or(format!("serve {kind}:ERRORE:SPEC, non '{s}'"))?;
+            let (base, error) = (make_player(base)?, num(err, "errore")?);
+            if kind == "fretta" { Box::new(Clock { base, error }) } else { Box::new(Tilt { base, error }) }
+        }
+        s if s.starts_with("camaleonte:") => {
+            let n = num(&s[11..], "numero")? as u64;
+            let styles: Vec<Box<dyn Player>> = vec![
+                Box::new(HeuristicPlayer),
+                Box::new(AggressivePlayer),
+                Box::new(CautiousPlayer),
+                Box::new(TrumpHappyPlayer),
+                Box::new(Persona::style("circolo").unwrap()),
+                Box::new(Persona::numbered(n)),
+                Box::new(IsmctsPlayer::strong(2000)),
+            ];
+            Box::new(Chameleon::new(styles))
+        }
+        "politica" => Box::new(PolicyPlayer),
         s if s.starts_with("noisy:") => {
             let (err, base) = s[6..].split_once(':').ok_or(format!("serve noisy:ERRORE:SPEC, non '{s}'"))?;
             Box::new(Noisy { base: make_player(base)?, error: num(err, "errore")? })
@@ -258,6 +348,14 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
             log: Log::default(),
             me: None,
         }));
+    }
+    if let Some(n) = spec.strip_prefix("vedetutto:") {
+        let n = n.parse::<u32>().map_err(|_| format!("numero non valido in '{spec}'"))?;
+        return Ok(Box::new(SeeAll(IsmctsPlayer::strong(n))));
+    }
+    if let Some(n) = spec.strip_prefix("misto:") {
+        let n = n.parse::<u32>().map_err(|_| format!("numero non valido in '{spec}'"))?;
+        return Ok(Box::new(Current(Box::new(Mixed(IsmctsPlayer::strong(n))), String::new())));
     }
     if let Some(n) = spec.strip_prefix("peek:") {
         let n = n.parse::<u32>().map_err(|_| format!("numero non valido in '{spec}'"))?;
@@ -349,7 +447,7 @@ mod tests {
 
     #[test]
     fn specs_parse() {
-        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "v0.2.0/engine:20", "v0.2.1/engine:20", "v0.3.0/engine:20", "v0.3.0/ismcts+:20", "v0.3.0/ismcts:20", "v0.4.0/ismcts+:20", "v0.4.1/ismcts+:20", "v0.4.7/ismcts+:20", "v0.5.0/ismcts+:20", "v0.5.0/engine:20", "v0.2.0/ismcts:20", "followsuit", "peek:20"] {
+        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "v0.2.0/engine:20", "v0.2.1/engine:20", "v0.3.0/engine:20", "v0.3.0/ismcts+:20", "v0.3.0/ismcts:20", "v0.4.0/ismcts+:20", "v0.4.1/ismcts+:20", "v0.4.7/ismcts+:20", "v0.5.0/ismcts+:20", "v0.5.0/engine:20", "v0.2.0/ismcts:20", "followsuit", "peek:20", "vedetutto:20", "misto:20", "stile:nonno", "persona:7", "fretta:0.4:counter", "tilt:0.3:stile:circolo", "camaleonte:3", "politica"] {
             assert!(make_agent(s).is_ok(), "{s}");
         }
         assert!(make_agent("v9.9.9/engine:20").is_err());

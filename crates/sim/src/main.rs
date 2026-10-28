@@ -9,12 +9,15 @@
 //!   briscola-sim gate [--player SPEC] [--baseline SPEC] [--deals N] [--summary FILE]
 //!   briscola-sim calibrate [--player SPEC] [--deals N]
 //!   briscola-sim report [--player SPEC] [--deals N] [--self-deals N] [--out FILE]
+//!   briscola-sim banco | esame | strati | torneo ...   (banco di prova della 0.6.0, vedi banco.rs)
 //!
 //! SPEC: vedi `agents.rs` (es. engine:1000, ismcts:2000, noisy:0.25:heuristic, v0.1.1/engine:1000).
 
 mod agents;
+mod banco;
 mod arena;
 mod opponents;
+mod persona;
 
 use arena::{describe, prefixes, run_deals, MatchStats};
 use briscola_core::stats::wilson95;
@@ -78,43 +81,48 @@ fn table_row(name: &str, s: &MatchStats) -> String {
     )
 }
 
-/// Risultati per mazzo. Con la variabile BRISCOLA_SIM_CACHE (una cartella) si salvano
+/// Risultati dei mazzi `start..end`. Con la variabile BRISCOLA_SIM_CACHE (una cartella) si salvano
 /// a blocchi di mazzi, così un rapporto lungo interrotto riparte da dove era arrivato.
-fn deals_cached(player: &str, opponent: &str, deals: u64, seed: u64) -> Vec<MatchStats> {
-    const CHUNK: u64 = 250;
+fn chunk_cached(player: &str, opponent: &str, seed: u64, start: u64, end: u64) -> Vec<MatchStats> {
     let play = |r: std::ops::Range<u64>| {
         run_deals(player, opponent, r, seed).unwrap_or_else(|e| {
             eprintln!("{e}");
             std::process::exit(2)
         })
     };
-    let Ok(dir) = std::env::var("BRISCOLA_SIM_CACHE") else { return play(0..deals) };
+    let Ok(dir) = std::env::var("BRISCOLA_SIM_CACHE") else { return play(start..end) };
+    // Le reti fanno parte del giocatore: con reti diverse i risultati salvati non valgono.
+    let nets: String = ["BRISCOLA_NET", "BRISCOLA_POLICY"]
+        .iter()
+        .filter(|_| format!("{player} {opponent}").contains("net:") || format!("{player} {opponent}").contains("infer:"))
+        .filter_map(|v| std::env::var(v).ok())
+        .map(|p| format!("_{}", std::path::Path::new(&p).file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned())))
+        .collect();
+    let key: String = format!("{player}_{opponent}_{seed}_{start}-{end}{nets}")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .collect();
+    let path = std::path::Path::new(&dir).join(key);
+    let cached: Option<Vec<MatchStats>> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| t.lines().map(MatchStats::from_line).collect::<Option<Vec<_>>>())
+        .filter(|v| v.len() as u64 == end - start);
+    cached.unwrap_or_else(|| {
+        let v = play(start..end);
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(&path, v.iter().map(|s| s.to_line() + "\n").collect::<String>());
+        v
+    })
+}
+
+/// Mazzi per blocco di salvataggio.
+const CHUNK: u64 = 250;
+
+/// Risultati per mazzo dei primi `deals` mazzi, a blocchi salvati (vedi `chunk_cached`).
+fn deals_cached(player: &str, opponent: &str, deals: u64, seed: u64) -> Vec<MatchStats> {
     let mut out = Vec::with_capacity(deals as usize);
     for start in (0..deals).step_by(CHUNK as usize) {
-        let end = (start + CHUNK).min(deals);
-        // Le reti fanno parte del giocatore: con reti diverse i risultati salvati non valgono.
-        let nets: String = ["BRISCOLA_NET", "BRISCOLA_POLICY"]
-            .iter()
-            .filter(|_| format!("{player} {opponent}").contains("net:") || format!("{player} {opponent}").contains("infer:"))
-            .filter_map(|v| std::env::var(v).ok())
-            .map(|p| format!("_{}", std::path::Path::new(&p).file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned())))
-            .collect();
-        let key: String = format!("{player}_{opponent}_{seed}_{start}-{end}{nets}")
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
-            .collect();
-        let path = std::path::Path::new(&dir).join(key);
-        let cached: Option<Vec<MatchStats>> = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| t.lines().map(MatchStats::from_line).collect::<Option<Vec<_>>>())
-            .filter(|v| v.len() as u64 == end - start);
-        let chunk = cached.unwrap_or_else(|| {
-            let v = play(start..end);
-            let _ = std::fs::create_dir_all(&dir);
-            let _ = std::fs::write(&path, v.iter().map(|s| s.to_line() + "\n").collect::<String>());
-            v
-        });
-        out.extend(chunk);
+        out.extend(chunk_cached(player, opponent, seed, start, (start + CHUNK).min(deals)));
     }
     out
 }
@@ -407,6 +415,61 @@ fn main() -> ExitCode {
                 Some(n) => writeln!(md, "\nServono almeno {n} mazzi ({} partite).", n * 2).unwrap(),
                 None => writeln!(md, "\nCriterio non raggiunto con {deals} mazzi: aumenta --deals.").unwrap(),
             }
+            println!("{md}");
+            write_out(&md);
+            return ExitCode::SUCCESS;
+        }
+        Some("banco") => {
+            let fam = get("--famiglie", "umani,persone,personaggi,motori,cattivi,bari");
+            let md = banco::Banco {
+                player: &player,
+                families: fam.split(',').map(String::from).collect(),
+                min: get("--min-deals", "500").parse().expect("--min-deals"),
+                max: get("--max-deals", "4000").parse().expect("--max-deals"),
+                screen: get("--screen", &player),
+                screen_deals: get("--screen-deals", "250").parse().expect("--screen-deals"),
+                personas: get("--personaggi", "200").parse().expect("--personaggi"),
+                top: get("--top", "20").parse().expect("--top"),
+                seed,
+            }
+            .run();
+            println!("{md}");
+            write_out(&md);
+            return ExitCode::SUCCESS;
+        }
+        Some("esame") => {
+            let n: usize = get("--positions", "20000").parse().expect("--positions");
+            return match banco::exam(&player, n, seed) {
+                Ok(md) => {
+                    println!("{md}");
+                    write_out(&md);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Some("strati") => {
+            let baseline = get("--baseline", &format!("{}/{player}", latest_release()));
+            let opponent = get("--opponent", "heuristic");
+            return match banco::strata(&player, &baseline, &opponent, deals, seed) {
+                Ok(md) => {
+                    println!("{md}");
+                    write_out(&md);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Some("torneo") => {
+            let list = get("--giocatori", &banco::REPRESENTATIVES.join(","));
+            let players: Vec<String> = list.split(',').map(String::from).collect();
+            let md = banco::tournament(&players, get("--deals", "100").parse().expect("--deals"), seed);
             println!("{md}");
             write_out(&md);
             return ExitCode::SUCCESS;

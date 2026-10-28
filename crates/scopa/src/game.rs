@@ -324,6 +324,24 @@ impl Game {
     }
 }
 
+/// Una giocata dell'avversario nel giro in corso, con ciò che c'era prima: serve a dedurre
+/// le carte che ha ancora in mano (nel giro le carte non cambiano finché non si gioca).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OppPlay {
+    pub table: CardSet,
+    /// Carte già prese da entrambi prima della giocata.
+    pub seen: CardSet,
+    pub mv: Move,
+    /// Carte in mano a chi osserva al momento della giocata.
+    pub my_len: u8,
+}
+
+impl Default for Move {
+    fn default() -> Self {
+        Move { card: 0, take: CardSet::EMPTY }
+    }
+}
+
 /// Ciò che un giocatore vede: niente mano avversaria, niente ordine del mazzo.
 /// Le prese di entrambi sono note (le carte prese si vedono quando vengono giocate).
 #[derive(Clone, Copy, Debug)]
@@ -340,6 +358,9 @@ pub struct Observation {
     pub last_taker: Option<u8>,
     /// Punteggio della partita prima di questa smazzata.
     pub match_score: [u8; 2],
+    /// Giocate dell'avversario nel giro in corso (al più 2), dalla prima.
+    pub opp_plays: [OppPlay; 2],
+    pub opp_plays_len: u8,
 }
 
 impl Observation {
@@ -356,7 +377,14 @@ impl Observation {
             to_move: g.to_move,
             last_taker: g.last_taker,
             match_score,
+            opp_plays: [OppPlay::default(); 2],
+            opp_plays_len: 0,
         }
+    }
+
+    /// Giocate dell'avversario nel giro in corso.
+    pub fn opp_plays(&self) -> &[OppPlay] {
+        &self.opp_plays[..self.opp_plays_len as usize]
     }
 
     /// Carte la cui posizione mi è ignota (mano avversaria + mazzo).
@@ -383,6 +411,8 @@ impl Observation {
             to_move: 1 - dealer,
             last_taker: None,
             match_score,
+            opp_plays: [OppPlay::default(); 2],
+            opp_plays_len: 0,
         }
     }
 
@@ -415,6 +445,15 @@ impl Observation {
         if self.to_move == self.me {
             self.hand.remove(m.card);
         } else {
+            if (self.opp_plays_len as usize) < self.opp_plays.len() {
+                self.opp_plays[self.opp_plays_len as usize] = OppPlay {
+                    table: self.table,
+                    seen: self.captured[0].union(self.captured[1]),
+                    mv: m,
+                    my_len: self.hand.len() as u8,
+                };
+                self.opp_plays_len += 1;
+            }
             self.opp_hand_len -= 1;
         }
         let last = self.deck_len == 0 && self.hand.is_empty() && self.opp_hand_len == 0;
@@ -436,6 +475,7 @@ impl Observation {
             if self.deck_len > 0 {
                 self.deck_len -= 6;
                 self.opp_hand_len = 3;
+                self.opp_plays_len = 0;
             } else {
                 if let Some(t) = self.last_taker {
                     self.captured[t as usize] = self.captured[t as usize].union(self.table);

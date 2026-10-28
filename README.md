@@ -108,11 +108,14 @@ sono gli stessi della briscola (e la memoria è in comune).
 
 Il motore campiona le possibili carte dell'avversario e del mazzo, gioca ogni mossa fino a fine smazzata
 e calcola il finale esatto quando il mazzo è finito; ogni smazzata vale per la probabilità di vincere la
-partita a 11 dato il punteggio. I test sono in [bench/SCOPA.md](bench/SCOPA.md):
+partita a 11 dato il punteggio. Dalla 0.5.0 deduce anche le carte che l'avversario ha in mano dalle
+sue giocate nel giro (chi non fa una scopa possibile probabilmente non ha la carta per farla) e usa
+1600 mondi: sopra il 60% contro tutti gli stili umani provati, migliore del motore precedente contro
+tutti i 16 avversari. I test sono in [bench/SCOPA.md](bench/SCOPA.md):
 
 ```
 cargo run --release -p scopa-sim -- report --player engine:400 --deals 4000 --self-deals 4000 --out bench/SCOPA.md
-cargo run --release -p scopa-sim -- --player engine:400 --opponent ismcts:1000 --deals 4000
+cargo run --release -p scopa-sim -- --player engine:1600:0:infer --opponent ismcts:20000 --deals 4000
 ```
 
 ## Scala 40

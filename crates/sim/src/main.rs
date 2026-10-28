@@ -424,6 +424,10 @@ fn main() -> ExitCode {
             let md = banco::Banco {
                 player: &player,
                 families: fam.split(',').map(String::from).collect(),
+                only: args.iter().position(|a| a == "--solo").map(|i| {
+                    let (a, b) = args[i + 1].split_once('-').expect("--solo DA-A");
+                    a.parse().expect("--solo")..b.parse().expect("--solo")
+                }),
                 min: get("--min-deals", "500").parse().expect("--min-deals"),
                 max: get("--max-deals", "4000").parse().expect("--max-deals"),
                 screen: get("--screen", &player),

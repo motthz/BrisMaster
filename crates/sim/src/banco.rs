@@ -3,7 +3,7 @@
 //!
 //!   briscola-sim banco   --player SPEC [--famiglie umani,persone,personaggi,motori,cattivi,bari]
 //!                        [--min-deals 500] [--max-deals 4000] [--screen SPEC] [--screen-deals 250]
-//!                        [--personaggi 200] [--top 20] [--out FILE]
+//!                        [--personaggi 200] [--top 20] [--solo DA-A] [--out FILE]
 //!   briscola-sim esame   --player SPEC [--positions 20000] [--out FILE]
 //!   briscola-sim strati  --player SPEC --baseline SPEC --opponent SPEC [--deals N] [--out FILE]
 //!   briscola-sim torneo  [--giocatori A,B,...] [--deals 100] [--out FILE]
@@ -154,6 +154,8 @@ const ROW_HEAD: &str = "| Avversario | Partite | Punteggio | IC 95% | Obiettivo 
 pub struct Banco<'a> {
     pub player: &'a str,
     pub families: Vec<String>,
+    /// Solo gli avversari con questi indici (0, 1, ...) dentro ogni famiglia: per spezzare una prova lunga.
+    pub only: Option<std::ops::Range<usize>>,
     pub min: u64,
     pub max: u64,
     pub screen: String,
@@ -180,7 +182,10 @@ impl Banco<'_> {
                     rows.push((describe(&p), sequential(self.player, &p, self.min, self.max, f.threshold, self.seed)));
                 }
             } else {
-                for opp in &f.members {
+                for (i, opp) in f.members.iter().enumerate() {
+                    if self.only.as_ref().is_some_and(|r| !r.contains(&i)) {
+                        continue;
+                    }
                     if opp == self.player {
                         writeln!(md, "_{}: è il giocatore stesso, 50% per costruzione._\n", describe(opp)).unwrap();
                         continue;

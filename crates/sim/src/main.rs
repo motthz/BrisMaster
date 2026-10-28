@@ -92,7 +92,14 @@ fn deals_cached(player: &str, opponent: &str, deals: u64, seed: u64) -> Vec<Matc
     let mut out = Vec::with_capacity(deals as usize);
     for start in (0..deals).step_by(CHUNK as usize) {
         let end = (start + CHUNK).min(deals);
-        let key: String = format!("{player}_{opponent}_{seed}_{start}-{end}")
+        // Le reti fanno parte del giocatore: con reti diverse i risultati salvati non valgono.
+        let nets: String = ["BRISCOLA_NET", "BRISCOLA_POLICY"]
+            .iter()
+            .filter(|_| format!("{player} {opponent}").contains("net:") || format!("{player} {opponent}").contains("infer:"))
+            .filter_map(|v| std::env::var(v).ok())
+            .map(|p| format!("_{}", std::path::Path::new(&p).file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned())))
+            .collect();
+        let key: String = format!("{player}_{opponent}_{seed}_{start}-{end}{nets}")
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
             .collect();
@@ -208,15 +215,15 @@ fn convergence(per_deal: &[MatchStats], margin: f64, md: &mut String) -> Option<
     first.map(|i| checkpoints[i])
 }
 
-/// Obiettivo dichiarato: almeno il 55% di punteggio contro ogni avversario.
-const TARGET: f64 = 0.55;
+/// Obiettivo dichiarato: almeno il 60% di punteggio contro ogni avversario.
+const TARGET: f64 = 0.60;
 
 fn target_mark(s: &MatchStats) -> &'static str {
     let (lo, hi) = s.score_ci95();
     if lo > TARGET {
-        "✅ sopra il 55%"
+        "✅ sopra il 60%"
     } else if hi < TARGET {
-        "❌ sotto il 55%"
+        "❌ sotto il 60%"
     } else {
         "≈ al limite"
     }
@@ -306,7 +313,7 @@ fn report(player: &str, deals: u64, self_deals: u64, seed: u64) -> String {
         sec3,
         "Gli avversari più difficili che il banco di prova sa costruire: ricerca ad albero con molte più iterazioni, \
          ISMCTS potenziato con le stesse simulazioni del motore, e il motore stesso con più simulazioni. Contro le varianti di se stesso \
-         il motore parte vicino al 50% per costruzione: superarle del 55% richiede un motore nettamente migliore, non solo più calcolo.\n"
+         il motore parte vicino al 50% per costruzione: superarle del 60% richiede un motore nettamente migliore, non solo più calcolo.\n"
     ).unwrap();
     all_rows.extend(panel_rows(player, STRONG, deals, seed, &mut sec3));
     games += STRONG.len() as u64 * deals * 2;
@@ -335,16 +342,16 @@ fn report(player: &str, deals: u64, self_deals: u64, seed: u64) -> String {
         latest_release()
     ).unwrap();
 
-    // Intestazione e riepilogo sull'obiettivo del 55%.
+    // Intestazione e riepilogo sull'obiettivo del 60%.
     let mut md = String::new();
     writeln!(md, "# Rapporto dei test massivi\n").unwrap();
     writeln!(md, "Motore provato: **{name}** (`{player}`), commit `{}`, {}.", commit(), today()).unwrap();
     writeln!(md, "Ogni riga: {deals} mazzi giocati due volte a posti invertiti ({} partite), seme `{seed}`. Gli stessi mazzi per tutti gli avversari.\n", deals * 2).unwrap();
-    writeln!(md, "## Riepilogo: obiettivo 55% contro ogni avversario\n").unwrap();
+    writeln!(md, "## Riepilogo: obiettivo 60% contro ogni avversario\n").unwrap();
     let above = all_rows.iter().filter(|(_, s)| s.score_ci95().0 > TARGET).count();
     writeln!(
         md,
-        "Sopra il 55% con certezza statistica (intero IC 95% sopra il 55%): **{above} avversari su {}**. \
+        "Sopra il 60% con certezza statistica (intero IC 95% sopra il 60%): **{above} avversari su {}**. \
          Il motore contro se stesso è escluso: lì il 50% è il risultato esatto per costruzione.\n",
         all_rows.len()
     ).unwrap();

@@ -3,6 +3,8 @@
 pub mod ai;
 pub mod cards;
 pub mod game;
+pub mod infer;
+pub mod net;
 pub mod stats;
 
 pub use ai::{evaluate, EngineConfig, EnginePlayer, HeuristicPlayer, MoveEval, Player, RandomPlayer};

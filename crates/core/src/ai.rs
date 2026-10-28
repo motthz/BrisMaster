@@ -2,6 +2,9 @@
 
 use crate::cards::*;
 use crate::game::{Game, Observation};
+use crate::infer::{Belief, Event};
+use crate::net::Net;
+use std::sync::Arc;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
@@ -263,24 +266,42 @@ pub struct IsmctsPlayer {
     pub policy: Option<RolloutParams>,
     /// Con al più queste carte nel mazzo la simulazione si ferma e il resto si risolve esatto.
     pub rollout_solve: Option<u8>,
+    /// Rete di valutazione: se c'è, le foglie con il mazzo ancora lungo si valutano con la
+    /// rete invece che (o insieme) alla simulazione.
+    pub value: Option<Arc<Net>>,
+    /// Peso della rete nella valutazione delle foglie (1 = solo rete, 0.5 = media con la simulazione).
+    pub value_mix: f64,
 }
 
 impl IsmctsPlayer {
     /// ISMCTS classico: simulazioni euristiche con mosse casuali fino alla fine.
     pub fn new(iterations: u32) -> Self {
-        IsmctsPlayer { iterations, policy: None, rollout_solve: None }
+        IsmctsPlayer { iterations, policy: None, rollout_solve: None, value: None, value_mix: 1.0 }
     }
 
     /// ISMCTS potenziato: le stesse simulazioni del motore principale (a carte scoperte,
     /// finale risolto con alfa-beta da 2 carte nel mazzo).
     pub fn strong(iterations: u32) -> Self {
-        IsmctsPlayer { iterations, policy: Some(RolloutParams::default()), rollout_solve: Some(2) }
+        IsmctsPlayer {
+            iterations,
+            policy: Some(RolloutParams::default()),
+            rollout_solve: Some(2),
+            value: None,
+            value_mix: 1.0,
+        }
+    }
+
+    /// ISMCTS potenziato con la rete di valutazione nelle foglie.
+    pub fn with_net(iterations: u32, net: Arc<Net>, mix: f64) -> Self {
+        IsmctsPlayer { value: Some(net), value_mix: mix, ..IsmctsPlayer::strong(iterations) }
     }
 }
 
 impl Player for IsmctsPlayer {
     fn name(&self) -> String {
-        if self.policy.is_some() {
+        if self.value.is_some() {
+            format!("ISMCTS con rete ({} iterazioni)", self.iterations)
+        } else if self.policy.is_some() {
             format!("ISMCTS potenziato ({} iterazioni)", self.iterations)
         } else {
             format!("ISMCTS ({} iterazioni)", self.iterations)
@@ -298,10 +319,20 @@ impl Player for IsmctsPlayer {
 impl IsmctsPlayer {
     /// Ricerca dalla posizione: per ogni carta giocabile, visite e risultati.
     pub fn search(&self, obs: &Observation, rng: &mut SmallRng) -> Vec<RootChild> {
+        self.search_with(obs, rng, |rng| obs.determinize(rng))
+    }
+
+    /// Ricerca con un campionatore dei mondi a scelta (es. mani avversarie pesate).
+    pub fn search_with(
+        &self,
+        obs: &Observation,
+        rng: &mut SmallRng,
+        mut world: impl FnMut(&mut SmallRng) -> Game,
+    ) -> Vec<RootChild> {
         let mut solver = Solver::default();
         let mut nodes = vec![Node { card: 255, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0, wins: 0.0, points: 0.0 }];
         for _ in 0..self.iterations {
-            let mut g = obs.determinize(rng);
+            let mut g = world(rng);
             let mut path = vec![0usize];
             let mut cur = 0usize;
             // Selezione ed espansione.
@@ -342,28 +373,44 @@ impl IsmctsPlayer {
                 path.push(best);
                 cur = best;
             }
-            let finals = match self.policy {
+            // Esito per il giocatore 0: probabilità di vittoria e punti finali.
+            let (w0, p0) = match self.policy {
                 None => {
                     rollout(&mut g, 0.1, rng);
-                    g.points
+                    (result(g.points[0]), g.points[0] as f64)
                 }
                 Some(p) => {
-                    rollout_until(&mut g, Some(&p), 0.0, self.rollout_solve, rng);
-                    if g.is_over() {
-                        g.points
-                    } else {
-                        let p0 = solver.solve(&g, 0);
-                        [p0, 120 - p0]
+                    let leaf = g;
+                    let solve_at = self.rollout_solve.unwrap_or(0);
+                    let net = self.value.as_ref().filter(|_| !leaf.is_over() && leaf.deck_len > solve_at);
+                    let by_net = net.map(|net| {
+                        let (w, pts) = net.eval(&leaf);
+                        let (w, pts) = (w as f64, pts as f64);
+                        if leaf.to_move() == 0 { (w, pts) } else { (1.0 - w, 120.0 - pts) }
+                    });
+                    let mut by_rollout = || {
+                        rollout_until(&mut g, Some(&p), 0.0, self.rollout_solve, rng);
+                        let p0 = if g.is_over() { g.points[0] } else { solver.solve(&g, 0) };
+                        (result(p0), p0 as f64)
+                    };
+                    match by_net {
+                        Some(v) if self.value_mix >= 1.0 => v,
+                        Some((w, pts)) => {
+                            let (rw, rp) = by_rollout();
+                            let m = self.value_mix;
+                            (m * w + (1.0 - m) * rw, m * pts + (1.0 - m) * rp)
+                        }
+                        None => by_rollout(),
                     }
                 }
             };
             for &id in &path {
                 let n = &mut nodes[id];
-                let pts = finals[n.mover as usize];
+                let (w, pts) = if n.mover == 0 { (w0, p0) } else { (1.0 - w0, 120.0 - p0) };
                 n.visits += 1.0;
-                n.reward += utility(pts);
-                n.wins += result(pts);
-                n.points += pts as f64;
+                n.reward += w + pts / 1200.0;
+                n.wins += w;
+                n.points += pts;
             }
         }
         nodes[0]
@@ -525,12 +572,6 @@ pub struct MoveEval {
 #[inline]
 fn result(pts: u8) -> f64 {
     if pts > 60 { 1.0 } else if pts == 60 { 0.5 } else { 0.0 }
-}
-
-/// Utilità usata dal motore: prima conta vincere, poi i punti.
-#[inline]
-fn utility(pts: u8) -> f64 {
-    result(pts) + pts as f64 / 1200.0
 }
 
 fn rollout(g: &mut Game, eps: f64, rng: &mut SmallRng) {
@@ -861,7 +902,30 @@ pub fn evaluate(obs: &Observation, cfg: &EngineConfig, rng: &mut SmallRng) -> Ve
 /// Valutazione con l'ISMCTS potenziato, su un solo albero (un thread): è il giocatore
 /// provato nei test massivi. Le mosse sono in ordine di visite: la prima è quella scelta.
 pub fn evaluate_ismcts(obs: &Observation, iterations: u32, rng: &mut SmallRng) -> Vec<MoveEval> {
-    let mut total = IsmctsPlayer::strong(iterations).search(obs, rng);
+    root_evals(obs, IsmctsPlayer::strong(iterations).search(obs, rng))
+}
+
+/// Parametri della deduzione delle carte avversarie usati dall'assistente (provati nei test massivi).
+pub const INFER_TEMP: f32 = 1.0;
+pub const INFER_FLOOR: f32 = 0.25;
+pub const INFER_HANDS: usize = 1000;
+
+/// Come `evaluate`, ma conoscendo come ha giocato l'avversario (`log`): con l'ISMCTS e il mazzo
+/// non finito i mondi si pescano dalle mani avversarie pesate dalla rete di politica.
+pub fn evaluate_with_log(obs: &Observation, cfg: &EngineConfig, log: &[Event], rng: &mut SmallRng) -> Vec<MoveEval> {
+    match cfg.ismcts {
+        Some(iterations) if obs.deck_len > 0 && !log.is_empty() => {
+            let belief = Belief::infer(obs, log, crate::net::policy(), INFER_TEMP, INFER_FLOOR, INFER_HANDS, rng);
+            let root = IsmctsPlayer::strong(iterations)
+                .search_with(obs, rng, |r| obs.determinize_given(belief.sample(r), r));
+            root_evals(obs, root)
+        }
+        _ => evaluate(obs, cfg, rng),
+    }
+}
+
+/// Valutazioni dai risultati della radice, in ordine di visite.
+fn root_evals(obs: &Observation, mut total: Vec<RootChild>) -> Vec<MoveEval> {
     total.sort_by(|a, b| b.visits.partial_cmp(&a.visits).unwrap());
     let mut out: Vec<MoveEval> = total
         .iter()

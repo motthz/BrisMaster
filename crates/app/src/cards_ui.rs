@@ -1,4 +1,5 @@
-//! Grafica delle carte napoletane: semi disegnati a vettori, dorso, tappeto e selettore di carte.
+//! Grafica delle carte napoletane: le carte vere (dal foglio delle 40 carte), semi disegnati a
+//! vettori per le intestazioni, dorso, tappeto e selettore di carte.
 
 use briscola_core::cards::{self, Card, CardSet};
 use eframe::egui::{
@@ -9,22 +10,12 @@ use eframe::egui::{
 pub const CARD_SIZE: Vec2 = Vec2::new(96.0, 148.0);
 pub const MINI_SIZE: Vec2 = Vec2::new(40.0, 58.0);
 
-const PAPER: Color32 = Color32::from_rgb(251, 247, 236);
+const PAPER: Color32 = Color32::from_rgb(252, 252, 250);
 const INK: Color32 = Color32::from_rgb(45, 40, 35);
 pub const GOLD: Color32 = Color32::from_rgb(222, 178, 70);
 pub const BEST: Color32 = Color32::from_rgb(120, 230, 140);
 const FELT_TOP: Color32 = Color32::from_rgb(22, 92, 62);
 const FELT_BOTTOM: Color32 = Color32::from_rgb(10, 58, 40);
-
-/// Colore di riferimento di ogni seme (testo e bordi).
-pub fn suit_color(s: u8) -> Color32 {
-    match s {
-        0 => Color32::from_rgb(196, 140, 20),
-        1 => Color32::from_rgb(196, 52, 46),
-        2 => Color32::from_rgb(52, 98, 190),
-        _ => Color32::from_rgb(46, 132, 62),
-    }
-}
 
 /// Versione chiara del colore del seme, leggibile su sfondo scuro.
 pub fn suit_color_light(s: u8) -> Color32 {
@@ -86,18 +77,6 @@ pub fn paint_suit(p: &Painter, c: Pos2, d: f32, suit: u8) {
     }
 }
 
-/// Posizioni dei semi sulle carte numeriche (da 2 a 7), in un riquadro [-1, 1]².
-fn pips(n: u8) -> &'static [(f32, f32)] {
-    match n {
-        2 => &[(0.0, -0.6), (0.0, 0.6)],
-        3 => &[(0.0, -0.72), (0.0, 0.0), (0.0, 0.72)],
-        4 => &[(-0.5, -0.6), (0.5, -0.6), (-0.5, 0.6), (0.5, 0.6)],
-        5 => &[(-0.5, -0.65), (0.5, -0.65), (0.0, 0.0), (-0.5, 0.65), (0.5, 0.65)],
-        6 => &[(-0.5, -0.72), (0.5, -0.72), (-0.5, 0.0), (0.5, 0.0), (-0.5, 0.72), (0.5, 0.72)],
-        _ => &[(-0.5, -0.72), (0.5, -0.72), (0.0, -0.36), (-0.5, 0.0), (0.5, 0.0), (-0.5, 0.72), (0.5, 0.72)],
-    }
-}
-
 /// Aspetto di una carta disegnata.
 #[derive(Clone, Copy, Default)]
 pub struct Look {
@@ -111,7 +90,43 @@ pub struct Look {
     pub no_points: bool,
 }
 
-/// Disegna la faccia di una carta nel rettangolo dato.
+/// Il foglio delle 40 carte vere (lo stesso con cui si riconoscono sullo schermo), caricato una
+/// volta come immagine e ingrandito per restare nitido anche sulle carte grandi.
+fn sheet(ctx: &egui::Context) -> egui::TextureHandle {
+    let id = egui::Id::unique("carte_napoletane");
+    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return t;
+    }
+    let im = image::load_from_memory_with_format(crate::vision::reference::SHEET, image::ImageFormat::Png)
+        .expect("foglio delle carte")
+        .to_rgba8();
+    let big = image::imageops::resize(&im, im.width() * 2, im.height() * 2, image::imageops::FilterType::CatmullRom);
+    let size = [big.width() as usize, big.height() as usize];
+    let options = egui::TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
+    let tex = ctx.load_texture("carte_napoletane", egui::ColorImage::from_rgba_unmultiplied(size, big.as_raw()), options);
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    tex
+}
+
+/// Disegna il disegno della carta vera, il più grande possibile dentro `area` (centrato).
+fn paint_art(p: &Painter, area: Rect, c: Card) {
+    let (col, row) = crate::vision::reference::sheet_cell(c);
+    // Un pixel e mezzo in meno per lato: i bordi del foglio toccano le carte vicine.
+    let (du, dv) = (1.5 / 540.0, 1.5 / 370.0);
+    let uv = Rect::from_min_max(
+        pos2(col as f32 / 10.0 + du, row as f32 / 4.0 + dv),
+        pos2((col + 1) as f32 / 10.0 - du, (row + 1) as f32 / 4.0 - dv),
+    );
+    let ratio = (54.0 - 3.0) / (92.5 - 3.0);
+    let size = if area.width() / area.height() > ratio {
+        vec2(area.height() * ratio, area.height())
+    } else {
+        vec2(area.width(), area.width() / ratio)
+    };
+    p.image(sheet(p.ctx()).id(), Rect::from_center_size(area.center(), size), uv, Color32::WHITE);
+}
+
+/// Disegna la faccia di una carta nel rettangolo dato: la carta vera, su cartoncino bianco.
 pub fn paint_face(p: &Painter, rect: Rect, c: Card, look: Look) {
     let mut p = p.clone();
     if look.dim {
@@ -119,63 +134,20 @@ pub fn paint_face(p: &Painter, rect: Rect, c: Card, look: Look) {
     }
     let rect = if look.lifted { rect.translate(vec2(0.0, -6.0)) } else { rect };
     let h = rect.height();
-    let r = 0.07 * h;
+    let r = 0.06 * h;
     let shadow = Shadow { offset: [2, 4], blur: 10, spread: 0, color: Color32::from_black_alpha(110) };
     p.add(shadow.as_shape(rect, r));
     p.rect_filled(rect, r, PAPER);
-    let (s, k) = (cards::suit(c), cards::rank(c));
-    let col = suit_color(s);
-    p.rect_stroke(rect.shrink(0.035 * h), 0.05 * h, Stroke::new(1.0, col.gamma_multiply(0.6)), StrokeKind::Inside);
-
-    // Indici agli angoli.
-    let rank = cards::RANK_SHORT[k as usize];
-    let font = FontId::proportional(0.14 * h);
-    p.text(rect.left_top() + vec2(0.1 * h, 0.035 * h), Align2::CENTER_TOP, rank, font.clone(), col);
-    p.text(rect.right_bottom() - vec2(0.1 * h, 0.035 * h), Align2::CENTER_BOTTOM, rank, font, col);
+    p.rect_stroke(rect, r, Stroke::new(1.0, Color32::from_black_alpha(60)), StrokeKind::Inside);
+    paint_art(&p, rect.shrink(0.035 * h), c);
 
     // Punti della carta in alto a destra.
     let pts = cards::points(c);
     if pts > 0 && !look.no_points {
-        let pill = Rect::from_center_size(rect.right_top() + vec2(-0.16 * h, 0.11 * h), vec2(0.2 * h, 0.12 * h));
-        p.rect_filled(pill, 0.06 * h, GOLD);
-        p.text(pill.center(), Align2::CENTER_CENTER, pts.to_string(), FontId::proportional(0.085 * h), INK);
-    }
-
-    // Centro della carta.
-    let center = rect.center() + vec2(0.0, 0.02 * h);
-    match k {
-        0 => {
-            p.circle_filled(center, 0.27 * h, col.gamma_multiply(0.12));
-            paint_suit(&p, center, 0.42 * h, s);
-        }
-        1..=6 => {
-            let half = vec2(0.17 * h, 0.27 * h);
-            let size = if k >= 5 { 0.12 * h } else { 0.14 * h };
-            for &(x, y) in pips(k + 1) {
-                paint_suit(&p, center + vec2(x * half.x, y * half.y), size, s);
-            }
-        }
-        _ => {
-            // Figure: riquadro colorato con lettera, seme e nome.
-            let panel = Rect::from_center_size(center, vec2(0.40 * h, 0.62 * h));
-            p.rect_filled(panel, 0.04 * h, col.gamma_multiply(0.14));
-            p.rect_stroke(panel, 0.04 * h, Stroke::new(1.5, col), StrokeKind::Inside);
-            p.text(
-                panel.center_top() + vec2(0.0, 0.03 * h),
-                Align2::CENTER_TOP,
-                rank,
-                FontId::proportional(0.17 * h),
-                col,
-            );
-            paint_suit(&p, panel.center() + vec2(0.0, 0.04 * h), 0.22 * h, s);
-            p.text(
-                panel.center_bottom() - vec2(0.0, 0.03 * h),
-                Align2::CENTER_BOTTOM,
-                cards::RANK_NAMES[k as usize],
-                FontId::proportional(0.075 * h),
-                INK,
-            );
-        }
+        let pill = Rect::from_center_size(rect.right_top() + vec2(-0.1 * h, 0.08 * h), vec2(0.16 * h, 0.1 * h));
+        p.rect_filled(pill, 0.05 * h, GOLD);
+        p.rect_stroke(pill, 0.05 * h, Stroke::new(1.0, Color32::from_black_alpha(90)), StrokeKind::Inside);
+        p.text(pill.center(), Align2::CENTER_CENTER, pts.to_string(), FontId::proportional(0.075 * h), INK);
     }
     if let Some(g) = look.glow {
         p.rect_stroke(rect.expand(2.0), r + 2.0, Stroke::new(4.0, g), StrokeKind::Outside);
@@ -238,26 +210,18 @@ pub fn card_look(ui: &mut egui::Ui, c: Option<Card>, size: Vec2, look: Look, cli
     }
 }
 
-/// Carta in miniatura per selettori e conteggi: valore e seme.
+/// Carta in miniatura per selettori e conteggi: la carta vera, piccola.
 pub fn paint_mini(p: &Painter, rect: Rect, c: Card, enabled: bool, hovered: bool) {
     let h = rect.height();
-    let (s, k) = (cards::suit(c), cards::rank(c));
     let mut p = p.clone();
     if !enabled {
         p.multiply_opacity(0.22);
     }
     let rect = if hovered { rect.translate(vec2(0.0, -3.0)) } else { rect };
-    p.rect_filled(rect, 0.1 * h, PAPER);
-    let border = if hovered { Stroke::new(2.5, BEST) } else { Stroke::new(1.0, suit_color(s)) };
-    p.rect_stroke(rect, 0.1 * h, border, StrokeKind::Inside);
-    p.text(
-        rect.center_top() + vec2(0.0, 0.05 * h),
-        Align2::CENTER_TOP,
-        cards::RANK_SHORT[k as usize],
-        FontId::proportional(0.34 * h),
-        suit_color(s),
-    );
-    paint_suit(&p, rect.center_bottom() - vec2(0.0, 0.27 * h), 0.36 * h, s);
+    p.rect_filled(rect, 0.08 * h, PAPER);
+    paint_art(&p, rect.shrink(0.04 * h), c);
+    let border = if hovered { Stroke::new(2.5, BEST) } else { Stroke::new(1.0, Color32::from_black_alpha(70)) };
+    p.rect_stroke(rect, 0.08 * h, border, StrokeKind::Inside);
 }
 
 /// Ordine di presentazione dei valori: dal più forte al più debole.

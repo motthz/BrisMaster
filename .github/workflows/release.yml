@@ -43,12 +43,25 @@ jobs:
       - name: Build
         if: steps.ver.outputs.exists == 'false'
         run: cargo build --release -p brismaster
+      - name: Installatore
+        if: steps.ver.outputs.exists == 'false'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          $version = "${{ steps.ver.outputs.tag }}".TrimStart("v")
+          & $iscc "/DAppVersion=$version" "/DExeDir=..\target\release" installer\BrisMaster.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepara i file
         if: steps.ver.outputs.exists == 'false'
         shell: bash
         run: |
           cp target/release/brismaster.exe BrisMaster.exe
+          cp dist/BrisMaster-Setup.exe BrisMaster-Setup.exe
           sha256sum BrisMaster.exe > BrisMaster.exe.sha256
+          sha256sum BrisMaster-Setup.exe > BrisMaster-Setup.exe.sha256
       - name: Pubblica la release
         if: steps.ver.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
@@ -59,4 +72,12 @@ jobs:
           files: |
             BrisMaster.exe
             BrisMaster.exe.sha256
+            BrisMaster-Setup.exe
+            BrisMaster-Setup.exe.sha256
+          body: |
+            **Installazione:** scarica `BrisMaster-Setup.exe` qui sotto, nella sezione **Assets**, e aprilo: installa BrisMaster per il tuo utente (senza permessi di amministratore), con il collegamento sul desktop e nel menu Start. Si disinstalla da *Impostazioni → App*.
+            In alternativa `BrisMaster.exe` è il programma da solo, senza installazione.
+            Le app già installate si aggiornano anche da sole all'avvio.
+
+            Se Windows SmartScreen avvisa: *Ulteriori informazioni → Esegui comunque*. Se l'antivirus blocca l'exe: [come sbloccarlo](https://github.com/motthz/BrisMaster/blob/main/docs/ANTIVIRUS.md).
           generate_release_notes: true

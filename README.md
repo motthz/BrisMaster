@@ -10,9 +10,11 @@ Giochi: **briscola**, **scopa**, **scala 40**, **burraco**, **sette e mezzo**, *
 
 ## Installazione
 
-1. Scarica `BrisMaster.exe` dall'[ultima release](https://github.com/motthz/BrisMaster/releases/latest).
-2. Mettilo in una cartella tua (per esempio `Documenti\BrisMaster`) e avvialo.
-3. Al primo avvio Windows SmartScreen può avvisare che l'app non è firmata: *Ulteriori informazioni → Esegui comunque*.
+1. Scarica `BrisMaster-Setup.exe` dall'[ultima release](https://github.com/motthz/BrisMaster/releases/latest) e aprilo.
+2. L'installazione è per il tuo utente, senza permessi di amministratore: mette BrisMaster in `%LOCALAPPDATA%\Programs\BrisMaster`, crea il collegamento sul desktop e nel menu Start, e si disinstalla da *Impostazioni → App*. Partite salvate e memoria delle carte (in `Documenti\BrisMaster`) restano anche disinstallando.
+3. Windows SmartScreen può avvisare che il programma non è firmato: *Ulteriori informazioni → Esegui comunque*. Se l'antivirus lo blocca, vedi [docs/ANTIVIRUS.md](docs/ANTIVIRUS.md).
+
+Chi preferisce può scaricare solo `BrisMaster.exe` e avviarlo da una cartella sua, senza installazione. Se prima usavi l'exe così e passi all'installatore, cancella pure il vecchio exe: i dati sono in `Documenti\BrisMaster` e restano.
 
 Gli aggiornamenti sono automatici: all'avvio l'app controlla le release di questo repository e, se ce n'è una più recente, mostra il pulsante **Installa**. L'app scarica la nuova versione, sostituisce l'eseguibile e si riavvia.
 
@@ -20,7 +22,9 @@ Gli aggiornamenti sono automatici: all'avvio l'app controlla le release di quest
 
 - **Assistente**: inserisci a mano la briscola, chi comincia, le tue carte, le carte che peschi e quelle giocate dall'avversario. Per ogni tua mossa il motore indica la carta da giocare, la probabilità di vittoria di ogni alternativa e una spiegazione a parole (prendere o lasciare, tagliare, quante briscole e carichi sono ancora fuori, quanti punti ti mancano). Le carte si inseriscono con un clic sulla griglia o da tastiera, senza cliccare da nessuna parte né premere Invio: scrivi valore e seme (`3c`, `AD`, `Rs`) e la carta entra appena digiti il seme. Per chi comincia premi 1 (tu) o 2 (l'avversario); al tuo turno **Spazio** inserisce la carta consigliata e 1, 2, 3 la carta in quella posizione della mano. Ogni passo si annulla con Ctrl+Z. L'app tiene il conto delle carte uscite, dei punti e del mazzo, sa da sola a chi va la briscola scoperta all'ultima pescata e inserisce da sola le carte obbligate (l'ultima presa). Con **Finestra compatta** l'app diventa una finestra stretta con solo la tua mano, il consiglio e l'inserimento, da tenere accanto al browser (volendo sempre in primo piano).
 
-Con **Leggi la partita dallo schermo** (su Windows) BrisMaster guarda il tavolo del sito nel browser e inserisce da solo briscola, carte pescate e carte giocate: riconosce le napoletane dal colore dei semi e dal numero di simboli, e chi comincia dalla prima carta giocata. Quando non è sicuro (soprattutto fante e re) ti mostra la carta che crede: Spazio conferma, oppure scrivi quella giusta. Ogni carta riconosciuta o confermata viene ricordata (in `Documenti\BrisMaster\carte_viste.json`), così col tempo le domande spariscono. Le carte rimaste disegnate in mano per errore dal sito vengono ignorate. L'app legge solo i pixel dello schermo: non tocca il sito e le carte le giochi sempre tu.
+Con **Leggi la partita dallo schermo** (su Windows) BrisMaster guarda il tavolo del sito nel browser e inserisce da solo briscola, carte pescate e carte giocate: riconosce le carte confrontandole con le 40 napoletane di riferimento (`crates/app/assets/carte_napoletane.png`), e chi comincia dalla prima carta giocata. Funziona su qualunque tavolo (panno verde, blu, legno...), con lo schermo scurito o la luce notturna, con le carte dell'avversario girate e con le carte viste solo in parte: la briscola sotto il mazzo, una carta tagliata dal bordo o coperta da una scritta. Come carte conta solo quello che somiglia a una delle 40: dorsi, riquadri, scritte e pannelli del sito vengono ignorati, e anche le carte disegnate fuori dal tavolo. Una partita dopo l'altra riparte da sola: quando il sito distribuisce di nuovo (nuova briscola, tre carte in mano, tavolo vuoto) azzera anche se la partita prima si era interrotta a metà. Quando non è sicuro (per esempio la briscola vista a metà) ti mostra la carta che crede: Spazio conferma, oppure scrivi quella giusta. Ogni carta riconosciuta o confermata viene ricordata con la grafica del tuo sito (in `Documenti\BrisMaster\carte_viste.json`), anche la briscola vista a metà: dopo qualche partita tutte le carte sono in memoria e si riconoscono subito, anche quando sotto il mazzo se ne vede solo un pezzo. Così le domande spariscono. Le carte rimaste disegnate in mano per errore dal sito vengono ignorate. L'app legge solo i pixel dello schermo: non tocca il sito e le carte le giochi sempre tu.
+
+BrisMaster guarda tutto il monitor e tiene solo le carte appoggiate sul tavolo, ignorando il resto del desktop; con più monitor passa a quello dove ci sono le carte. Se sbaglia, **Scegli area** ti fa scegliere il monitor e trascinare un rettangolo attorno al tavolo (la scelta viene ricordata in `Documenti\BrisMaster\schermo.json`, **Automatica** la toglie). **Salva diagnosi** salva in `Documenti\BrisMaster\Diagnosi` quello che l'app vede (foto, riquadri delle carte trovate e cosa ha letto): sono i file da mandare se il riconoscimento non funziona.
 - **Carte uscite**: tabella delle carte già giocate e dei punti ancora in gioco.
 
 ### Come ragiona il motore
@@ -233,4 +237,4 @@ cargo run --release -p poker-sim -- train --iters 300000000 --state stato.bin
 1. Aggiorna `version` in `Cargo.toml` (per esempio `0.3.0`).
 2. Fai push su `main`.
 
-GitHub Actions compila `BrisMaster.exe` su Windows, crea il tag `v0.3.0` e pubblica la release; le app già installate si aggiornano da sole. Il workflow si può anche lanciare a mano da *Actions → Release → Run workflow*.
+GitHub Actions compila `BrisMaster.exe` e l'installatore `BrisMaster-Setup.exe` (Inno Setup, script in `installer/BrisMaster.iss`) su Windows, crea il tag `v0.3.0` e pubblica la release; le app già installate si aggiornano da sole. Il workflow si può anche lanciare a mano da *Actions → Release → Run workflow*.

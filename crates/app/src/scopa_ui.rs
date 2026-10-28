@@ -214,6 +214,8 @@ struct Vision {
     scene: Option<ScopaScene>,
     /// Candidati annullati dall'utente: se ricompaiono si chiede conferma invece di inserirli.
     doubts: Vec<(Step, Card)>,
+    /// Scelta del monitor e dell'area del tavolo, e diagnosi.
+    picker: crate::vision::screen::AreaPicker,
     /// Distribuzione vista prima di sapere chi comincia (tre carte in mano, quattro in tavola).
     deal: Option<ScopaScene>,
     /// Carta dell'avversario vista di passaggio (anche in una sola lettura) prima che prendesse.
@@ -224,6 +226,8 @@ struct Confirm {
     step: Step,
     card: Card,
     img: Img,
+    /// Fascia della carta che si vedeva sullo schermo.
+    vis: [f32; 2],
     texture: Option<egui::TextureHandle>,
 }
 
@@ -329,8 +333,13 @@ impl Assist {
     fn reset(&mut self) {
         let vision = std::mem::take(&mut self.vision);
         *self = Assist::default();
-        self.vision =
-            Vision { reader: vision.reader, memory: vision.memory, status: vision.status, ..Default::default() };
+        self.vision = Vision {
+            reader: vision.reader,
+            memory: vision.memory,
+            status: vision.status,
+            picker: vision.picker,
+            ..Default::default()
+        };
     }
 
     /// Punteggio della partita contando la smazzata appena finita.
@@ -594,10 +603,10 @@ impl Assist {
                     self.keys.clear();
                     let seen = self.vision.confirm.take();
                     // La carta scritta a mano si impara dall'immagine sullo schermo.
-                    let shown = self.unmatched_view(step).map(|v| v.img.clone());
+                    let shown = self.unmatched_view(step).map(|v| (v.img.clone(), v.vis));
                     if self.enter(c) {
-                        if let Some(img) = seen.map(|v| v.img).or(shown) {
-                            self.vision.memory.lock().unwrap().remember(&img, c);
+                        if let Some((img, vis)) = seen.map(|v| (v.img, v.vis)).or(shown) {
+                            self.vision.memory.lock().unwrap().remember(&img, vis, c);
                         }
                     } else {
                         self.entry_error = Some(format!("{} non è possibile adesso", name(c)));
@@ -819,11 +828,11 @@ impl Assist {
             let img = view.img.clone();
             let len = self.history.len();
             if self.enter(card) {
-                self.vision.memory.lock().unwrap().remember(&img, card);
+                self.vision.memory.lock().unwrap().remember(&img, view.vis, card);
                 self.vision.last = Some((card, img, len));
             }
         } else {
-            self.vision.confirm = Some(Confirm { step, card, img: view.img.clone(), texture: None });
+            self.vision.confirm = Some(Confirm { step, card, img: view.img.clone(), vis: view.vis, texture: None });
         }
     }
 
@@ -831,7 +840,7 @@ impl Assist {
     fn accept_vision(&mut self) {
         let Some(c) = self.vision.confirm.take() else { return };
         if c.step == self.step() && self.enter(c.card) {
-            self.vision.memory.lock().unwrap().remember(&c.img, c.card);
+            self.vision.memory.lock().unwrap().remember(&c.img, c.vis, c.card);
         }
     }
 
@@ -1103,6 +1112,9 @@ fn vision_ui(a: &mut Assist, ui: &mut egui::Ui) {
         return;
     }
     ui.label(RichText::new(&a.vision.status).small().weak());
+    let last = a.vision.reader.as_ref().and_then(|r| r.last_frame());
+    let summary = a.vision.status.clone();
+    a.vision.picker.controls(ui, last, &summary);
     let ctx = ui.ctx().clone();
     if let Some(c) = &mut a.vision.confirm {
         let tex = c.texture.get_or_insert_with(|| {
@@ -1438,7 +1450,7 @@ mod tests {
             let v = ((i / 7) as u32).wrapping_mul(c as u32 + 3).wrapping_mul(2654435761).wrapping_shr(24) as u8;
             *p = [v, v / 2, 255 - v];
         }
-        CardView { img, partial: false, scores }
+        CardView { img, partial: false, vis: crate::vision::WHOLE, sim: [0.0; 40], scores }
     }
 
     fn scene(table: &[Card], hand: &[Card]) -> ScopaScene {

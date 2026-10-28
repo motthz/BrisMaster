@@ -2,7 +2,8 @@
 
 use crate::cards_ui::{self, BEST, CARD_SIZE, GOLD};
 use crate::record::{self, Advice, CardRec, Event, Recorder};
-use crate::vision::{memory::Memory, read_briscola, CardView, Img, Reader, Reading, Scene};
+use crate::vision::memory::{similarity, Memory};
+use crate::vision::{read_briscola, CardView, Img, Reader, Reading, Scene};
 use briscola_core::ai::{evaluate_with_log, MoveEval};
 use briscola_core::infer;
 use briscola_core::cards::{self, Card, CardSet};
@@ -337,15 +338,21 @@ struct Vision {
     last: Option<(Card, Img, usize)>,
     /// Ultima scena letta: serve a ricordare la carta pescata quando l'utente la scrive a mano.
     scene: Option<Scene>,
+    /// Immagine della briscola di questa partita: se sullo schermo ne compare un'altra, il sito ha
+    /// distribuito una nuova partita.
+    trump_img: Option<Img>,
     /// Candidati annullati dall'utente: se ricompaiono si chiede conferma invece di inserirli.
     doubts: Vec<(Step, Card)>,
+    /// Scelta del monitor e dell'area del tavolo, e diagnosi.
+    picker: crate::vision::screen::AreaPicker,
 }
 
 struct Confirm {
     step: Step,
     card: Card,
     img: Img,
-    partial: bool,
+    /// Fascia della carta che si vedeva sullo schermo.
+    vis: [f32; 2],
     texture: Option<egui::TextureHandle>,
 }
 
@@ -430,8 +437,13 @@ impl Assistant {
     fn reset(&mut self) {
         let vision = std::mem::take(&mut self.vision);
         *self = Assistant::default();
-        self.vision =
-            Vision { reader: vision.reader, memory: vision.memory, status: vision.status, ..Default::default() };
+        self.vision = Vision {
+            reader: vision.reader,
+            memory: vision.memory,
+            status: vision.status,
+            picker: vision.picker,
+            ..Default::default()
+        };
         self.vision.doubts.clear();
     }
 
@@ -596,13 +608,17 @@ impl Assistant {
                     // La carta che l'utente scrive a mano si impara dall'immagine sullo schermo:
                     // la pescata (l'unica carta della mano non ancora nota) o quella dell'avversario.
                     let shown = match self.pos.step() {
-                        Step::Draw(_) => self.new_hand_view().map(|v| v.img.clone()),
+                        Step::Trump => {
+                            let trump = self.vision.scene.as_ref().and_then(|s| s.trump.as_ref());
+                            trump.map(|v| (v.img.clone(), v.vis))
+                        }
+                        Step::Draw(_) => self.new_hand_view().map(|v| (v.img.clone(), v.vis)),
                         Step::OppMove => self.opp_view_of(c),
                         _ => None,
                     };
                     if self.enter(c) {
-                        if let Some(img) = seen.filter(|v| !v.partial).map(|v| v.img).or(shown) {
-                            self.vision.memory.lock().unwrap().remember(&img, c);
+                        if let Some((img, vis)) = seen.map(|v| (v.img, v.vis)).or(shown) {
+                            self.vision.memory.lock().unwrap().remember(&img, vis, c);
                         }
                     } else {
                         self.entry_error = Some(format!("{} non è possibile adesso", cards::name(c)));
@@ -677,14 +693,35 @@ impl Assistant {
         self.vision.seen = Some(sig);
     }
 
+    /// Vero se lo schermo mostra una partita nuova: briscola scoperta, tre carte in mano e tavolo
+    /// vuoto, quando la partita in corso è finita, ha il mazzo esaurito (la briscola non si
+    /// vedrebbe più) o aveva un'altra briscola. Così si riparte anche dopo una partita interrotta.
+    fn new_deal(&mut self, scene: &Scene) -> bool {
+        let Some(t) = &scene.trump else { return false };
+        if self.pos.trump_card.is_none() {
+            return false;
+        }
+        let fresh = scene.hand.len() == 3 && scene.opp_slot.is_none() && scene.my_slot.is_none();
+        let Some(known) = &self.vision.trump_img else {
+            // Prima lettura della briscola di questa partita (anche se l'utente l'ha scritta a mano).
+            self.vision.trump_img = Some(t.img.clone());
+            return fresh && self.pos.step() == Step::Over;
+        };
+        let other_trump = similarity(known, &t.img, t.vis) < 0.75;
+        if !other_trump {
+            // Segue i piccoli cambiamenti (il mazzo che si assottiglia sopra la briscola).
+            self.vision.trump_img = Some(t.img.clone());
+        }
+        fresh && (self.pos.step() == Step::Over || self.pos.deck_len == 0 || other_trump)
+    }
+
     /// Un passo della partita a partire dalla lettura dello schermo.
     fn sync_step(&mut self, scene: &Scene) {
+        if self.new_deal(scene) {
+            self.reset();
+        }
         let step = self.pos.step();
         if step == Step::Over {
-            // Il sito ha distribuito una nuova partita.
-            if scene.trump.is_some() && scene.hand.len() == 3 {
-                self.reset();
-            }
             return;
         }
         if self.vision.confirm.is_some() {
@@ -731,14 +768,12 @@ impl Assistant {
             let img = view.img.clone();
             let len = self.history.len();
             if self.enter(card) {
-                if !view.partial {
-                    self.vision.memory.lock().unwrap().remember(&img, card);
-                }
+                self.vision.memory.lock().unwrap().remember(&img, view.vis, card);
                 self.vision.last = Some((card, img, len));
             }
         } else {
             self.vision.confirm =
-                Some(Confirm { step, card, img: view.img.clone(), partial: view.partial, texture: None });
+                Some(Confirm { step, card, img: view.img.clone(), vis: view.vis, texture: None });
         }
     }
 
@@ -755,18 +790,39 @@ impl Assistant {
 
     /// L'immagine della carta dell'avversario sullo schermo, se somiglia a `c` più che alle carte
     /// già giocate (altrimenti è ancora quella della presa precedente).
-    fn opp_view_of(&self, c: Card) -> Option<Img> {
+    fn opp_view_of(&self, c: Card) -> Option<(Img, [f32; 2])> {
         let v = self.vision.scene.as_ref()?.opp_slot.as_ref()?;
         let old = self.pos.played.iter().map(|p| v.scores[p as usize]).fold(f32::MIN, f32::max);
-        (v.scores[c as usize] > old).then(|| v.img.clone())
+        (v.scores[c as usize] > old).then(|| (v.img.clone(), v.vis))
     }
 
     /// L'utente conferma la carta riconosciuta con poca sicurezza: si inserisce e si ricorda.
     fn accept_vision(&mut self) {
         let Some(c) = self.vision.confirm.take() else { return };
-        if c.step == self.pos.step() && self.enter(c.card) && !c.partial {
-            self.vision.memory.lock().unwrap().remember(&c.img, c.card);
+        if c.step == self.pos.step() && self.enter(c.card) {
+            self.vision.memory.lock().unwrap().remember(&c.img, c.vis, c.card);
         }
+    }
+
+    /// Testo per la diagnosi: cosa si vede e cosa è stato riconosciuto.
+    fn vision_summary(&self) -> String {
+        let mut out = format!("{}\n", self.vision.status);
+        let Some(s) = &self.vision.scene else { return out };
+        let mut line = |what: &str, v: &CardView| {
+            let mut sc: Vec<(Card, f32)> = (0..40u8).map(|c| (c, v.scores[c as usize])).collect();
+            sc.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let top: Vec<String> = sc[..3].iter().map(|(c, x)| format!("{} {x:.1}", cards::name(*c))).collect();
+            out += &format!("{what}: {}{}\n", top.join(" · "), if v.partial { " (vista a metà)" } else { "" });
+        };
+        for (what, v) in [("Briscola", &s.trump), ("Avversario", &s.opp_slot), ("Tua giocata", &s.my_slot)] {
+            if let Some(v) = v {
+                line(what, v);
+            }
+        }
+        for v in &s.hand {
+            line("Mano", v);
+        }
+        out
     }
 
     /// Interruttore, stato e richiesta di conferma della lettura dello schermo.
@@ -790,6 +846,9 @@ impl Assistant {
             return;
         }
         ui.label(RichText::new(&self.vision.status).small().weak());
+        let last = self.vision.reader.as_ref().and_then(|r| r.last_frame());
+        let summary = self.vision_summary();
+        self.vision.picker.controls(ui, last, &summary);
         let ctx = ui.ctx().clone();
         if let Some(c) = &mut self.vision.confirm {
             let tex = c.texture.get_or_insert_with(|| {
@@ -1605,7 +1664,7 @@ mod tests {
             let v = ((i / 7) as u32).wrapping_mul(c as u32 + 3).wrapping_mul(2654435761).wrapping_shr(24) as u8;
             *p = [v, v / 2, 255 - v];
         }
-        CardView { img, partial: false, scores }
+        CardView { img, partial: false, vis: crate::vision::WHOLE, sim: [0.0; 40], scores }
     }
 
     /// Ogni lettura arriva due volte, come dallo schermo (la prima si scarta per prudenza).
@@ -1646,6 +1705,30 @@ mod tests {
         // La presa vecchia ancora in tavola non viene contata due volte.
         assert_eq!(a.pos.step(), Step::OppMove);
         assert_eq!(a.pos.tricks, 1);
+    }
+
+    /// Una partita interrotta a metà: quando compare un'altra briscola con tre carte nuove in mano
+    /// e il tavolo vuoto, si riparte da capo senza premere "Nuova partita".
+    #[test]
+    fn notices_new_deal_mid_game() {
+        let mut a = Assistant::default();
+        let c = |s, r| cards::make(s, r);
+        let hand = vec![seen(c(3, 1), 4.0), seen(c(2, 6), 4.0), seen(c(1, 0), 4.0)];
+        let scene = Scene { trump: Some(seen(c(0, 8), 4.0)), hand: hand.clone(), ..Default::default() };
+        show(&mut a, &scene);
+        a.set_first(ME);
+        show(&mut a, &scene);
+        assert_eq!(a.pos.step(), Step::MyMove);
+        // Stessa briscola, stessa mano: niente da rifare.
+        show(&mut a, &scene);
+        assert_eq!(a.pos.trump_card, Some(c(0, 8)));
+        assert_eq!(a.pos.first, Some(ME));
+        // Il sito distribuisce di nuovo: briscola diversa.
+        let new_hand = vec![seen(c(2, 0), 4.0), seen(c(3, 4), 4.0), seen(c(1, 5), 4.0)];
+        let deal = Scene { trump: Some(seen(c(1, 2), 4.0)), hand: new_hand, ..Default::default() };
+        show(&mut a, &deal);
+        assert_eq!(a.pos.trump_card, Some(c(1, 2)));
+        assert_eq!(a.pos.step(), Step::First);
     }
 
     /// Se la carta è incerta si chiede conferma; se l'utente annulla una carta letta male,

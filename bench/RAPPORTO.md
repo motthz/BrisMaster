@@ -1,5 +1,95 @@
 # Rapporto dei test massivi
 
+## Aggiornamento 2026-10-28: Massima deduce le carte avversarie
+
+Giocatore provato: **Massima con deduzione** (`infer:20000:1:1000:0.25`): l'ISMCTS potenziato a 20.000
+iterazioni dell'assistente che, invece di immaginare a caso le carte dell'avversario, pesa 1.000 mani
+possibili con la probabilità che con quelle carte avrebbe giocato proprio come ha giocato. La probabilità
+la dà una piccola rete di politica (`crates/core/nets/politica.bin`) allenata su 60.000 partite tra motori.
+Un **minimo del 25%** (ogni mossa conta almeno come una mossa a caso per un quarto) fa sì che un avversario
+che gioca in modo diverso dal modello non porti a escludere mani possibili.
+
+Ogni riga: 4.000 mazzi giocati due volte a posti invertiti (8.000 partite), seme `20261027`.
+Riferimento: Massima di oggi (`ismcts+:20000`, identica alla v0.4.1).
+
+| Avversario | Con deduzione | IC 95% | Massima senza deduzione | Differenza |
+|---|---:|---|---:|---:|
+| Massima (ISMCTS potenziato, 20.000 iterazioni) | **52,4%** | 51,5% – 53,4% | 50% per costruzione | **+2,4** |
+| ISMCTS (20.000 iterazioni) | **57,1%** | 56,1% – 58,2% | 54,9%¹ | +2,2 |
+| Motore PIMC (3000 mondi) | **54,5%** | 53,5% – 55,6% | 53,0%¹ | +1,5 |
+| Motore PIMC (400 mondi) con 10% di errori | **63,3%** | 62,3% – 64,3% | 62,3% | +1,0 |
+| Euristico | **77,7%** | 76,9% – 78,6% | 77,1% | +0,6 |
+| Contacarte | **74,5%** | 73,5% – 75,4% | 74,1% | +0,4 |
+
+¹ Valori del thread precedente (8.000 partite, stesso giocatore, altro seme).
+
+Tempo per mossa (bench, un thread, questa macchina): 191 ms di media a mazzo lungo invece di 172,
+62 invece di 28 nel finale col mazzo corto, massimo 260 ms. Resta molto sotto il secondo.
+
+### Prova ampia: contro 17 stili, con e senza minimo
+
+Per capire se la deduzione può fare danni contro chi gioca in modo diverso dal modello, la stessa prova
+a 2.000 iterazioni (più veloce) contro tutti gli stili del banco di prova, 1.500 mazzi (3.000 partite) per riga,
+stessi mazzi per le tre versioni. IC 95% di ogni riga circa ±1,5 punti. Questa prova usava una prima rete di
+politica allenata su 20.000 partite; quella inclusa nell'app (60.000 partite) è la stessa delle righe a 20.000 iterazioni.
+
+| Avversario | Senza deduzione | Deduzione senza minimo | Deduzione con minimo 25% |
+|---|---:|---:|---:|
+| Casuale | 95,3% | 94,7% (-0,6) | **94,3%** (-1,0) |
+| Euristico | 73,8% | 73,3% (-0,5) | **76,2%** (+2,4) |
+| Aggressivo | 81,8% | 81,5% (-0,3) | **82,5%** (+0,7) |
+| Risparmiatore | 75,2% | 75,4% (+0,2) | **77,2%** (+1,9) |
+| Briscolone | 79,9% | 79,2% (-0,7) | **81,8%** (+2,0) |
+| Contacarte | 70,0% | 69,5% (-0,4) | **72,3%** (+2,4) |
+| Euristico con 30% di errori | 82,6% | 82,1% (-0,6) | **83,4%** (+0,8) |
+| Rispondi di seme | 78,4% | 78,5% (+0,1) | **79,8%** (+1,5) |
+| Butta-carichi | 77,2% | 77,1% (-0,1) | **78,0%** (+0,8) |
+| Mai briscola | 86,8% | 87,6% (+0,8) | **87,0%** (+0,2) |
+| Motore PIMC (400 mondi) con 10% di errori | 57,3% | 59,1% (+1,8) | **58,5%** (+1,2) |
+| Motore PIMC (150 mondi) | 51,8% | 53,4% (+1,6) | **53,4%** (+1,6) |
+| Motore PIMC (400 mondi) | 48,7% | 49,8% (+1,1) | **51,9%** (+3,2) |
+| ISMCTS (500 iterazioni) | 64,5% | 64,4% (-0,1) | **64,9%** (+0,4) |
+| ISMCTS (2000 iterazioni) | 56,0% | 57,6% (+1,6) | **59,6%** (+3,6) |
+| ISMCTS (5000 iterazioni) | 55,8% | 57,9% (+2,0) | **55,9%** (+0,1) |
+| ISMCTS potenziato (2000 iterazioni), lo stesso giocatore senza deduzione | 49,6% | 53,1% (+3,5) | **52,8%** (+3,2) |
+
+Senza minimo la deduzione peggiora leggermente contro 8 stili su 17 (quelli che giocano diversamente
+dal modello); con il minimo migliora contro 16 stili su 17. L'unico calo è contro il giocatore a caso
+(−1,0, un piccolo calo al limite del margine di errore), contro cui il motore vince comunque il 94%. Per questo l'assistente
+usa il minimo del 25%. A 20.000 iterazioni il guadagno contro gli stili umani è più piccolo (+0,4 / +0,6)
+perché il motore è già molto avanti; contro gli avversari forti resta di +1,5 / +2,4 punti.
+
+### Obiettivo 60%
+
+Con la deduzione il motore è sopra il 60% contro tutti gli stili umani del banco di prova e contro il motore
+forte ma distratto (63%). Contro gli algoritmi forti (ISMCTS a 20.000 iterazioni 57%, motore a 3000 mondi 54,5%,
+Massima 52,4%) il 60% non c'è: contro un avversario forte quanto lui il massimo teorico è il 50%.
+
+### Cosa non ha funzionato
+
+- **Rete di valutazione** al posto delle simulazioni (allenata sugli esiti di 60.000 partite): a parità di
+  iterazioni vale quanto le simulazioni (50,1%) ed è circa 2,3 volte più veloce, ma a parità di tempo non vince
+  di più (51,1% contro 52,0%, 2.000 partite). Resta nel banco di prova (`net:`), non nell'app.
+- **Più tempo per mossa**: Massima contro sé stessa a 50.000 iterazioni, 50,3% ± 4,1 su 500 partite: nessun
+  segno di guadagno (conferma il limite trovato prima). Prova interrotta per dare i core alla deduzione.
+- **Baro** (vede la mano avversaria): batte Massima 74,3% a 25,7% (1.000 partite). È il tetto di quanto può
+  valere sapere le carte avversarie; la deduzione ne recupera una piccola parte.
+
+### Come riprodurlo
+
+```
+# dati e reti
+cargo run --release -p briscola-sim --bin selfplay -- --out dati --games 60000 --player ismcts+:2000
+cargo run --release -p briscola-sim --bin train -- --data dati --kind policy --out crates/core/nets/politica.bin --epochs 12
+# confronto
+BRISCOLA_POLICY=crates/core/nets/politica.bin cargo run --release -p briscola-sim -- \
+  --player infer:20000:1:1000:0.25 --opponent ismcts+:20000 --deals 4000 --seed 20261027
+```
+
+---
+
+## Rapporto precedente (2026-10-22)
+
 Motore provato: **Motore PIMC (1000 mondi)** (`engine:1000`), commit `fbd3d28`, 2026-10-22.
 Ogni riga: 5000 mazzi giocati due volte a posti invertiti (10000 partite), seme `20261022`. Gli stessi mazzi per tutti gli avversari.
 

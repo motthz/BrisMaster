@@ -32,7 +32,7 @@ Il motore usa il **Monte Carlo determinizzato** (PIMC):
 3. Quando nel mazzo restano otto carte o meno risolve ogni distribuzione in modo esatto con alfa-beta.
 4. Gioca la carta con la probabilità di vittoria più alta (a parità, quella con più punti attesi).
 
-Nell'Assistente la precisione di serie (Massima) usa invece l'**ISMCTS potenziato**: una ricerca ad albero sugli insiemi di informazione che, a ogni iterazione, sceglie una distribuzione delle carte coperte, scende nell'albero delle mosse già provate e finisce la partita con le stesse simulazioni del motore. Con 20.000 iterazioni (circa 40 ms a mossa) batte il motore a 3000 mondi nel 53% delle partite. Le precisioni Veloce e Normale usano il motore a 1000 e 3000 mondi.
+Nell'Assistente la precisione di serie (Massima) usa invece l'**ISMCTS potenziato**: una ricerca ad albero sugli insiemi di informazione che, a ogni iterazione, sceglie una distribuzione delle carte coperte, scende nell'albero delle mosse già provate e finisce la partita con le stesse simulazioni del motore. Con 20.000 iterazioni (circa 40 ms a mossa) batte il motore a 3000 mondi nel 53% delle partite. Dalla v0.5.0 deduce anche le carte dell'avversario da come ha giocato: pesa le mani possibili con una piccola rete allenata su 60.000 partite tra motori, e così batte la Massima precedente nel 52,4% delle partite e il motore a 3000 mondi nel 54,5% (dettagli in `bench/RAPPORTO.md`). Le precisioni Veloce e Normale usano il motore a 1000 e 3000 mondi.
 
 Il motore vede solo quello che vedrebbe un giocatore: le simulazioni non sbirciano mai la mano avversaria.
 

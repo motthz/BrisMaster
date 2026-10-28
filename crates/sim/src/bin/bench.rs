@@ -1,7 +1,7 @@
 //! Misura i tempi di risposta del motore, fase per fase della partita.
 //!
 //! Uso:
-//!   bench [--positions N] [--samples MONDI] [--threads T] [--solve SOGLIA] [--rsolve SOGLIA|no] [--ismcts ITERAZIONI] [--seed X]
+//!   bench [--positions N] [--samples MONDI] [--threads T] [--solve SOGLIA] [--rsolve SOGLIA|no] [--ismcts ITERAZIONI [--infer]] [--seed X]
 //!
 //! Senza `--solve` si usa la soglia del motore predefinito.
 //!
@@ -28,18 +28,30 @@ fn main() {
 
     // Posizioni di prova distribuite su tutta la partita.
     let mut rng = SmallRng::seed_from_u64(seed);
+    // Con --infer si misura la valutazione dell'assistente con la deduzione delle carte
+    // avversarie: serve il registro della partita visto da chi deve muovere.
+    let infer = args.iter().any(|a| a == "--infer");
     let mut obs_list = Vec::new();
+    let mut logs = Vec::new();
     while obs_list.len() < positions {
         let first = rng.gen_range(0..2);
         let mut g = Game::new(&mut rng, first);
         let stop = rng.gen_range(0..38);
+        let mut moves = Vec::new();
         for _ in 0..stop {
             let p = g.to_move() as usize;
             let c = heuristic_move(g.hands[p], g.table, g.trump);
+            moves.push((g, c));
             g.play(c);
         }
         if !g.is_over() && g.legal_moves().len() > 1 {
-            obs_list.push(Observation::of(&g, g.to_move()));
+            let me = g.to_move();
+            let mut log = briscola_core::infer::Log::default();
+            for (before, c) in &moves {
+                log.before_play(before, me, *c);
+            }
+            obs_list.push(Observation::of(&g, me));
+            logs.push(log.events);
         }
     }
 
@@ -60,9 +72,9 @@ fn main() {
     let mut print: u64 = 0;
     let mut eval_rng = SmallRng::seed_from_u64(seed ^ 0xABCD);
     let total = Instant::now();
-    for obs in &obs_list {
+    for (obs, log) in obs_list.iter().zip(&logs) {
         let t = Instant::now();
-        let ev = evaluate(obs, &cfg, &mut eval_rng);
+        let ev = if infer { evaluate_with_log(obs, &cfg, log, &mut eval_rng) } else { evaluate(obs, &cfg, &mut eval_rng) };
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         let phase = if obs.deck_len > cfg.solve_deck_len { 0 } else if obs.deck_len > 0 { 1 } else { 2 };
         times[phase].push(ms);

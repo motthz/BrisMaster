@@ -16,7 +16,7 @@ Giochi: **briscola**, **scopa**, **scala 40**, **burraco**, **sette e mezzo**, *
 
 Chi preferisce può scaricare solo `BrisMaster.exe` e avviarlo da una cartella sua, senza installazione. Se prima usavi l'exe così e passi all'installatore, cancella pure il vecchio exe: i dati sono in `Documenti\BrisMaster` e restano.
 
-Gli aggiornamenti sono automatici: all'avvio l'app controlla le release di questo repository e, se ce n'è una più recente, mostra il pulsante **Installa**. L'app scarica la nuova versione, sostituisce l'eseguibile e si riavvia.
+Gli aggiornamenti sono automatici: all'avvio l'app controlla le release di questo repository e, se ce n'è una più recente, mostra il pulsante **Installa**. L'app scarica l'installatore della nuova versione e lo avvia: l'installazione si aggiorna da sola e l'app si riapre. (Fino alla 0.5.1 l'app sostituiva sé stessa mentre era in esecuzione, e gli antivirus come Bitdefender la mettevano in quarantena.)
 
 ## Briscola
 

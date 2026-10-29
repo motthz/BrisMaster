@@ -51,8 +51,9 @@ Name: "{autoprograms}\BrisMaster"; Filename: "{app}\BrisMaster.exe"
 Name: "{autodesktop}\BrisMaster"; Filename: "{app}\BrisMaster.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\BrisMaster.exe"; Description: "Avvia BrisMaster"; Flags: nowait postinstall skipifsilent
+; Anche dopo l'aggiornamento automatico (installazione silenziosa) l'app si riapre da sola.
+Filename: "{app}\BrisMaster.exe"; Description: "Avvia BrisMaster"; Flags: nowait postinstall
 
 [UninstallDelete]
-; File lasciati dagli aggiornamenti automatici.
+; File lasciati dagli aggiornamenti automatici delle versioni fino alla 0.5.1.
 Type: files; Name: "{app}\.BrisMaster-*.exe.new"

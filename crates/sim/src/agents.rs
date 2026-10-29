@@ -8,7 +8,7 @@
 //!       | eng:CHIAVE=VALORE,...        (varianti del motore attuale, vedi make_player)
 //!       | noisy:ERRORE:SPEC            (es. noisy:0.25:heuristic)
 //!       | net:ITERAZIONI[:PESO]        (ISMCTS potenziato con la rete di BRISCOLA_NET nelle foglie)
-//!       | infer:ITERAZIONI:TEMP[:MANI[:MINIMO]][:net|:onesta] (ISMCTS potenziato che deduce le carte avversarie
+//!       | infer:ITERAZIONI:TEMP[:MANI[:MINIMO]][:net|:onesta[PESO%]] (ISMCTS potenziato che deduce le carte avversarie
 //!                                      con la rete di politica di BRISCOLA_POLICY)
 //!       | peek:ITERAZIONI              (baro: ISMCTS potenziato che vede la mano avversaria)
 //!       | vedetutto:ITERAZIONI         (super-baro: vede la mano avversaria e l'ordine del mazzo)
@@ -380,15 +380,18 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
 fn make_infer(rest: &str, spec: &str) -> Result<Infer, String> {
     // infer:ITERAZIONI:TEMPERATURA[:MANI[:MINIMO]][:net|:onesta]
     let mut parts: Vec<&str> = rest.split(':').collect();
-    let honest = parts.last() == Some(&"onesta");
+    // onesta[PESO%]: rete onesta nelle foglie, da sola o in media con la simulazione (es. onesta50).
+    let honest = parts.last().and_then(|p| p.strip_prefix("onesta")).map(|w| if w.is_empty() { Ok(1.0) } else {
+        w.parse::<f64>().map(|w| w / 100.0).map_err(|_| format!("peso non valido in '{spec}'"))
+    }).transpose()?;
     let with_net = parts.last() == Some(&"net");
-    if with_net || honest {
+    if with_net || honest.is_some() {
         parts.pop();
     }
     let num = |i: usize, d: f64| parts.get(i).map_or(Ok(d), |s| s.parse::<f64>().map_err(|_| format!("numero non valido in '{spec}'")));
     let n = num(0, 0.0)? as u32;
-    let search = if honest {
-        IsmctsPlayer::with_honest_net(n, value_net()?, 1.0)
+    let search = if let Some(mix) = honest {
+        IsmctsPlayer::with_honest_net(n, value_net()?, mix)
     } else if with_net {
         IsmctsPlayer::with_net(n, value_net()?, 1.0)
     } else {
@@ -444,7 +447,8 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
         // esatta:ITERAZIONI:TEMPERATURA:MINIMO[:net|:onesta] — come infer:, ma con tutte le mani possibili pesate in modo esatto.
         let mut p: Vec<&str> = rest.split(':').collect();
         let suffix = match p.last() {
-            Some(&"net") | Some(&"onesta") => format!(":{}", p.pop().unwrap()),
+            Some(&"net") => format!(":{}", p.pop().unwrap()),
+            Some(x) if x.starts_with("onesta") => format!(":{}", p.pop().unwrap()),
             _ => String::new(),
         };
         let (n, t, f) = (p.first().copied().unwrap_or("0"), p.get(1).copied().unwrap_or("1"), p.get(2).copied().unwrap_or("0.25"));

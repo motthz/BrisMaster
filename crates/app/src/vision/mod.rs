@@ -103,6 +103,23 @@ pub const CARD_H: usize = 160;
 pub const WHOLE: [f32; 2] = [0.0, 1.0];
 /// Punti per unità di somiglianza: un distacco di 0.175 basta per inserire la carta senza conferma.
 const SCALE: f32 = 8.0;
+/// Una carta quasi identica a quella di riferimento (stesso disegno del sito) con la seconda
+/// lontana è sicura anche se il distacco è moderato (il cinque e il quattro di coppe, quando del
+/// cinque si vede solo metà).
+const EXACT: f32 = 0.95;
+const EXACT_GAP: f32 = 0.88;
+const EXACT_BONUS: f32 = 1.0;
+
+/// Punteggi delle 40 carte dalla somiglianza con le carte di riferimento.
+fn reference_scores(sim: &[f32; 40]) -> [f32; 40] {
+    let mut s = sim.map(|v| v * SCALE);
+    let mut order: Vec<usize> = (0..40).collect();
+    order.sort_by(|&a, &b| sim[b].total_cmp(&sim[a]));
+    if sim[order[0]] >= EXACT && sim[order[1]] <= EXACT_GAP {
+        s[order[0]] += EXACT_BONUS;
+    }
+    s
+}
 
 use briscola_core::cards::{Card, CardSet};
 pub use detect::ScopaScene;
@@ -114,7 +131,7 @@ use std::sync::{Arc, Mutex};
 /// Punteggi della carta: somiglianza con le carte di riferimento, più quella con le immagini delle
 /// carte già viste su questo sito (che quando c'è decide).
 pub fn recognize(view: &mut CardView, mem: &Memory) {
-    let mut s = view.sim.map(|v| v * SCALE);
+    let mut s = reference_scores(&view.sim);
     for (c, sim) in mem.similarity(&view.img, view.vis).iter().enumerate() {
         if let Some(v) = *sim {
             if v >= memory::SAME {
@@ -127,7 +144,7 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
 
 impl CardView {
     pub fn new(img: Img, vis: [f32; 2], sim: [f32; 40]) -> CardView {
-        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: sim.map(|v| v * SCALE) }
+        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim) }
     }
 
     /// La carta più probabile fra `among`, e quanto stacca la seconda.
@@ -343,6 +360,27 @@ mod tests {
             }
         }
         check(&read(&img));
+    }
+
+    /// Screenshot vero di un altro sito (Solitalian), con il tavolo di legno chiaro e un altro disegno
+    /// delle carte: in mano due di spade, due di bastoni e sette di denari; la briscola, più piccola
+    /// e coperta per metà dal mazzo, è il cinque di coppe. Tutto si inserisce senza conferma.
+    #[test]
+    fn reads_solitalian() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/solitalian_briscola.png");
+        let s = read(&capture::load_png(&path).unwrap());
+        let name = |v: &CardView| {
+            let (c, margin) = v.best(CardSet::FULL).unwrap();
+            assert!(margin >= 1.4, "{} distacco {margin}", cards::name(c));
+            cards::name(c)
+        };
+        let hand: Vec<String> = s.hand.iter().map(name).collect();
+        let want = [cards::make(2, 1), cards::make(3, 1), cards::make(0, 6)].map(cards::name);
+        assert_eq!(hand, want.to_vec());
+        let t = s.trump.as_ref().expect("briscola");
+        assert!(t.partial);
+        assert_eq!(name(t), cards::name(cards::make(1, 4)));
+        assert!(s.opp_slot.is_none() && s.my_slot.is_none(), "niente carte in tavola");
     }
 
     /// Una carta vista intera (in mano) si riconosce con sicurezza anche quando torna sotto il mazzo,

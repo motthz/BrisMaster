@@ -1,18 +1,48 @@
-//! Le 40 carte napoletane di riferimento, in `assets/carte_napoletane.png`: quattro righe (denari,
-//! coppe, bastoni, spade) e dieci colonne (dall'asso al sette, fante, cavallo, re).
+//! Le 40 carte napoletane di riferimento, in più stili di disegno (i siti non usano tutti lo stesso
+//! mazzo): ogni stile è un foglio con quattro righe (denari, coppe, bastoni, spade) e dieci colonne
+//! (dall'asso al sette, fante, cavallo, re).
+//! - `assets/carte_napoletane_wiki.jpg`: il mazzo napoletano di Wikimedia Commons (pubblico
+//!   dominio, <https://commons.wikimedia.org/wiki/Category:Naples_deck>), il più diffuso sui siti;
+//!   è anche quello disegnato nell'app.
+//! - `assets/carte_napoletane.png`: un secondo disegno, con colori più scuri.
 //!
 //! Una carta raddrizzata si confronta con ciascuna in miniatura: luminosità e due differenze di
 //! colore (rosso-verde, giallo-blu), con la correlazione normalizzata, che non bada a quanto lo
-//! schermo è chiaro, scuro o saturo. Ogni sito disegna le carte con un bordo bianco diverso: si
-//! provano più ritagli e piccoli spostamenti e si tiene il migliore. Della carta coperta in parte si
-//! confronta solo la fascia visibile.
+//! schermo è chiaro, scuro o saturo; per ogni carta vale lo stile che le somiglia di più. Ogni sito
+//! disegna le carte con un bordo bianco diverso: si provano più ritagli e piccoli spostamenti e si
+//! tiene il migliore. Della carta coperta in parte si confronta solo la fascia visibile.
 
-use super::{Img, CARD_H, CARD_W};
+use super::{hsv, Img, CARD_H, CARD_W};
 use briscola_core::cards;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-pub const SHEET: &[u8] = include_bytes!("../../assets/carte_napoletane.png");
+/// Un mazzo di riferimento: il foglio e il margine tolto a ogni carta (orizzontale, verticale).
+struct Style {
+    bytes: &'static [u8],
+    format: image::ImageFormat,
+    margin: (f32, f32),
+}
+
+const STYLES: [Style; 2] = [
+    Style {
+        bytes: include_bytes!("../../assets/carte_napoletane_wiki.jpg"),
+        format: image::ImageFormat::Jpeg,
+        margin: (0.02, 0.015),
+    },
+    Style {
+        bytes: include_bytes!("../../assets/carte_napoletane.png"),
+        format: image::ImageFormat::Png,
+        margin: (0.03, 0.02),
+    },
+];
+/// Quante carte di riferimento ci sono in tutto (40 per stile).
+const NT: usize = 40 * STYLES.len();
+
+/// Il foglio delle carte disegnate nell'app (lo stile di Wikimedia) e le proporzioni di una carta.
+pub const DISPLAY_SHEET: &[u8] = STYLES[0].bytes;
+pub const DISPLAY_RATIO: f32 = 160.0 / 264.0;
+
 /// Seme di ogni riga del foglio.
 const SUIT_OF_ROW: [u8; 4] = [0, 1, 3, 2];
 
@@ -21,8 +51,21 @@ pub fn sheet_cell(c: cards::Card) -> (usize, usize) {
     let row = SUIT_OF_ROW.iter().position(|&s| s == cards::suit(c)).unwrap_or(0);
     (cards::rank(c) as usize, row)
 }
-/// Margine tolto alle carte del foglio (orizzontale, verticale), dove i bordi sono tagliati male.
-const SHEET_MARGIN: (f32, f32) = (0.03, 0.02);
+
+/// Il foglio di uno stile, decodificato.
+fn sheet(style: &Style) -> Img {
+    let im = image::load_from_memory_with_format(style.bytes, style.format).expect("foglio delle carte").to_rgba8();
+    Img::from_rgba(im.width() as usize, im.height() as usize, im.as_raw())
+}
+
+/// Il rettangolo (x0, y0, x1, y1) della carta `c` nel foglio, senza il margine dello stile.
+fn cell_rect(sheet: &Img, style: &Style, c: cards::Card) -> (f32, f32, f32, f32) {
+    let (cw, ch) = (sheet.w as f32 / 10.0, sheet.h as f32 / 4.0);
+    let (col, row) = sheet_cell(c);
+    let (mx, my) = (style.margin.0 * cw, style.margin.1 * ch);
+    let (x0, y0) = (col as f32 * cw + mx, row as f32 * ch + my);
+    (x0, y0, x0 + cw - 2.0 * mx, y0 + ch - 2.0 * my)
+}
 
 const TW: usize = 16;
 const TH: usize = 26;
@@ -97,25 +140,95 @@ fn corr(o: &Stats, t: &Stats, (r0, r1): (usize, usize)) -> f32 {
     (num / (vo * vt).sqrt()) as f32
 }
 
-/// Le 40 carte di riferimento in miniatura.
+/// Le carte di riferimento in miniatura: per ogni stile le 40 carte (indice stile * 40 + carta).
 fn templates() -> &'static Vec<Stats> {
     static T: OnceLock<Vec<Stats>> = OnceLock::new();
     T.get_or_init(|| {
-        let im = image::load_from_memory_with_format(SHEET, image::ImageFormat::Png)
-            .expect("foglio delle carte")
-            .to_rgba8();
-        let sheet = Img::from_rgba(im.width() as usize, im.height() as usize, im.as_raw());
-        let (cw, ch) = (sheet.w as f32 / 10.0, sheet.h as f32 / 4.0);
-        let mut thumbs = vec![[[0.0; 3]; N]; 40];
-        for (row, &suit) in SUIT_OF_ROW.iter().enumerate() {
-            for col in 0..10 {
-                let (mx, my) = (SHEET_MARGIN.0 * cw, SHEET_MARGIN.1 * ch);
-                let (x0, y0) = (col as f32 * cw + mx, row as f32 * ch + my);
-                let t = sample_thumb(&sheet, x0, y0, x0 + cw - 2.0 * mx, y0 + ch - 2.0 * my);
-                thumbs[cards::make(suit, col as u8) as usize] = t;
+        let mut out = Vec::with_capacity(NT);
+        for style in &STYLES {
+            let sheet = sheet(style);
+            for c in 0..40u8 {
+                let (x0, y0, x1, y1) = cell_rect(&sheet, style, c);
+                out.push(Stats::new(sample_thumb(&sheet, x0, y0, x1, y1)));
             }
         }
-        thumbs.into_iter().map(Stats::new).collect()
+        out
+    })
+}
+
+/// Peso della differenza fra le firme di colore (vedi `Hues`) nella somiglianza.
+const COLOR: f32 = 0.2;
+/// Righe in cui si conta il colore dei disegni.
+const HR: usize = 32;
+/// Colonne in cui si conta il colore dei disegni.
+const HC: usize = 20;
+
+/// Colore dei disegni di una carta, riga per riga (cumulato): quanti punti rossi, gialli, verdi e
+/// blu. Distingue i semi anche quando la disposizione dei simboli è la stessa (il sette di denari,
+/// monete gialle, e il sette di coppe, coppe rosse e verdi) e il disegno del sito è diverso da
+/// quello di riferimento: conta il colore, non la forma.
+struct Hues {
+    rows: [[f32; 4]; HR + 1],
+}
+
+impl Hues {
+    /// Dal rettangolo [x0, x1] x [y0, y1] dell'immagine.
+    fn new(img: &Img, x0: f32, y0: f32, x1: f32, y1: f32) -> Hues {
+        let mut rows = [[0.0; 4]; HR + 1];
+        for j in 0..HR {
+            let mut row = [0.0; 4];
+            for i in 0..HC {
+                for (dx, dy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+                    let x = x0 + (i as f32 + dx) / HC as f32 * (x1 - x0);
+                    let y = y0 + (j as f32 + dy) / HR as f32 * (y1 - y0);
+                    let (h, s, v) = hsv(img.sample(x, y));
+                    if s < 70 || v < 70 {
+                        continue;
+                    }
+                    let bin = match h {
+                        h if !(20.0..330.0).contains(&h) => 0,
+                        h if h < 70.0 => 1,
+                        h if h < 170.0 => 2,
+                        h if h < 260.0 => 3,
+                        _ => 0,
+                    };
+                    row[bin] += 1.0;
+                }
+            }
+            for c in 0..4 {
+                rows[j + 1][c] = rows[j][c] + row[c];
+            }
+        }
+        Hues { rows }
+    }
+
+    /// Proporzione di ciascun colore nella fascia `vis` (None se quasi senza colore).
+    fn share(&self, vis: [f32; 2]) -> Option<[f32; 4]> {
+        let r0 = ((vis[0] * HR as f32).round() as usize).min(HR);
+        let r1 = ((vis[1] * HR as f32).round() as usize).clamp(r0, HR);
+        let mut n = [0.0; 4];
+        for c in 0..4 {
+            n[c] = self.rows[r1][c] - self.rows[r0][c];
+        }
+        let total: f32 = n.iter().sum();
+        // Almeno un punto colorato su cento.
+        (total >= 0.01 * ((r1 - r0) * HC * 4) as f32 && total > 4.0).then(|| n.map(|v| v / total))
+    }
+}
+
+/// Firme di colore delle carte di riferimento (come `templates`).
+fn template_hues() -> &'static Vec<Hues> {
+    static T: OnceLock<Vec<Hues>> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut out = Vec::with_capacity(NT);
+        for style in &STYLES {
+            let sheet = sheet(style);
+            for c in 0..40u8 {
+                let (x0, y0, x1, y1) = cell_rect(&sheet, style, c);
+                out.push(Hues::new(&sheet, x0, y0, x1, y1));
+            }
+        }
+        out
     })
 }
 
@@ -256,14 +369,19 @@ impl Seen {
 /// ritagli e basta a scartare quello che non è una carta; `refine` affina le più somiglianti.
 pub struct Match {
     seen: Seen,
-    /// Per carta: somiglianza migliore e ritaglio (margini) che l'ha data.
-    best: [(f32, f32, f32); 40],
+    /// Colore dei disegni della carta vista, senza il bordo.
+    hues: Hues,
+    /// Per carta di riferimento (stile * 40 + carta): somiglianza migliore e ritaglio (margini)
+    /// che l'ha data.
+    best: Vec<(f32, f32, f32)>,
 }
 
 impl Match {
     pub fn new(card: &Img, vis: [f32; 2]) -> Match {
         let mut seen = Seen::new(card, vis);
-        let mut best = [(-1.0f32, 0.0f32, 0.0f32); 40];
+        let (w, h) = (CARD_W as f32, CARD_H as f32);
+        let hues = Hues::new(card, 0.1 * w, 0.06 * h, 0.9 * w, 0.94 * h);
+        let mut best = vec![(-1.0f32, 0.0f32, 0.0f32); NT];
         for &sx in &SX {
             for &sy in &SY {
                 let crop = Crop::new(sx, sy, 0.0, 0.0);
@@ -275,7 +393,7 @@ impl Match {
                 }
             }
         }
-        Match { seen, best }
+        Match { seen, hues, best }
     }
 
     /// La somiglianza migliore trovata finora.
@@ -287,7 +405,7 @@ impl Match {
     /// abbastanza: non è una carta.
     pub fn refine(mut self) -> [f32; 40] {
         if self.top() >= HOPELESS {
-            let mut order: Vec<usize> = (0..40).collect();
+            let mut order: Vec<usize> = (0..NT).collect();
             order.sort_by(|&x, &y| self.best[y].0.total_cmp(&self.best[x].0));
             for &k in order.iter().take(REFINE) {
                 let (_, sx0, sy0) = self.best[k];
@@ -303,7 +421,28 @@ impl Match {
                 }
             }
         }
-        self.best.map(|b| b.0)
+        // Seme dal colore: si toglie la differenza fra le firme di colore, rispetto alla carta
+        // col colore più vicino (che non perde niente: la somiglianza resta confrontabile con le
+        // soglie per dire se è una carta).
+        let vis = self.seen.vis;
+        if let Some(seen) = self.hues.share(vis) {
+            let dist: Vec<Option<f32>> = template_hues()
+                .iter()
+                .map(|t| t.share(vis).map(|t| seen.iter().zip(&t).map(|(a, b)| (a - b).abs()).sum()))
+                .collect();
+            let closest = dist.iter().flatten().copied().fold(f32::MAX, f32::min);
+            for (slot, d) in self.best.iter_mut().zip(dist) {
+                if let Some(d) = d {
+                    slot.0 -= COLOR * (d - closest);
+                }
+            }
+        }
+        // Per ogni carta vale lo stile che le somiglia di più.
+        let mut out = [f32::MIN; 40];
+        for (k, b) in self.best.iter().enumerate() {
+            out[k % 40] = out[k % 40].max(b.0);
+        }
+        out
     }
 }
 
@@ -314,8 +453,12 @@ mod tests {
     /// Ogni carta del foglio, raddrizzata come quelle dello schermo, riconosce sé stessa.
     #[test]
     fn sheet_cards_recognize_themselves() {
-        let im = image::load_from_memory_with_format(SHEET, image::ImageFormat::Png).unwrap().to_rgba8();
-        let sheet = Img::from_rgba(im.width() as usize, im.height() as usize, im.as_raw());
+        for style in &STYLES {
+            check_style(&sheet(style));
+        }
+    }
+
+    fn check_style(sheet: &Img) {
         let (cw, ch) = (sheet.w as f32 / 10.0, sheet.h as f32 / 4.0);
         for (row, &suit) in SUIT_OF_ROW.iter().enumerate() {
             for col in [0usize, 4, 8] {

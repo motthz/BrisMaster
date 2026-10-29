@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "blackjack-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "rand 0.8.8",
  "serde",
@@ -389,37 +389,37 @@ dependencies = [
 [[package]]
 name = "briscola-core"
 version = "0.5.0"
-dependencies = [
- "rand 0.8.8",
-]
-
-[[package]]
-name = "briscola-core"
-version = "0.5.0"
 source = "git+https://github.com/motthz/brismaster?tag=v0.5.0#fb2c721c0fbed80acc882ac503dd832a8e092c5f"
 dependencies = [
  "rand 0.8.8",
 ]
 
 [[package]]
+name = "briscola-core"
+version = "0.5.1"
+dependencies = [
+ "rand 0.8.8",
+]
+
+[[package]]
 name = "briscola-sim"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "briscola-core 0.1.1",
  "briscola-core 0.2.0",
  "briscola-core 0.3.0",
  "briscola-core 0.5.0",
- "briscola-core 0.5.0 (git+https://github.com/motthz/brismaster?tag=v0.5.0)",
+ "briscola-core 0.5.1",
  "rand 0.8.8",
  "rayon",
 ]
 
 [[package]]
 name = "brismaster"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "blackjack-core",
- "briscola-core 0.5.0",
+ "briscola-core 0.5.1",
  "burraco",
  "chrono",
  "eframe",
@@ -447,7 +447,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "burraco"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "rand 0.8.8",
  "rayon",
@@ -1671,6 +1671,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2793,7 +2795,7 @@ dependencies = [
 
 [[package]]
 name = "poker-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "rand 0.8.8",
  "rayon",
@@ -2801,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "poker-it"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "rand 0.8.8",
  "rayon",
@@ -2809,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "poker-it-sim"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "poker-it",
  "rand 0.8.8",
@@ -2818,7 +2820,7 @@ dependencies = [
 
 [[package]]
 name = "poker-sim"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "poker-core",
  "rand 0.8.8",
@@ -3242,14 +3244,14 @@ dependencies = [
 
 [[package]]
 name = "scala40-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "rand 0.8.8",
 ]
 
 [[package]]
 name = "scala40-sim"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "rand 0.8.8",
  "rayon",
@@ -3267,17 +3269,17 @@ dependencies = [
 
 [[package]]
 name = "scopa-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
- "briscola-core 0.5.0",
+ "briscola-core 0.5.1",
  "rand 0.8.8",
 ]
 
 [[package]]
 name = "scopa-sim"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
- "briscola-core 0.5.0",
+ "briscola-core 0.5.1",
  "rand 0.8.8",
  "rayon",
  "scopa-core",
@@ -3412,9 +3414,9 @@ dependencies = [
 
 [[package]]
 name = "settemezzo"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
- "briscola-core 0.5.0",
+ "briscola-core 0.5.1",
  "rand 0.8.8",
  "rayon",
 ]

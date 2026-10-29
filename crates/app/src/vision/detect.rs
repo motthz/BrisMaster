@@ -134,12 +134,13 @@ impl Paper {
         Paper { lut }
     }
 
-    /// Vero se il colore, bilanciato, è bianco: poco saturo e chiaro.
+    /// Vero se il colore, bilanciato, è bianco: poco saturo (il legno chiaro di un tavolo non lo è
+    /// abbastanza) e chiaro.
     #[inline]
     pub fn is(&self, p: [u8; 3]) -> bool {
         let q = [self.lut[0][p[0] as usize], self.lut[1][p[1] as usize], self.lut[2][p[2] as usize]];
         let (max, min) = (q[0].max(q[1]).max(q[2]) as u32, q[0].min(q[1]).min(q[2]) as u32);
-        max > 190 && (max - min) * 255 < 70 * max
+        max > 190 && (max - min) * 255 < 45 * max
     }
 }
 
@@ -377,7 +378,7 @@ pub fn warp(img: &Img, r: &RotRect) -> Img {
 }
 
 /// Somiglianza minima con una carta di riferimento per credere che sia una carta.
-const ACCEPT: f32 = 0.45;
+const ACCEPT: f32 = 0.40;
 /// Lo stesso per una carta vista in parte: con meno disegno da confrontare serve più somiglianza.
 const ACCEPT_PARTIAL: f32 = 0.50;
 
@@ -443,14 +444,18 @@ fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
     (f.score >= ACCEPT).then_some(f)
 }
 
-/// La zona come pezzo di una carta di misura `card_l` x `card_w`: un lato è largo quanto la carta,
-/// l'altro è la parte che si vede. Si prova la carta intera prolungata da una parte o dall'altra,
+/// La zona come pezzo di una carta con le proporzioni `card_w` / `card_l` delle carte intere: un
+/// lato è largo quanto la carta, l'altro è la parte che si vede. La carta può essere disegnata più
+/// piccola o più grande delle altre (molti siti rimpiccioliscono mazzo e briscola): la sua lunghezza
+/// si ricava dalla larghezza del pezzo. Si prova la carta intera prolungata da una parte o dall'altra,
 /// con la testa da una parte o dall'altra, e si confronta solo la fascia visibile.
 fn as_partial(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Option<Found> {
     let mut tries = Vec::new();
     for (width, axis, seen) in [(2.0 * r.hw, r.v, 2.0 * r.hh), (2.0 * r.hh, r.u, 2.0 * r.hw)] {
+        let scale = width / card_w;
+        let card_l = card_l * scale;
         // Un terzo di carta almeno: meno non basta a dire quale sia.
-        if (width - card_w).abs() > 0.15 * card_w || seen < 0.35 * card_l || seen > 0.95 * card_l {
+        if !(0.6..=1.25).contains(&scale) || seen < 0.35 * card_l || seen > 0.95 * card_l {
             continue;
         }
         let missing = card_l - seen;
@@ -467,7 +472,8 @@ fn as_partial(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Option<Found>
                     ((off + seen / 2.0) / card_l + 0.5).clamp(0.0, 1.0),
                 ];
                 // Dalla parte coperta il pezzo chiaro comprende spesso il bordo bianco di quello che
-                // copre (il mazzo): quella fascia non si confronta.
+                // copre (il mazzo): si prova anche senza quella fascia, e vince il confronto migliore.
+                tries.push(Try::new(img, rect, vis));
                 if side * head > 0.0 {
                     vis[1] -= HIDDEN_EDGE;
                 } else {
@@ -675,6 +681,31 @@ pub fn analyze(img: &Img) -> Analysis {
     // Carte coperte in parte.
     leftover.retain(|b| !cards.iter().any(|c| c.rect.contains(b.rect.cx, b.rect.cy)));
     cards.extend(par_map(&leftover, |b| as_partial(img, &b.rect, card_l, card_w)).into_iter().flatten());
+    // Una carta divisa da una scritta che la attraversa: dentro la sagoma della carta vista in parte
+    // c'è anche l'altro pezzo, e si confronta la carta da un pezzo all'altro.
+    for c in cards.iter_mut().filter(|c| c.partial()) {
+        let r = c.rect;
+        let mut span = c.view.vis;
+        for b in base.iter().filter(|b| b.light() && r.contains(b.rect.cx, b.rect.cy)) {
+            // Estensione del pezzo lungo l'asse della carta, in frazioni dell'altezza.
+            let t = (b.rect.cx - r.cx) * r.v.0 + (b.rect.cy - r.cy) * r.v.1;
+            let half = (b.rect.u.0 * r.v.0 + b.rect.u.1 * r.v.1).abs() * b.rect.hw
+                + (b.rect.v.0 * r.v.0 + b.rect.v.1 * r.v.1).abs() * b.rect.hh;
+            let (lo, hi) = ((t - half) / (2.0 * r.hh) + 0.5, (t + half) / (2.0 * r.hh) + 0.5);
+            if hi < span[0] - 0.02 || lo > span[1] + 0.02 {
+                span = [span[0].min(lo).max(0.0), span[1].max(hi).min(1.0)];
+            }
+        }
+        if span != c.view.vis && span[1] - span[0] >= 0.8 {
+            // Il verso scelto guardando un pezzo solo può essere sbagliato: si riprovano tutti e due.
+            let tries = [Try::new(img, r, span), Try::new(img, r.flipped(), [1.0 - span[1], 1.0 - span[0]])];
+            let t = tries.into_iter().max_by(|a, b| a.m.top().total_cmp(&b.m.top())).expect("due versi");
+            let f = t.finish();
+            if f.score >= ACCEPT {
+                *c = f;
+            }
+        }
+    }
     // La stessa carta trovata due volte (per esempio divisa da una scritta): si tiene la migliore.
     cards.sort_by(|a, b| b.score.total_cmp(&a.score));
     let mut kept: Vec<Found> = Vec::new();
@@ -722,7 +753,11 @@ pub fn scene(img: &Img) -> Scene {
         return scene;
     }
     // La mano: la riga più in basso.
-    let in_hand = |f: &Found| !f.rect.landscape() && f.rect.cy >= bottom - 0.35 * card_l;
+    // Solo carte intere grandi quanto le altre: un pezzo di carta vicino (la briscola sotto il
+    // mazzo) non è in mano.
+    let in_hand = |f: &Found| {
+        !f.rect.landscape() && !f.partial() && f.rect.long() > 0.85 * card_l && f.rect.cy >= bottom - 0.35 * card_l
+    };
     let mut hand: Vec<&Found> = a.cards.iter().filter(|f| in_hand(f)).collect();
     hand.sort_by(|x, y| x.rect.cx.total_cmp(&y.rect.cx));
     // La briscola: di traverso, o coperta in parte vicino alla mano (sotto il mazzo).
@@ -740,9 +775,10 @@ pub fn scene(img: &Img) -> Scene {
         .map(|b| b.rect.cy)
         .fold(f32::MAX, f32::min);
     let mid = if backs_y < f32::MAX { (backs_y + bottom) / 2.0 } else { bottom - 2.1 * card_l };
+    // In tavola: carte in piedi non troppo più piccole di quelle in mano (un pezzo di carta non lo è).
     let mut table: Vec<&Found> = others
         .into_iter()
-        .filter(|f| upright(f) && !trump.is_some_and(|t| std::ptr::eq(t, *f)))
+        .filter(|f| upright(f) && f.rect.long() > 0.7 * card_l && !trump.is_some_and(|t| std::ptr::eq(t, *f)))
         .collect();
     table.sort_by(|x, y| x.rect.cy.total_cmp(&y.rect.cy));
     match table.as_slice() {

@@ -12,6 +12,10 @@ pub enum Bg {
     Felt([u8; 3]),
     /// Il legno chiaro di Solitalian (preso dallo screenshot vero).
     Wood,
+    /// La foto del mare di Solitalian, con scogli scuri, acqua e alghe.
+    Sea,
+    /// La stessa foto, nella parte del cielo: chiaro e poco colorato, quasi come le carte.
+    Sky,
 }
 
 /// Come appare il tavolo.
@@ -64,9 +68,32 @@ pub struct Deal<'a> {
 const W: usize = 1400;
 const H: usize = 900;
 
-fn wood() -> Img {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/solitalian_briscola.png");
-    super::capture::load_png(&path).unwrap().crop(950, 200, 1450, 950)
+fn screenshot(name: &str) -> Img {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join(name);
+    super::capture::load_png(&path).unwrap()
+}
+
+/// Sfondo ripetuto a specchio (senza cuciture) da un pezzo di screenshot senza carte.
+fn texture(bg: Bg) -> Option<Img> {
+    match bg {
+        Bg::Felt(_) => None,
+        Bg::Wood => Some(screenshot("solitalian_briscola.png").crop(950, 200, 1450, 950)),
+        Bg::Sea => Some(screenshot("solitalian_mare.jpg").crop(880, 600, 1440, 1000)),
+        Bg::Sky => Some(screenshot("solitalian_mare.jpg").crop(330, 250, 1280, 470)),
+    }
+}
+
+/// Punto della texture ripetuta a specchio.
+fn mirrored(t: &Img, x: usize, y: usize) -> [u8; 3] {
+    let fold = |v: usize, n: usize| {
+        let k = v % (2 * n);
+        if k < n {
+            k
+        } else {
+            2 * n - 1 - k
+        }
+    };
+    t.at(fold(x, t.w), fold(y, t.h))
 }
 
 /// Colore della carta dopo tinta, saturazione e gamma.
@@ -128,7 +155,7 @@ fn draw_back(img: &mut Img, cx: f32, cy: f32, w: f32, h: f32) {
 /// Il tavolo con le carte, come lo vedrebbe la lettura dello schermo.
 pub fn table(deal: &Deal, look: &Look) -> Img {
     let mut img = Img::new(W, H);
-    let tex = matches!(look.bg, Bg::Wood).then(wood);
+    let tex = texture(look.bg);
     for y in 0..H {
         for x in 0..W {
             img.px[y * W + x] = match (&look.bg, &tex) {
@@ -137,7 +164,7 @@ pub fn table(deal: &Deal, look: &Look) -> Img {
                     let d = ((x as f32 / W as f32 - 0.5).powi(2) + (y as f32 / H as f32 - 0.5).powi(2)).sqrt();
                     c.map(|v| (v as f32 * (1.25 - 0.6 * d)).min(255.0) as u8)
                 }
-                (_, Some(t)) => t.at(x % t.w, y % t.h),
+                (_, Some(t)) => mirrored(t, x, y),
                 _ => [128, 128, 128],
             };
         }

@@ -343,6 +343,8 @@ struct Vision {
     trump_img: Option<Img>,
     /// Candidati annullati dall'utente: se ricompaiono si chiede conferma invece di inserirli.
     doubts: Vec<(Step, Card)>,
+    /// Letture stabili di fila in cui lo schermo contraddice la partita inserita.
+    mismatch: u32,
     /// Scelta del monitor e dell'area del tavolo, e diagnosi.
     picker: crate::vision::screen::AreaPicker,
 }
@@ -732,6 +734,7 @@ impl Assistant {
             return;
         }
         self.check_hand(scene);
+        self.check_mismatch(scene);
         // Più passi in una volta: briscola, chi comincia, le tre carte, la prima giocata...
         for _ in 0..8 {
             let before = (self.pos.step(), self.history.len());
@@ -778,17 +781,47 @@ impl Assistant {
             return false;
         }
         let fresh = scene.hand.len() == 3 && scene.opp_slot.is_none() && scene.my_slot.is_none();
-        let Some(known) = &self.vision.trump_img else {
-            // Prima lettura della briscola di questa partita (anche se l'utente l'ha scritta a mano).
-            self.vision.trump_img = Some(t.img.clone());
-            return fresh && self.pos.step() == Step::Over;
+        let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
+        // Una carta della mano nuova è già stata giocata in questa partita: è un'altra partita.
+        let replayed = scene.hand.iter().filter_map(sure).any(|c| self.pos.played.contains(c));
+        // Briscola diversa: dalla carta riconosciuta (regge anche se cambia lo sfondo), o, se non
+        // è sicura, dall'immagine.
+        let other_trump = match sure(t) {
+            Some(c) => Some(c) != self.pos.trump_card,
+            None => match &self.vision.trump_img {
+                Some(known) => similarity(known, &t.img, t.vis) < 0.75,
+                None => false,
+            },
         };
-        let other_trump = similarity(known, &t.img, t.vis) < 0.75;
         if !other_trump {
             // Segue i piccoli cambiamenti (il mazzo che si assottiglia sopra la briscola).
             self.vision.trump_img = Some(t.img.clone());
         }
-        fresh && (self.pos.step() == Step::Over || self.pos.deck_len == 0 || other_trump)
+        fresh && (self.pos.step() == Step::Over || self.pos.deck_len == 0 || other_trump || replayed)
+    }
+
+    /// Conta le letture in cui lo schermo contraddice la partita inserita (un'altra briscola, una
+    /// carta già giocata di nuovo in mano): se dura qualche secondo lo dice, invece di continuare
+    /// a seguire una partita che non è quella sullo schermo.
+    fn check_mismatch(&mut self, scene: &Scene) {
+        let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
+        let trump = scene.trump.as_ref().and_then(sure).filter(|&c| self.pos.trump_card.is_some_and(|t| t != c));
+        let replayed = scene.hand.iter().filter_map(sure).find(|&c| self.pos.played.contains(c));
+        self.vision.mismatch = match (trump, replayed) {
+            (None, None) => 0,
+            _ => self.vision.mismatch + 1,
+        };
+        // Circa tre secondi di letture stabili.
+        if self.vision.mismatch >= 8 {
+            let why = match (trump, replayed) {
+                (Some(c), _) => format!("sullo schermo la briscola è {}", cards::name(c)),
+                (_, Some(c)) => format!("in mano vedo {}, già giocato", cards::name(c)),
+                _ => String::new(),
+            };
+            self.vision.status = format!(
+                "Lo schermo non corrisponde alla partita inserita ({why}): se è una partita nuova premi \"Nuova partita\""
+            );
+        }
     }
 
     /// Un passo della partita a partire dalla lettura dello schermo.
@@ -839,7 +872,9 @@ impl Assistant {
             Step::Over => None,
         };
         let Some((card, margin, view)) = candidate else { return };
-        let doubtful = self.vision.doubts.contains(&(step, card));
+        // Una carta giocata vista solo in parte non fa avanzare la partita da sola: si chiede.
+        let played = matches!(step, Step::OppMove | Step::MyMove);
+        let doubtful = self.vision.doubts.contains(&(step, card)) || (played && view.partial);
         if margin >= AUTO_MARGIN && !doubtful {
             let img = view.img.clone();
             let len = self.history.len();
@@ -1816,6 +1851,93 @@ mod tests {
         assert!(a.vision.status.contains("Mano corretta"), "{}", a.vision.status);
         // La carta sbagliata torna fra quelle ancora in gioco.
         assert!(a.pos.allowed().contains(c(0, 4)) || !a.pos.played.contains(c(0, 4)));
+    }
+
+    /// Screenshot veri di Solitalian: una partita sul tavolo di legno, poi il sito cambia sfondo
+    /// (il mare) e distribuisce una partita nuova. L'app riparte da sola con la briscola e la mano
+    /// nuove, riconosciute dallo schermo.
+    #[test]
+    fn follows_a_new_game_after_a_background_change() {
+        let shot = |name: &str| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join(name);
+            crate::vision::capture::load_png(&path).unwrap()
+        };
+        let mut a = Assistant::default();
+        let mem = a.vision.memory.clone();
+        let wood = read_briscola(&shot("solitalian_briscola.png"), &mem).expect("legno");
+        show(&mut a, &wood);
+        let c = |s, r| cards::make(s, r);
+        assert_eq!(a.pos.trump_card, Some(c(1, 4)));
+        a.set_first(ME);
+        show(&mut a, &wood);
+        assert_eq!(a.pos.hand.len(), 3);
+        assert_eq!(a.pos.step(), Step::MyMove);
+        let sea = read_briscola(&shot("solitalian_mare.jpg"), &mem).expect("mare");
+        show(&mut a, &sea);
+        assert_eq!(a.pos.trump_card, Some(c(3, 1)), "briscola della partita nuova");
+        assert_eq!(a.pos.step(), Step::First, "si aspetta chi comincia");
+        a.set_first(OPP);
+        show(&mut a, &sea);
+        let hand: Vec<Card> = a.pos.hand.iter().collect();
+        let mut want = vec![c(0, 3), c(3, 8), c(2, 0)];
+        want.sort();
+        assert_eq!(hand, want, "mano della partita nuova");
+    }
+
+    /// A metà partita il sito cambia sfondo (stessa partita, stesse carte): l'app non deve
+    /// scambiarlo per una partita nuova e ricominciare.
+    #[test]
+    fn keeps_the_game_when_the_background_changes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/solitalian_briscola.png");
+        let wood = crate::vision::capture::load_png(&path).unwrap();
+        // Lo stesso tavolo con lo sfondo blu al posto del legno (le carte restano com'erano).
+        let mut blue = wood.clone();
+        let cards_at = [(140, 420, 320, 570), (505, 740, 885, 915)];
+        for (i, p) in blue.px.iter_mut().enumerate() {
+            let (x, y) = (i % wood.w, i / wood.w);
+            let on_card = cards_at.iter().any(|&(x0, y0, x1, y1)| (x0..x1).contains(&x) && (y0..y1).contains(&y));
+            let [r, g, b] = *p;
+            if !on_card && r > g && g > b && r < 235 {
+                *p = [b / 3, g / 2, r];
+            }
+        }
+        let mut a = Assistant::default();
+        let mem = a.vision.memory.clone();
+        let scene = read_briscola(&wood, &mem).expect("legno");
+        show(&mut a, &scene);
+        a.set_first(ME);
+        show(&mut a, &scene);
+        assert_eq!(a.pos.step(), Step::MyMove);
+        let before = a.history.len();
+        let other = read_briscola(&blue, &mem).expect("sfondo blu");
+        assert!(other.trump.is_some() && other.hand.len() == 3);
+        show(&mut a, &other);
+        show(&mut a, &other);
+        assert_eq!(a.history.len(), before, "nessuna partita nuova");
+        assert_eq!(a.pos.step(), Step::MyMove);
+    }
+
+    /// A metà partita lo schermo mostra un'altra briscola (un'altra partita, senza la
+    /// distribuzione nuova): dopo qualche secondo l'app lo dice invece di continuare in silenzio.
+    #[test]
+    fn warns_when_the_screen_is_another_game() {
+        let mut a = Assistant::default();
+        let c = |s, r| cards::make(s, r);
+        let hand = vec![seen(c(3, 1), 4.0), seen(c(2, 6), 4.0), seen(c(1, 0), 4.0)];
+        let scene = Scene { trump: Some(seen(c(0, 8), 4.0)), hand: hand.clone(), ..Default::default() };
+        show(&mut a, &scene);
+        a.set_first(ME);
+        let other = Scene {
+            trump: Some(seen(c(2, 2), 4.0)),
+            hand: hand.clone(),
+            opp_slot: Some(seen(c(1, 5), 4.0)),
+            ..Default::default()
+        };
+        for _ in 0..10 {
+            a.sync(&other);
+        }
+        assert_eq!(a.pos.trump_card, Some(c(0, 8)), "la partita inserita resta");
+        assert!(a.vision.status.contains("non corrisponde"), "{}", a.vision.status);
     }
 
     /// Una partita interrotta a metà: quando compare un'altra briscola con tre carte nuove in mano

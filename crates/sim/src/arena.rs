@@ -181,6 +181,46 @@ pub fn run_games(player: &str, opponent: &str, deals: std::ops::Range<u64>, seed
         .collect())
 }
 
+/// Dati per la rete di politica (stesso formato di `selfplay`): per ogni decisione di entrambi
+/// i giocatori con più di una carta in mano, ciò che vedeva chi muoveva e la carta scelta.
+/// Ogni partita ha un mazzo a caso e chi apre a turno.
+pub fn policy_records(player: &str, opponent: &str, games: std::ops::Range<u64>, seed: u64) -> Result<Vec<u8>, String> {
+    use briscola_core::net::{canon_index, Position};
+    use briscola_core::Observation;
+    make_agent(player)?;
+    make_agent(opponent)?;
+    let parts: Vec<Vec<u8>> = games
+        .into_par_iter()
+        .map(|i| {
+            let mut rng = SmallRng::seed_from_u64(seed ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut order: Vec<Card> = (0..NUM_CARDS as u8).collect();
+            order.shuffle(&mut rng);
+            let first = (i % 2) as u8;
+            let mut agents = [make_agent(player).unwrap(), make_agent(opponent).unwrap()];
+            let mut g = Game::from_order(&order, first);
+            for a in agents.iter_mut() {
+                a.start(&order, first);
+            }
+            let mut out = Vec::new();
+            while !g.is_over() {
+                let p = g.to_move();
+                let c = agents[p as usize].choose(&g, p, &mut rng);
+                let obs = Observation::of(&g, p);
+                if obs.hand.len() > 1 {
+                    Position::of_obs(&obs).write(&mut out);
+                    out.push(canon_index(c, g.trump) as u8);
+                }
+                g.play(c);
+                for a in agents.iter_mut() {
+                    a.observe(c);
+                }
+            }
+            out
+        })
+        .collect();
+    Ok(parts.concat())
+}
+
 /// Statistiche cumulative sui primi `n` mazzi, per ogni `n` in `checkpoints`.
 pub fn prefixes(per_deal: &[MatchStats], checkpoints: &[u64]) -> Vec<MatchStats> {
     checkpoints

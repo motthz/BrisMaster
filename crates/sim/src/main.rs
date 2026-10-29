@@ -484,6 +484,35 @@ fn main() -> ExitCode {
                 }
             };
         }
+        Some("dati") => {
+            // Dati per la rete di politica, a blocchi: un blocco già scritto si salta.
+            let out = get("--out", "dati");
+            let opponent = get("--opponent", &player);
+            let games: u64 = get("--games", "10000").parse().expect("--games");
+            let chunk: u64 = get("--chunk", "500").parse().expect("--chunk");
+            std::fs::create_dir_all(&out).expect("cartella dei dati");
+            let start = std::time::Instant::now();
+            for from in (0..games).step_by(chunk as usize) {
+                let path = std::path::Path::new(&out).join(format!("politica_{from:08}.pol"));
+                if path.exists() {
+                    continue;
+                }
+                let to = (from + chunk).min(games);
+                match arena::policy_records(&player, &opponent, from..to, seed) {
+                    Ok(b) => {
+                        let tmp = path.with_extension("tmp");
+                        std::fs::write(&tmp, b).expect("scrittura dati");
+                        std::fs::rename(&tmp, &path).expect("scrittura dati");
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+                eprintln!("{to}/{games} partite ({:.0}s)", start.elapsed().as_secs_f64());
+            }
+            return ExitCode::SUCCESS;
+        }
         Some("deduzione") => {
             use briscola_core::net::Net;
             let nets: Vec<(String, std::sync::Arc<Net>)> = match args.iter().position(|a| a == "--reti") {

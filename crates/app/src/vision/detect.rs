@@ -81,9 +81,11 @@ pub struct Blob {
 }
 
 impl Blob {
-    /// Chiara e staccata dal fondo: può essere una carta scoperta (o un pezzo di carta).
+    /// Chiara e staccata dal fondo: può essere una carta scoperta (o un pezzo di carta). Basta
+    /// poco bianco: nell'asso di denari l'anello lascia solo una cornice (come un dorso, che poi
+    /// non somiglia a nessuna carta e si scarta).
     pub fn light(&self) -> bool {
-        self.white > 0.3 && self.bg > 0.3
+        self.white > 0.08 && self.bg > 0.3 && self.rect.long() >= 40.0
     }
 }
 
@@ -233,7 +235,8 @@ fn canonical(mut r: RotRect) -> RotRect {
 fn blobs_r(img: &Img, paper: &[bool], r: usize) -> Vec<Blob> {
     let (w, h) = (img.w, img.h);
     let er = erode(paper, w, h, r);
-    let min_area = ((w * h) as f32 * 0.0006) as usize;
+    // Basta poco: di un asso di denari piccolo resta solo la cornice bianca.
+    let min_area = ((w * h) as f32 * 0.0002) as usize;
     let mut seen = vec![false; w * h];
     let mut out = Vec::new();
     let mut stack = Vec::new();
@@ -659,7 +662,8 @@ pub fn analyze(img: &Img) -> Analysis {
     }
     let thin = &levels.iter().find(|(k, _)| *k == 3).unwrap().1;
     for q in thin.iter().filter(|q| q.light()) {
-        let known = base.iter().filter(|b| b.light()).any(|b| b.rect.contains(q.rect.cx, q.rect.cy))
+        // Già esaminato se sta in una zona chiara come una carta (non nella cornice di un dorso).
+        let known = base.iter().filter(|b| b.light() && b.white > 0.3).any(|b| b.rect.contains(q.rect.cx, q.rect.cy))
             || cards.iter().any(|c| c.rect.contains(q.rect.cx, q.rect.cy));
         if !known {
             leftover.push(*q);
@@ -715,7 +719,8 @@ pub fn analyze(img: &Img) -> Analysis {
         }
     }
     // Restano le carte sullo stesso tavolo della maggior parte, e quelle vicine (il sito può avere
-    // una fascia di un altro colore sotto la mano): non quelle disegnate altrove sullo schermo.
+    // una fascia di un altro colore sotto la mano, attorno alla briscola c'è soprattutto il mazzo):
+    // non quelle disegnate altrove sullo schermo.
     let colors: Vec<Option<[u8; 3]>> = kept.iter().map(|c| table_color(img, &paper, &c.rect)).collect();
     let agree = |a: [u8; 3]| colors.iter().flatten().filter(|&&b| same_table(a, b)).count();
     let table = colors.iter().flatten().copied().max_by_key(|&a| agree(a));
@@ -726,7 +731,7 @@ pub fn analyze(img: &Img) -> Analysis {
             _ => true,
         })
         .collect();
-    let near = |c: &Found| kept.iter().zip(&main).any(|(k, &m)| m && k.rect.dist(&c.rect) < 3.0 * card_l);
+    let near = |c: &Found| kept.iter().zip(&main).any(|(k, &m)| m && k.rect.dist(&c.rect) < 4.5 * card_l);
     let keep: Vec<bool> = kept.iter().zip(&main).map(|(c, &m)| m || near(c)).collect();
     let cards = kept.iter().zip(keep).filter(|(_, k)| *k).map(|(c, _)| c.clone()).collect();
     Analysis { cards, card_l, table, blobs: base }
@@ -753,10 +758,13 @@ pub fn scene(img: &Img) -> Scene {
         return scene;
     }
     // La mano: la riga più in basso.
-    // Solo carte intere grandi quanto le altre: un pezzo di carta vicino (la briscola sotto il
-    // mazzo) non è in mano.
+    // Solo carte in piedi grandi quanto le altre: un pezzo di carta vicino (la briscola sotto il
+    // mazzo) non è in mano. Una carta della mano vista in parte (il disegno che la attraversa da
+    // un lato all'altro divide il bianco in due) sì, se la sua sagoma intera ha la misura giusta.
     let in_hand = |f: &Found| {
-        !f.rect.landscape() && !f.partial() && f.rect.long() > 0.85 * card_l && f.rect.cy >= bottom - 0.35 * card_l
+        !f.rect.landscape()
+            && (0.85..1.2).contains(&(f.rect.long() / card_l))
+            && f.rect.cy >= bottom - 0.35 * card_l
     };
     let mut hand: Vec<&Found> = a.cards.iter().filter(|f| in_hand(f)).collect();
     hand.sort_by(|x, y| x.rect.cx.total_cmp(&y.rect.cx));

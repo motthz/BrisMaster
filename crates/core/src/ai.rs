@@ -338,7 +338,21 @@ impl IsmctsPlayer {
         &self,
         obs: &Observation,
         rng: &mut SmallRng,
+        world: impl FnMut(&mut SmallRng) -> Game,
+    ) -> Vec<RootChild> {
+        self.search_model(obs, rng, world, None)
+    }
+
+    /// Come `search_with`, con un modello dell'avversario per sfruttarlo: `(modello, alfa)`.
+    /// Con probabilità `alfa` l'avversario gioca la carta del modello (nell'albero e nelle
+    /// simulazioni), altrimenti come al solito (il meglio per lui nell'albero, carte scoperte
+    /// nelle simulazioni). Il modello riceve il mondo campionato e decide da ciò che vede lui.
+    pub fn search_model(
+        &self,
+        obs: &Observation,
+        rng: &mut SmallRng,
         mut world: impl FnMut(&mut SmallRng) -> Game,
+        mut model: Option<(&mut dyn FnMut(&Game, &mut SmallRng) -> Card, f64)>,
     ) -> Vec<RootChild> {
         let mut solver = Solver::default();
         let mut nodes = vec![Node { card: 255, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0, wins: 0.0, points: 0.0 }];
@@ -358,6 +372,27 @@ impl IsmctsPlayer {
                 let untried = legal.minus(tried);
                 for &k in &kids {
                     nodes[k].avail += 1.0;
+                }
+                let modeled = match model.as_mut() {
+                    Some((m, alpha)) if g.to_move() != obs.me && rng.gen_bool(*alpha) => Some(m(&g, rng)),
+                    _ => None,
+                };
+                if let Some(c) = modeled {
+                    let mover = g.to_move();
+                    g.play(c);
+                    let id = match kids.iter().copied().find(|&k| nodes[k].card == c) {
+                        Some(k) => k,
+                        None => {
+                            nodes.push(Node { card: c, mover, children: vec![], visits: 0.0, avail: 1.0, reward: 0.0, wins: 0.0, points: 0.0 });
+                            let id = nodes.len() - 1;
+                            nodes[cur].children.push(id);
+                            path.push(id);
+                            break;
+                        }
+                    };
+                    path.push(id);
+                    cur = id;
+                    continue;
                 }
                 if !untried.is_empty() {
                     let v = untried.to_vec();
@@ -389,6 +424,16 @@ impl IsmctsPlayer {
                 None => {
                     rollout(&mut g, 0.1, rng);
                     (result(g.points[0]), g.points[0] as f64)
+                }
+                Some(p) if model.is_some() => {
+                    let (m, alpha) = model.as_mut().unwrap();
+                    let solve_at = self.rollout_solve.unwrap_or(0);
+                    while !g.is_over() && g.deck_len > solve_at {
+                        let c = if g.to_move() != obs.me && rng.gen_bool(*alpha) { m(&g, rng) } else { open_hand_move(&g, &p) };
+                        g.play(c);
+                    }
+                    let p0 = if g.is_over() { g.points[0] } else { solver.solve(&g, 0) };
+                    (result(p0), p0 as f64)
                 }
                 Some(p) => {
                     let leaf = g;

@@ -87,6 +87,8 @@ struct Infer {
     oracle: Option<Moment>,
     /// Deduzione esatta (tutte le mani possibili) invece delle mani campionate (`esatta:`).
     exact: Option<Exact>,
+    /// Modello dell'avversario da sfruttare nella ricerca, con il suo peso (`sfrutta:`).
+    model: Option<(Box<dyn Player>, f64)>,
 }
 
 /// Momento della partita in cui l'oracolo vede la mano avversaria.
@@ -148,7 +150,8 @@ impl Agent for Infer {
             return format!("{} · deduzione esatta (temperatura {}{floor})", self.search.name(), self.temp);
         }
         let oracle = self.oracle.map_or(String::new(), |m| format!(" · vede la mano avversaria {}", m.label()));
-        format!("{} · deduce le carte avversarie (temperatura {}{floor}){oracle}", self.search.name(), self.temp)
+        let model = self.model.as_ref().map_or(String::new(), |(m, a)| format!(" · sfrutta il modello «{}» ({:.0}%)", m.name(), a * 100.0));
+        format!("{} · deduce le carte avversarie (temperatura {}{floor}){oracle}{model}", self.search.name(), self.temp)
     }
     fn start(&mut self, order: &[Card], first: u8) {
         self.game = Some(Game::from_order(order, first));
@@ -164,12 +167,16 @@ impl Agent for Infer {
         if obs.hand.len() == 1 {
             return obs.hand.iter().next().unwrap();
         }
+        // Il modello dell'avversario decide da ciò che vede lui nel mondo campionato.
+        let alpha = self.model.as_ref().map_or(0.0, |(_, a)| *a);
+        let mut play_model = self.model.as_mut().map(|(m, _)| move |w: &Game, r: &mut SmallRng| m.choose(&Observation::of(w, w.to_move()), r));
+        let model = play_model.as_mut().map(|f| (f as &mut dyn FnMut(&Game, &mut SmallRng) -> Card, alpha));
         // A mazzo vuoto le carte avversarie sono note: non c'è niente da dedurre.
         let root = if obs.deck_len == 0 {
-            self.search.search(&obs, rng)
+            self.search.search_model(&obs, rng, |r| obs.determinize(r), model)
         } else if self.oracle.is_some_and(|m| m.holds(&obs)) {
             let opp = g.hands[1 - me as usize];
-            self.search.search_with(&obs, rng, |r| obs.determinize_given(opp, r))
+            self.search.search_model(&obs, rng, |r| obs.determinize_given(opp, r), model)
         } else {
             let belief = match self.exact.as_mut() {
                 Some(ex) => {
@@ -178,7 +185,7 @@ impl Agent for Infer {
                 }
                 None => Belief::infer(&obs, &self.log.events, &self.policy, self.temp, self.floor, self.pool, rng),
             };
-            self.search.search_with(&obs, rng, |r| obs.determinize_given(belief.sample(r), r))
+            self.search.search_model(&obs, rng, |r| obs.determinize_given(belief.sample(r), r), model)
         };
         root.iter().max_by(|a, b| a.visits.partial_cmp(&b.visits).unwrap()).unwrap().card
     }
@@ -408,7 +415,29 @@ fn make_infer(rest: &str, spec: &str) -> Result<Infer, String> {
         me: None,
         oracle: None,
         exact: None,
+        model: None,
     })
+}
+
+/// Giocatore `infer:` o `esatta:` da SPEC intera.
+fn make_searcher(spec: &str) -> Result<Infer, String> {
+    if let Some(rest) = spec.strip_prefix("esatta:") {
+        // esatta:ITERAZIONI:TEMPERATURA:MINIMO[:net|:onesta] — come infer:, ma con tutte le mani possibili pesate in modo esatto.
+        let mut p: Vec<&str> = rest.split(':').collect();
+        let suffix = match p.last() {
+            Some(&"net") => format!(":{}", p.pop().unwrap()),
+            Some(x) if x.starts_with("onesta") => format!(":{}", p.pop().unwrap()),
+            _ => String::new(),
+        };
+        let (n, t, f) = (p.first().copied().unwrap_or("0"), p.get(1).copied().unwrap_or("1"), p.get(2).copied().unwrap_or("0.25"));
+        let mut a = make_infer(&format!("{n}:{t}:0:{f}{suffix}"), spec)?;
+        a.exact = Some(Exact::default());
+        return Ok(a);
+    }
+    match spec.strip_prefix("infer:") {
+        Some(rest) => make_infer(rest, spec),
+        None => Err(format!("serve un giocatore infer: o esatta:, non '{spec}'")),
+    }
 }
 
 /// Crea un giocatore da SPEC, anche di una versione rilasciata (`vX.Y.Z/SPEC`).
@@ -443,21 +472,18 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
         a.oracle = Some(moment);
         return Ok(Box::new(a));
     }
-    if let Some(rest) = spec.strip_prefix("esatta:") {
-        // esatta:ITERAZIONI:TEMPERATURA:MINIMO[:net|:onesta] — come infer:, ma con tutte le mani possibili pesate in modo esatto.
-        let mut p: Vec<&str> = rest.split(':').collect();
-        let suffix = match p.last() {
-            Some(&"net") => format!(":{}", p.pop().unwrap()),
-            Some(x) if x.starts_with("onesta") => format!(":{}", p.pop().unwrap()),
-            _ => String::new(),
-        };
-        let (n, t, f) = (p.first().copied().unwrap_or("0"), p.get(1).copied().unwrap_or("1"), p.get(2).copied().unwrap_or("0.25"));
-        let mut a = make_infer(&format!("{n}:{t}:0:{f}{suffix}"), spec)?;
-        a.exact = Some(Exact::default());
+    if let Some(rest) = spec.strip_prefix("sfrutta:") {
+        // sfrutta:ALFA:MODELLO@GIOCATORE — GIOCATORE (infer: o esatta:) che nella ricerca fa giocare
+        // all'avversario la carta di MODELLO con probabilità ALFA. Misura quanto vale conoscere lo stile.
+        let (alpha, rest) = rest.split_once(':').ok_or(format!("serve sfrutta:ALFA:MODELLO@GIOCATORE, non '{spec}'"))?;
+        let (model, inner) = rest.split_once('@').ok_or(format!("serve sfrutta:ALFA:MODELLO@GIOCATORE, non '{spec}'"))?;
+        let alpha = alpha.parse::<f64>().map_err(|_| format!("numero non valido in '{spec}'"))?;
+        let mut a = make_searcher(inner)?;
+        a.model = Some((make_player(model)?, alpha));
         return Ok(Box::new(a));
     }
-    if let Some(rest) = spec.strip_prefix("infer:") {
-        return Ok(Box::new(make_infer(rest, spec)?));
+    if spec.starts_with("esatta:") || spec.starts_with("infer:") {
+        return Ok(Box::new(make_searcher(spec)?));
     }
     if let Some(n) = spec.strip_prefix("vedetutto:") {
         let n = n.parse::<u32>().map_err(|_| format!("numero non valido in '{spec}'"))?;

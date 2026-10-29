@@ -130,6 +130,11 @@ impl Belief {
         self.hands[i]
     }
 
+    /// Peso (non normalizzato) della mano `i`.
+    pub fn weight(&self, i: usize) -> f64 {
+        self.weights[i]
+    }
+
     /// Numero effettivo di mani (quanto la deduzione ha ristretto le possibilità).
     pub fn ess(&self) -> f64 {
         let s: f64 = self.weights.iter().sum();

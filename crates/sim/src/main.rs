@@ -484,6 +484,39 @@ fn main() -> ExitCode {
                 }
             };
         }
+        Some("deduzione") => {
+            use briscola_core::net::Net;
+            let nets: Vec<(String, std::sync::Arc<Net>)> = match args.iter().position(|a| a == "--reti") {
+                None => vec![("rete della v0.5.0".into(), std::sync::Arc::new(briscola_core::net::policy().clone()))],
+                Some(i) => args[i + 1]
+                    .split(',')
+                    .map(|p| {
+                        let net = Net::from_bytes(&std::fs::read(p).expect("lettura rete")).expect("rete");
+                        (std::path::Path::new(p).file_stem().unwrap().to_string_lossy().into_owned(), std::sync::Arc::new(net))
+                    })
+                    .collect(),
+            };
+            let mut variants = Vec::new();
+            for (name, net) in &nets {
+                for v in get("--varianti", "0:0,1:0.25,1:0,1.5:0.25,2:0.25,1.5:0.1").split(',') {
+                    let (t, f) = v.split_once(':').expect("--varianti TEMP:MINIMO");
+                    let (temp, floor): (f32, f32) = (t.parse().expect("temperatura"), f.parse().expect("minimo"));
+                    let label = if temp == 0.0 { "nessuna deduzione (a caso)".to_string() } else { format!("{name}, temperatura {}, minimo {}", t.replace('.', ","), f.replace('.', ",")) };
+                    variants.push(banco::Variant { label, net: net.clone(), temp, floor });
+                }
+            }
+            return match banco::deduction_quality(&player, get("--deals", "300").parse().expect("--deals"), &variants, seed) {
+                Ok(md) => {
+                    println!("{md}");
+                    write_out(&md);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Some("torneo") => {
             let list = get("--giocatori", &banco::REPRESENTATIVES.join(","));
             let players: Vec<String> = list.split(',').map(String::from).collect();

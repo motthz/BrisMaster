@@ -8,6 +8,7 @@
 //!   briscola-sim strati  --player SPEC --baseline SPEC --opponent SPEC [--deals N] [--out FILE]
 //!   briscola-sim torneo  [--giocatori A,B,...] [--deals 100] [--out FILE]
 //!   briscola-sim diagnosi --player SPEC [--deals 300] [--oracolo ITERAZIONI] [--out FILE]
+//!   briscola-sim deduzione --player SPEC [--deals 300] [--reti A.bin,B.bin] [--varianti TEMP:MINIMO,...] [--out FILE]
 
 use crate::arena::{describe, run_games, MatchStats};
 use crate::agents::make_agent;
@@ -565,6 +566,115 @@ pub fn diagnose(player: &str, deals: u64, oracle_iters: u32, seed: u64) -> Resul
             pct(loss / n),
             pct(loss / deals as f64 / 2.0),
             pct(loss / total.max(1e-9))
+        ).unwrap();
+    }
+    Ok(md)
+}
+
+// ---------------------------------------------------------------------------
+// Qualità della deduzione: quanta probabilità dà alla mano vera dell'avversario, senza giocare partite di prova.
+
+/// Una variante di deduzione da misurare: rete di politica, temperatura, minimo.
+pub struct Variant {
+    pub label: String,
+    pub net: std::sync::Arc<briscola_core::net::Net>,
+    pub temp: f32,
+    pub floor: f32,
+}
+
+#[derive(Default, Clone, Copy)]
+struct Quality {
+    n: f64,
+    /// Somma di ln(probabilità della mano vera) − ln(1 / mani possibili).
+    gain: f64,
+    /// Somma della probabilità data alla mano vera.
+    p_true: f64,
+    /// Volte in cui la mano più probabile è quella vera.
+    top1: f64,
+    /// Somma, sulle carte vere dell'avversario, della probabilità che le avesse.
+    card_p: f64,
+    cards: f64,
+}
+
+/// `deals` partite del giocatore contro se stesso; a ogni apertura col mazzo non vuoto ogni variante
+/// deduce la mano avversaria e si misura quanto ci ha preso. Una variante migliore dà più probabilità
+/// alla mano vera: è la misura diretta di quello che la diagnosi chiede di migliorare.
+pub fn deduction_quality(player: &str, deals: u64, variants: &[Variant], seed: u64) -> Result<String, String> {
+    use briscola_core::infer::{Exact, Log};
+    make_agent(player)?;
+    let per_game: Vec<Vec<Quality>> = (0..deals)
+        .into_par_iter()
+        .map(|d| {
+            let mut rng = SmallRng::seed_from_u64(seed ^ d.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut order: Vec<Card> = (0..NUM_CARDS as u8).collect();
+            order.shuffle(&mut rng);
+            let mut agents = [make_agent(player).unwrap(), make_agent(player).unwrap()];
+            for a in agents.iter_mut() {
+                a.start(&order, 0);
+            }
+            let mut g = Game::from_order(&order, 0);
+            let mut logs = [Log::default(), Log::default()];
+            let mut filters: Vec<[Exact; 2]> = variants.iter().map(|_| [Exact::default(), Exact::default()]).collect();
+            let mut q = vec![Quality::default(); variants.len()];
+            while !g.is_over() {
+                let p = g.to_move();
+                if g.deck_len > 0 && g.table.is_none() && g.hands[p as usize].len() >= 2 {
+                    let obs = Observation::of(&g, p);
+                    let truth = g.hands[1 - p as usize];
+                    for (k, v) in variants.iter().enumerate() {
+                        let f = &mut filters[k][p as usize];
+                        f.update(&obs, &logs[p as usize].events, &v.net, v.temp, v.floor);
+                        let b = f.belief(&obs);
+                        let total: f64 = (0..b.hands.len()).map(|i| b.weight(i)).sum();
+                        let i_true = b.hands.iter().position(|&h| h == truth).expect("mano vera assente");
+                        let pt = b.weight(i_true) / total;
+                        let best = (0..b.hands.len()).max_by(|&a, &c| b.weight(a).partial_cmp(&b.weight(c)).unwrap()).unwrap();
+                        let qq = &mut q[k];
+                        qq.n += 1.0;
+                        qq.gain += pt.ln() + (b.hands.len() as f64).ln();
+                        qq.p_true += pt;
+                        qq.top1 += (best == i_true) as u8 as f64;
+                        for c in truth.iter() {
+                            qq.card_p += b.prob(c);
+                            qq.cards += 1.0;
+                        }
+                    }
+                }
+                let c = agents[p as usize].choose(&g, p, &mut rng);
+                for me in 0..2u8 {
+                    logs[me as usize].before_play(&g, me, c);
+                }
+                g.play(c);
+                for a in agents.iter_mut() {
+                    a.observe(c);
+                }
+            }
+            q
+        })
+        .collect();
+    let mut md = String::new();
+    writeln!(md, "## Qualità della deduzione\n").unwrap();
+    writeln!(
+        md,
+        "Partite di {} contro se stesso ({deals}); misure a ogni apertura col mazzo non vuoto, sulla deduzione esatta. \
+         **Guadagno**: quante volte più probabile della scelta a caso è la mano vera (media geometrica). \
+         **Carte giuste**: probabilità media data a ciascuna delle carte che l'avversario ha davvero.\n",
+        describe(player)
+    ).unwrap();
+    writeln!(md, "| Variante | Aperture | Guadagno | Prob. della mano vera | Mano più probabile = vera | Carte giuste |\n|---|---:|---:|---:|---:|---:|").unwrap();
+    for (k, v) in variants.iter().enumerate() {
+        let t = per_game.iter().map(|g| g[k]).fold(Quality::default(), |a, b| Quality {
+            n: a.n + b.n,
+            gain: a.gain + b.gain,
+            p_true: a.p_true + b.p_true,
+            top1: a.top1 + b.top1,
+            card_p: a.card_p + b.card_p,
+            cards: a.cards + b.cards,
+        });
+        writeln!(
+            md,
+            "| {} | {} | {}× | {} | {} | {} |",
+            v.label, t.n, format!("{:.2}", (t.gain / t.n).exp()).replace('.', ","), pct(t.p_true / t.n), pct(t.top1 / t.n), pct(t.card_p / t.cards)
         ).unwrap();
     }
     Ok(md)

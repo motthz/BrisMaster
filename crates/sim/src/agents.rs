@@ -24,7 +24,7 @@ use crate::opponents::*;
 use crate::persona::{Chameleon, Clock, Persona, Tilt};
 use briscola_core::ai::*;
 use briscola_core::cards::Card;
-use briscola_core::infer::{Belief, Log};
+use briscola_core::infer::{Belief, Exact, Log};
 use briscola_core::net::Net;
 use std::sync::{Arc, OnceLock};
 use briscola_core::{Game, Observation};
@@ -85,6 +85,8 @@ struct Infer {
     me: Option<u8>,
     /// Diagnosi: nelle situazioni scelte vede la mano avversaria (vedi `oracolo:`).
     oracle: Option<Moment>,
+    /// Deduzione esatta (tutte le mani possibili) invece delle mani campionate (`esatta:`).
+    exact: Option<Exact>,
 }
 
 /// Momento della partita in cui l'oracolo vede la mano avversaria.
@@ -141,6 +143,10 @@ impl Moment {
 impl Agent for Infer {
     fn name(&self) -> String {
         let floor = if self.floor > 0.0 { format!(", minimo {:.0}%", self.floor * 100.0) } else { String::new() };
+        if self.exact.is_some() {
+            let floor = if self.floor > 0.0 { format!(", minimo {:.0}%", self.floor * 100.0) } else { String::new() };
+            return format!("{} · deduzione esatta (temperatura {}{floor})", self.search.name(), self.temp);
+        }
         let oracle = self.oracle.map_or(String::new(), |m| format!(" · vede la mano avversaria {}", m.label()));
         format!("{} · deduce le carte avversarie (temperatura {}{floor}){oracle}", self.search.name(), self.temp)
     }
@@ -148,6 +154,9 @@ impl Agent for Infer {
         self.game = Some(Game::from_order(order, first));
         self.log = Log::default();
         self.me = None;
+        if self.exact.is_some() {
+            self.exact = Some(Exact::default());
+        }
     }
     fn choose(&mut self, g: &Game, me: u8, rng: &mut SmallRng) -> Card {
         self.me = Some(me);
@@ -162,7 +171,13 @@ impl Agent for Infer {
             let opp = g.hands[1 - me as usize];
             self.search.search_with(&obs, rng, |r| obs.determinize_given(opp, r))
         } else {
-            let belief = Belief::infer(&obs, &self.log.events, &self.policy, self.temp, self.floor, self.pool, rng);
+            let belief = match self.exact.as_mut() {
+                Some(ex) => {
+                    ex.update(&obs, &self.log.events, &self.policy, self.temp, self.floor);
+                    ex.belief(&obs)
+                }
+                None => Belief::infer(&obs, &self.log.events, &self.policy, self.temp, self.floor, self.pool, rng),
+            };
             self.search.search_with(&obs, rng, |r| obs.determinize_given(belief.sample(r), r))
         };
         root.iter().max_by(|a, b| a.visits.partial_cmp(&b.visits).unwrap()).unwrap().card
@@ -382,6 +397,7 @@ fn make_infer(rest: &str, spec: &str) -> Result<Infer, String> {
         log: Log::default(),
         me: None,
         oracle: None,
+        exact: None,
     })
 }
 
@@ -415,6 +431,14 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
         let moment = Moment::parse(m).ok_or(format!("momento sconosciuto: {m} (inizio, meta, prefinale, apre, risponde, sempre)"))?;
         let mut a = make_infer(inner.strip_prefix("infer:").ok_or(format!("dopo oracolo:{m}: serve infer:..., non '{inner}'"))?, spec)?;
         a.oracle = Some(moment);
+        return Ok(Box::new(a));
+    }
+    if let Some(rest) = spec.strip_prefix("esatta:") {
+        // esatta:ITERAZIONI:TEMPERATURA:MINIMO — come infer:, ma con tutte le mani possibili pesate in modo esatto.
+        let p: Vec<&str> = rest.split(':').collect();
+        let (n, t, f) = (p.first().copied().unwrap_or("0"), p.get(1).copied().unwrap_or("1"), p.get(2).copied().unwrap_or("0.25"));
+        let mut a = make_infer(&format!("{n}:{t}:0:{f}"), spec)?;
+        a.exact = Some(Exact::default());
         return Ok(Box::new(a));
     }
     if let Some(rest) = spec.strip_prefix("infer:") {

@@ -293,7 +293,7 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
                 Box::new(Persona::numbered(n)),
                 Box::new(IsmctsPlayer::strong(2000)),
             ];
-            Box::new(Chameleon::new(styles))
+            Box::new(Chameleon::new(n, styles))
         }
         "politica" => Box::new(PolicyPlayer),
         s if s.starts_with("noisy:") => {

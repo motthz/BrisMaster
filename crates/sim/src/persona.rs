@@ -274,20 +274,21 @@ impl Player for Tilt {
 /// Camaleonte: cambia stile ogni 4 prese, scegliendo a caso tra i giocatori dati.
 /// Mette alla prova la deduzione delle carte, che non può contare su uno stile fisso.
 pub struct Chameleon {
+    pub n: u64,
     pub styles: Vec<Box<dyn Player>>,
     current: usize,
     last_switch: u32,
 }
 
 impl Chameleon {
-    pub fn new(styles: Vec<Box<dyn Player>>) -> Chameleon {
-        Chameleon { styles, current: 0, last_switch: u32::MAX }
+    pub fn new(n: u64, styles: Vec<Box<dyn Player>>) -> Chameleon {
+        Chameleon { n, styles, current: 0, last_switch: u32::MAX }
     }
 }
 
 impl Player for Chameleon {
     fn name(&self) -> String {
-        format!("Camaleonte: cambia stile ogni 4 prese tra {} stili", self.styles.len())
+        format!("Camaleonte n. {}: cambia stile ogni 4 prese tra {} stili", self.n, self.styles.len())
     }
     fn choose(&mut self, obs: &Observation, rng: &mut SmallRng) -> Card {
         let tricks = obs.played.len() / 2;
@@ -314,7 +315,7 @@ mod tests {
         players.extend((0..10).map(|n| Box::new(Persona::numbered(n)) as Box<dyn Player>));
         players.push(Box::new(Clock { base: Box::new(HeuristicPlayer), error: 0.5 }));
         players.push(Box::new(Tilt { base: Box::new(HeuristicPlayer), error: 0.5 }));
-        players.push(Box::new(Chameleon::new(vec![Box::new(HeuristicPlayer), Box::new(Persona::numbered(3))])));
+        players.push(Box::new(Chameleon::new(1, vec![Box::new(HeuristicPlayer), Box::new(Persona::numbered(3))])));
         for p in players.iter_mut() {
             for first in 0..2 {
                 let g = Game::new(&mut rng, first);

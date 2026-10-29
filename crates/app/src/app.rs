@@ -280,7 +280,7 @@ impl BrisApp {
             }
             UpdateState::Installing(_) => {
                 ui.spinner();
-                ui.label("Installazione in corso...");
+                ui.label("Scarico l'aggiornamento: poi si apre l'installazione e l'app si riavvia...");
             }
             UpdateState::Error(e) => {
                 if ui.small_button("Riprova").clicked() {

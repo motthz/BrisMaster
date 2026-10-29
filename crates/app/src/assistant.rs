@@ -387,11 +387,60 @@ impl Assistant {
     }
 
     fn set_first(&mut self, p: u8) {
+        self.first_entry(p);
+        self.auto_fill();
+    }
+
+    fn first_entry(&mut self, p: u8) {
         self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
         self.pos.set_first(p);
         self.rec.events.push(Event::PrimoDiMano { chi: record::who(p) });
         self.changed();
-        self.auto_fill();
+    }
+
+    /// Sostituisce la carta pescata `wrong` con `right` e riscrive la partita da quella pescata,
+    /// rifacendo tutto quello che è venuto dopo. Falso (e niente cambia) se la partita non torna più,
+    /// per esempio perché la carta sbagliata è già stata giocata.
+    fn correct_draw(&mut self, wrong: Card, right: Card) -> bool {
+        let pescata = |e: Option<&Event>| matches!(e, Some(Event::Pescata { carta }) if carta.id == wrong);
+        let Some(i) = self.history.iter().position(|h| pescata(self.rec.events.get(h.2))) else {
+            return false;
+        };
+        // Le azioni da rifare: una per voce della cronologia (ognuna ha il suo evento).
+        enum Act {
+            Card(Card, bool),
+            First(u8),
+        }
+        let acts: Vec<Act> = self.history[i..]
+            .iter()
+            .map(|h| match &self.rec.events[h.2] {
+                Event::PrimoDiMano { chi } => Act::First(if *chi == record::who(ME) { ME } else { OPP }),
+                Event::Briscola { carta } | Event::Pescata { carta } | Event::Giocata { carta, .. } => Act::Card(carta.id, h.3),
+            })
+            .collect();
+        let saved = (self.pos, self.history.clone(), self.tricks.clone(), self.rec.events.clone());
+        let (p, n, e, _) = self.history[i];
+        self.pos = p;
+        self.tricks.truncate(n);
+        self.rec.events.truncate(e);
+        self.history.truncate(i);
+        let mut ok = true;
+        for (k, a) in acts.into_iter().enumerate() {
+            match a {
+                Act::Card(c, auto) => ok = self.record_entry(if k == 0 { right } else { c }, auto),
+                Act::First(p) => self.first_entry(p),
+            }
+            if !ok {
+                break;
+            }
+        }
+        if !ok {
+            (self.pos, self.history, self.tricks, self.rec.events) = saved;
+            self.rec.write(&self.pos);
+            self.changed();
+        }
+        self.vision.last = None;
+        ok
     }
 
     /// Annulla l'ultima azione dell'utente, insieme a quelle che l'app ha fatto da sola dopo.
@@ -682,6 +731,7 @@ impl Assistant {
             self.vision.seen = Some(sig);
             return;
         }
+        self.check_hand(scene);
         // Più passi in una volta: briscola, chi comincia, le tre carte, la prima giocata...
         for _ in 0..8 {
             let before = (self.pos.step(), self.history.len());
@@ -691,6 +741,32 @@ impl Assistant {
             }
         }
         self.vision.seen = Some(sig);
+    }
+
+    /// Confronta la mano sullo schermo con quella inserita. Se una carta riconosciuta con sicurezza
+    /// non risulta in mano e al suo posto ne risulta una che sullo schermo non c'è, quella pescata
+    /// era stata inserita male (a mano o dalla lettura): si corregge e la partita si riscrive.
+    fn check_hand(&mut self, scene: &Scene) {
+        let still = matches!(self.pos.step(), Step::MyMove | Step::OppMove);
+        if !still || self.vision.confirm.is_some() || scene.hand.len() != self.pos.hand.len() as usize {
+            return;
+        }
+        let seen: Vec<(Card, f32, &CardView)> =
+            scene.hand.iter().filter_map(|v| v.best(CardSet::FULL).map(|(c, m)| (c, m, v))).collect();
+        let extra: Vec<&(Card, f32, &CardView)> =
+            seen.iter().filter(|(c, m, _)| !self.pos.hand.contains(*c) && *m >= AUTO_MARGIN).collect();
+        let missing: Vec<Card> = self.pos.hand.iter().filter(|h| !seen.iter().any(|(c, ..)| c == h)).collect();
+        let ([(right, _, view)], [wrong]) = (extra.as_slice(), missing.as_slice()) else { return };
+        // La carta vista dev'essere ancora in gioco (non già uscita, né la briscola).
+        let out = self.pos.played.contains(*right) || self.pos.table == Some(*right) || self.pos.trump_card == Some(*right);
+        if out {
+            return;
+        }
+        let (wrong, right) = (*wrong, *right);
+        if self.correct_draw(wrong, right) {
+            self.vision.memory.lock().unwrap().remember(&view.img, view.vis, right);
+            self.vision.status = format!("Mano corretta: {} era {}", cards::name(wrong), cards::name(right));
+        }
     }
 
     /// Vero se lo schermo mostra una partita nuova: briscola scoperta, tre carte in mano e tavolo
@@ -1705,6 +1781,41 @@ mod tests {
         // La presa vecchia ancora in tavola non viene contata due volte.
         assert_eq!(a.pos.step(), Step::OppMove);
         assert_eq!(a.pos.tricks, 1);
+    }
+
+    /// Una pescata inserita sbagliata (qui scritta a mano): quando lo schermo mostra la mano vera,
+    /// la carta si corregge da sola e la partita prosegue come se fosse stata giusta dall'inizio.
+    #[test]
+    fn corrects_a_wrong_draw_from_the_screen() {
+        let mut a = Assistant::default();
+        let c = |s, r| cards::make(s, r);
+        let mut scene = Scene { trump: Some(seen(c(0, 8), 4.0)), ..Default::default() };
+        show(&mut a, &scene);
+        scene.hand = vec![seen(c(3, 1), 4.0), seen(c(2, 6), 4.0), seen(c(1, 0), 4.0)];
+        show(&mut a, &scene);
+        scene.opp_slot = Some(seen(c(3, 2), 4.0));
+        show(&mut a, &scene);
+        scene.hand.remove(0);
+        scene.my_slot = Some(seen(c(3, 1), 4.0));
+        show(&mut a, &scene);
+        assert!(matches!(a.pos.step(), Step::Draw(_)));
+        // Pesco il 4 di denari ma scrivo il 5.
+        assert!(a.enter(c(0, 4)));
+        assert!(a.pos.hand.contains(c(0, 4)));
+        let tricks = a.pos.tricks;
+        // Il sito toglie le carte dal tavolo e mostra la mano vera.
+        let scene = Scene {
+            trump: Some(seen(c(0, 8), 4.0)),
+            hand: vec![seen(c(2, 6), 4.0), seen(c(1, 0), 4.0), seen(c(0, 3), 4.0)],
+            ..Default::default()
+        };
+        show(&mut a, &scene);
+        assert!(a.pos.hand.contains(c(0, 3)), "corretta");
+        assert!(!a.pos.hand.contains(c(0, 4)));
+        assert_eq!(a.pos.tricks, tricks, "la presa resta");
+        assert!(a.vision.status.contains("Mano corretta"), "{}", a.vision.status);
+        // La carta sbagliata torna fra quelle ancora in gioco.
+        assert!(a.pos.allowed().contains(c(0, 4)) || !a.pos.played.contains(c(0, 4)));
     }
 
     /// Una partita interrotta a metà: quando compare un'altra briscola con tre carte nuove in mano

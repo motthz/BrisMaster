@@ -4,7 +4,8 @@
 //! - `assets/carte_napoletane_wiki.jpg`: il mazzo napoletano di Wikimedia Commons (pubblico
 //!   dominio, <https://commons.wikimedia.org/wiki/Category:Naples_deck>), il più diffuso sui siti;
 //!   è anche quello disegnato nell'app.
-//! - `assets/carte_napoletane.png`: un secondo disegno, con colori più scuri.
+//! - `assets/carte_napoletane_classiche.jpg`: un secondo disegno, dai colori più scuri (anche
+//!   questo di pubblico dominio, "Carte napoletane al completo.jpg" di Wikimedia Commons).
 //!
 //! Una carta raddrizzata si confronta con ciascuna in miniatura: luminosità e due differenze di
 //! colore (rosso-verde, giallo-blu), con la correlazione normalizzata, che non bada a quanto lo
@@ -31,8 +32,8 @@ const STYLES: [Style; 2] = [
         margin: (0.02, 0.015),
     },
     Style {
-        bytes: include_bytes!("../../assets/carte_napoletane.png"),
-        format: image::ImageFormat::Png,
+        bytes: include_bytes!("../../assets/carte_napoletane_classiche.jpg"),
+        format: image::ImageFormat::Jpeg,
         margin: (0.03, 0.02),
     },
 ];
@@ -56,6 +57,16 @@ pub fn sheet_cell(c: cards::Card) -> (usize, usize) {
 fn sheet(style: &Style) -> Img {
     let im = image::load_from_memory_with_format(style.bytes, style.format).expect("foglio delle carte").to_rgba8();
     Img::from_rgba(im.width() as usize, im.height() as usize, im.as_raw())
+}
+
+/// L'immagine della carta `c` nel mazzo `style` (per i test che compongono tavoli finti).
+#[cfg(test)]
+pub fn card_image(style: usize, c: cards::Card) -> Img {
+    let st = &STYLES[style];
+    let sheet = sheet(st);
+    let (cw, ch) = (sheet.w / 10, sheet.h / 4);
+    let (col, row) = sheet_cell(c);
+    sheet.crop(col * cw + 1, row * ch + 1, (col + 1) * cw - 1, (row + 1) * ch - 1)
 }
 
 /// Il rettangolo (x0, y0, x1, y1) della carta `c` nel foglio, senza il margine dello stile.

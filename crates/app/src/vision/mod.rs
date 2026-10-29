@@ -8,6 +8,8 @@ pub mod detect;
 pub mod memory;
 pub mod reference;
 pub mod screen;
+#[cfg(test)]
+mod synth;
 
 /// Immagine RGB.
 #[derive(Clone, Debug)]
@@ -400,6 +402,7 @@ mod tests {
             }
         }
         let mem = Mutex::new(Memory::in_memory());
+        if let Ok(d) = std::env::var("SALVA") { img.save_png(std::path::Path::new(&format!("{d}/asso_sotto.png"))).unwrap(); }
         let first = read_briscola(&img, &mem).expect("carte");
         let asso = cards::make(1, 0);
         let t = first.trump.as_ref().expect("briscola");
@@ -559,6 +562,23 @@ mod bench {
         (ok, auto)
     }
 
+    /// Cosa trova la lettura in una schermata qualsiasi:
+    /// `IMG=schermata.png cargo test --release -p brismaster diagnosi_immagine -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn diagnosi_immagine() {
+        let img = capture::load_png(std::path::Path::new(&std::env::var("IMG").unwrap())).unwrap();
+        let a = detect::analyze(&img);
+        println!("card_l {:.0}", a.card_l);
+        for f in &a.cards {
+            let (c, m) = f.view.best(cards::CardSet::FULL).unwrap();
+            println!("card ({:.0},{:.0}) {:.0}x{:.0} land {} vis {:.2?} score {:.3} {} {:.2}", f.rect.cx, f.rect.cy, 2.0 * f.rect.hw, 2.0 * f.rect.hh, f.rect.landscape(), f.view.vis, f.score, cards::name(c), m);
+        }
+        for b in a.blobs.iter() {
+            println!("   blob ({:.0},{:.0}) {:.0}x{:.0} white {:.2} bg {:.2}", b.rect.cx, b.rect.cy, 2.0 * b.rect.hw, 2.0 * b.rect.hh, b.white, b.bg);
+        }
+    }
+
     #[test]
     #[ignore]
     fn banco() {
@@ -589,6 +609,124 @@ mod bench {
             let t = std::time::Instant::now();
             let _ = read_briscola(&site, &Mutex::new(memory::Memory::in_memory()));
             println!("lettura 1524x1032 in {:?}", t.elapsed());
+        }
+    }
+}
+
+/// Tavoli finti con mazzi, tavoli e colori diversi: il riconoscimento deve reggere anche su
+/// grafiche che non conosce (un terzo mazzo napoletano, mai visto) e su quelle che conosce ma
+/// ridisegnate un po' diverse (proporzioni, colori, sfocatura, carte ruotate, scale diverse).
+#[cfg(test)]
+mod other_sites {
+    use super::synth::{table, Bg, Deal, Look};
+    use super::*;
+    use briscola_core::cards::{self, Card};
+
+    fn load_jpg(path: &std::path::Path) -> Img {
+        let im = image::open(path).unwrap().to_rgba8();
+        Img::from_rgba(im.width() as usize, im.height() as usize, im.as_raw())
+    }
+
+    /// I bastoni del mazzo che l'app non conosce, dall'asso al re.
+    fn unknown_deck() -> Vec<(Card, Img)> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/mazzo_despues");
+        (1..=10).map(|k| (cards::make(3, k - 1), load_jpg(&dir.join(format!("bastoni_{k}.jpg"))))).collect()
+    }
+
+    fn looks() -> Vec<Look> {
+        let d = Look::default();
+        vec![
+            d,
+            Look { bg: Bg::Wood, card_h: 150.0, pile: 0.8, cover: 0.5, ..d },
+            Look { bg: Bg::Felt([30, 60, 140]), card_h: 110.0, aspect: Some(0.68), fan: 6.0, ..d },
+            Look { bg: Bg::Felt([120, 25, 30]), card_h: 190.0, hue: 8.0, sat: 1.3, gamma: 0.85, ..d },
+            Look { bg: Bg::Wood, card_h: 130.0, sat: 0.75, gamma: 1.2, blur: true, cover: 0.4, ..d },
+            Look { bg: Bg::Felt([20, 105, 70]), card_h: 140.0, aspect: Some(0.56), hue: -8.0, fan: -5.0, pile: 0.85, ..d },
+            Look { bg: Bg::Felt([45, 45, 50]), card_h: 85.0, hue: 15.0, sat: 0.6, ..d },
+            Look { bg: Bg::Felt([90, 60, 30]), card_h: 230.0, aspect: Some(0.66), hue: -15.0, gamma: 1.3, fan: 8.0, cover: 0.55, ..d },
+        ]
+    }
+
+    /// Per ogni ruolo: (giusta, abbastanza sicura da non chiedere conferma).
+    fn check(img: &Img, want: &[(&str, Card)]) -> Vec<(String, bool, bool)> {
+        let s = read_briscola(img, &Mutex::new(Memory::in_memory()));
+        let get = |role: &str| -> Option<CardView> {
+            let s = s.as_ref()?;
+            match role {
+                "briscola" => s.trump.clone(),
+                "avversario" => s.opp_slot.clone(),
+                "tua" => s.my_slot.clone(),
+                r => s.hand.get(r[4..].parse::<usize>().ok()?).cloned(),
+            }
+        };
+        want.iter()
+            .map(|(role, c)| match get(role).and_then(|v| v.best(CardSet::FULL)) {
+                Some((b, m)) => (format!("{role}: {}{}", cards::name(b), if b == *c { "" } else { " (sbagliata)" }), b == *c, b == *c && m >= 1.4),
+                None => (format!("{role}: non vista"), false, false),
+            })
+            .collect()
+    }
+
+    /// Distribuisce le carte a turno: tre in mano, una per parte in tavola, la briscola.
+    fn run(deck: &[(Card, Img)], label: &str, verbose: bool) -> (usize, usize, usize) {
+        let (mut ok, mut auto, mut n) = (0, 0, 0);
+        for (k, look) in looks().iter().enumerate() {
+            let pick = |i: usize| &deck[(k * 6 + i) % deck.len()];
+            let (h0, h1, h2, o, m, t) = (pick(0), pick(1), pick(2), pick(3), pick(4), pick(5));
+            let deal = Deal { hand: vec![&h0.1, &h1.1, &h2.1], opp: Some(&o.1), mine: Some(&m.1), trump: Some(&t.1) };
+            let img = table(&deal, look);
+            if verbose {
+                let dir = std::env::var("SALVA").ok();
+                if let Some(d) = dir {
+                    img.save_png(std::path::Path::new(&format!("{d}/{label}_{k}.png"))).unwrap();
+                    screen::diagnose(&img).save_png(std::path::Path::new(&format!("{d}/{label}_{k}_diag.png"))).unwrap();
+                }
+            }
+            let want =
+                [("mano0", h0.0), ("mano1", h1.0), ("mano2", h2.0), ("avversario", o.0), ("tua", m.0), ("briscola", t.0)];
+            let res = check(&img, &want);
+            if verbose {
+                let line: Vec<String> = res.iter().map(|r| r.0.clone()).collect();
+                println!("{label} tavolo {k}: {}", line.join(" · "));
+            }
+            ok += res.iter().filter(|r| r.1).count();
+            auto += res.iter().filter(|r| r.2).count();
+            n += res.len();
+        }
+        (ok, auto, n)
+    }
+
+    fn known_deck(style: usize) -> Vec<(Card, Img)> {
+        // Un ordine che mescola semi e valori.
+        (0..40u8).map(|i| (i * 7) % 40).map(|c| (c, reference::card_image(style, c))).collect()
+    }
+
+    /// Stampa i tavoli uno per uno (con SALVA=cartella salva anche le immagini e la diagnosi).
+    /// `cargo test --release -p brismaster banco_siti -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn banco_siti() {
+        for (label, deck) in [("sconosciuto", unknown_deck()), ("wikimedia", known_deck(0)), ("classico", known_deck(1))] {
+            let (ok, auto, n) = run(&deck, label, true);
+            println!("== {label}: giuste {ok}/{n}, senza conferma {auto}/{n}");
+        }
+    }
+
+    /// Un mazzo napoletano che l'app non conosce: tutte le carte giuste e senza conferma, su tutti
+    /// i tavoli (legno, panni di colori diversi, carte piccole e grandi, colori e proporzioni
+    /// diversi, sfocato, mano a ventaglio, briscola coperta di più o di meno).
+    #[test]
+    fn unknown_deck_on_many_tables() {
+        let (ok, auto, n) = run(&unknown_deck(), "sconosciuto", false);
+        assert_eq!((ok, auto), (n, n), "giuste {ok}/{n}, senza conferma {auto}/{n}");
+    }
+
+    /// I mazzi che conosce, ridisegnati un po' diversi su tutti i tavoli.
+    #[test]
+    fn known_decks_redrawn() {
+        for style in 0..2 {
+            let (ok, auto, n) = run(&known_deck(style), "noto", false);
+            assert_eq!((ok, auto), (n, n), "mazzo {style}: giuste {ok}/{n}, senza conferma {auto}/{n}");
         }
     }
 }

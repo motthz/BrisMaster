@@ -1,13 +1,16 @@
 //! Aggiornamento automatico dalle GitHub Releases del repository pubblico.
 //!
-//! All'avvio l'app interroga l'ultima release; se il numero di versione è più alto
-//! di quello in esecuzione scarica `BrisMaster.exe`, sostituisce l'eseguibile e si riavvia.
+//! All'avvio l'app interroga l'ultima release; se il numero di versione è più alto di quello in
+//! esecuzione, su richiesta scarica l'installatore `BrisMaster-Setup.exe`, lo avvia e si chiude:
+//! l'installatore sostituisce l'app nella sua cartella e la riavvia. L'app non sostituisce più sé
+//! stessa mentre è in esecuzione: è il comportamento che gli antivirus (Bitdefender in testa)
+//! trattano come quello di un programma malevolo.
 
 use serde::Deserialize;
 use std::io::Read;
 
 pub const REPO: &str = "motthz/BrisMaster";
-pub const ASSET_NAME: &str = "BrisMaster.exe";
+pub const ASSET_NAME: &str = "BrisMaster-Setup.exe";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Debug)]
@@ -80,7 +83,8 @@ pub fn parse_version(tag: &str) -> Result<semver::Version, String> {
     semver::Version::parse(tag.trim_start_matches(['v', 'V'])).map_err(|e| format!("tag {tag}: {e}"))
 }
 
-/// Scarica la nuova versione, sostituisce l'eseguibile in uso e la avvia.
+/// Scarica l'installatore della nuova versione nella cartella temporanea, lo avvia (aggiorna
+/// l'app installata e la riapre) e chiude l'app.
 pub fn install(rel: &Release) -> Result<(), String> {
     let resp = agent().get(&rel.asset_url).call().map_err(|e| format!("download non riuscito: {e}"))?;
     let mut bytes = Vec::new();
@@ -92,16 +96,13 @@ pub fn install(rel: &Release) -> Result<(), String> {
     if bytes.len() < 1024 || &bytes[..2] != b"MZ" {
         return Err("il file scaricato non è un eseguibile valido".into());
     }
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let dir = exe.parent().ok_or("cartella dell'eseguibile non trovata")?;
-    let tmp = dir.join(format!(".BrisMaster-{}.exe.new", rel.version));
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("impossibile scrivere {}: {e}", tmp.display()))?;
-    let result = self_replace::self_replace(&tmp).map_err(|e| format!("sostituzione non riuscita: {e}"));
-    let _ = std::fs::remove_file(&tmp);
-    result?;
-    std::process::Command::new(&exe)
+    let setup = std::env::temp_dir().join(format!("BrisMaster-Setup-{}.exe", rel.version));
+    std::fs::write(&setup, &bytes).map_err(|e| format!("impossibile scrivere {}: {e}", setup.display()))?;
+    // Installazione senza domande (si vede solo l'avanzamento); a fine installazione l'app si riapre.
+    std::process::Command::new(&setup)
+        .args(["/SILENT", "/SP-", "/NOCANCEL"])
         .spawn()
-        .map_err(|e| format!("riavvio non riuscito: {e}"))?;
+        .map_err(|e| format!("avvio dell'installatore non riuscito: {e}"))?;
     std::process::exit(0);
 }
 

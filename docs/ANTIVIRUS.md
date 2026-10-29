@@ -14,6 +14,17 @@ Per capire quale regola scatta serve il nome della minaccia che l'antivirus most
 
 Dalla versione 0.4.6 c'è `BrisMaster-Setup.exe`, che installa BrisMaster sempre nella stessa cartella: `%LOCALAPPDATA%\Programs\BrisMaster` (incolla questo percorso nella barra degli indirizzi di Esplora file per aprirla). Una sola esclusione per quella cartella (vedi sotto) vale anche per tutti gli aggiornamenti automatici.
 
+## Bitdefender
+
+Bitdefender blocca BrisMaster soprattutto con **Advanced Threat Defense**, che giudica i programmi da quello che fanno mentre sono in esecuzione: BrisMaster fotografa lo schermo più volte al secondo (per leggere la partita) e, fino alla versione 0.5.1, si aggiornava sostituendo il proprio exe mentre era aperto. Dalla 0.5.2 l'aggiornamento passa dall'installatore, come per i programmi comuni; la lettura dello schermo invece resta, perché è quello che fa l'app.
+
+1. Installa BrisMaster con `BrisMaster-Setup.exe`: l'exe sta sempre in `%LOCALAPPDATA%\Programs\BrisMaster\BrisMaster.exe`, anche dopo gli aggiornamenti.
+2. Se è in quarantena: **Protezione → Antivirus → Quarantena**, seleziona BrisMaster e **Ripristina**.
+3. Eccezione: **Protezione → Advanced Threat Defense → Impostazioni → Gestisci eccezioni → + Aggiungi un'eccezione**, incolla il percorso `%LOCALAPPDATA%\Programs\BrisMaster\BrisMaster.exe` (o sfoglia fino all'exe), attiva **Advanced Threat Defense** e, se c'è, anche **Antivirus**, poi **Salva**. Le eccezioni di Advanced Threat Defense accettano solo file `.exe`, non cartelle: per questo conta che il percorso resti sempre lo stesso.
+4. Segnala il falso positivo ai Bitdefender Labs dal modulo <https://www.bitdefender.com/consumer/support/answer/29358/> (se non funziona, da <https://www.bitdefender.com/en-us/business/submit>): categoria *False Positive*, allega `BrisMaster.exe` (massimo 25 MB), scrivi il nome della minaccia che compare nella notifica di Bitdefender e, se puoi, aggiungi uno screenshot. Rispondono per email dopo l'analisi, di solito in pochi giorni, e il blocco sparisce per tutti finché esce una versione nuova.
+
+Guide ufficiali: [eccezioni di Advanced Threat Defense](https://www.bitdefender.com/consumer/support/answer/130706/), [app attendibile bloccata da Advanced Threat Defense](https://www.bitdefender.com/consumer/support/answer/88974).
+
 ## SmartScreen: "Windows ha protetto il PC"
 
 1. Clicca **Ulteriori informazioni**.

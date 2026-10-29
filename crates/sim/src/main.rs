@@ -485,7 +485,7 @@ fn main() -> ExitCode {
             };
         }
         Some("dati") => {
-            // Dati per la rete di politica, a blocchi: un blocco già scritto si salta.
+            // Dati per la rete di politica e per la rete onesta, a blocchi: un blocco già scritto si salta.
             let out = get("--out", "dati");
             let opponent = get("--opponent", &player);
             let games: u64 = get("--games", "10000").parse().expect("--games");
@@ -499,7 +499,8 @@ fn main() -> ExitCode {
                 }
                 let to = (from + chunk).min(games);
                 match arena::policy_records(&player, &opponent, from..to, seed) {
-                    Ok(b) => {
+                    Ok((b, v)) => {
+                        std::fs::write(std::path::Path::new(&out).join(format!("valore_{from:08}.bin")), v).expect("scrittura dati");
                         let tmp = path.with_extension("tmp");
                         std::fs::write(&tmp, b).expect("scrittura dati");
                         std::fs::rename(&tmp, &path).expect("scrittura dati");

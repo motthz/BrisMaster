@@ -291,6 +291,13 @@ impl Net {
         (sigmoid(f.z[0]), sigmoid(f.z[1]) * 120.0)
     }
 
+    /// Come `eval`, ma dalla sola osservazione di chi deve muovere (rete onesta).
+    #[inline]
+    pub fn eval_obs(&self, g: &Game) -> (f32, f32) {
+        let f = self.forward(&Position::of_obs(&Observation::of(g, g.to_move())));
+        (sigmoid(f.z[0]), sigmoid(f.z[1]) * 120.0)
+    }
+
     /// Rete di politica: probabilità che chi deve muovere giochi ciascuna carta della sua mano
     /// (nell'ordine di `obs.hand.iter()`), con temperatura `temp` (1 = come allenata).
     pub fn policy(&self, obs: &Observation, temp: f32, out: &mut [f32; 3]) -> usize {

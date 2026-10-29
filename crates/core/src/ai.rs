@@ -271,12 +271,15 @@ pub struct IsmctsPlayer {
     pub value: Option<Arc<Net>>,
     /// Peso della rete nella valutazione delle foglie (1 = solo rete, 0.5 = media con la simulazione).
     pub value_mix: f64,
+    /// Rete "onesta": valuta la foglia da ciò che vede chi deve muovere (`Position::of_obs`),
+    /// non dallo stato completo, così la valutazione non usa carte che nessuno conosce.
+    pub honest: bool,
 }
 
 impl IsmctsPlayer {
     /// ISMCTS classico: simulazioni euristiche con mosse casuali fino alla fine.
     pub fn new(iterations: u32) -> Self {
-        IsmctsPlayer { iterations, policy: None, rollout_solve: None, value: None, value_mix: 1.0 }
+        IsmctsPlayer { iterations, policy: None, rollout_solve: None, value: None, value_mix: 1.0, honest: false }
     }
 
     /// ISMCTS potenziato: le stesse simulazioni del motore principale (a carte scoperte,
@@ -288,6 +291,7 @@ impl IsmctsPlayer {
             rollout_solve: Some(2),
             value: None,
             value_mix: 1.0,
+            honest: false,
         }
     }
 
@@ -295,11 +299,18 @@ impl IsmctsPlayer {
     pub fn with_net(iterations: u32, net: Arc<Net>, mix: f64) -> Self {
         IsmctsPlayer { value: Some(net), value_mix: mix, ..IsmctsPlayer::strong(iterations) }
     }
+
+    /// ISMCTS potenziato con la rete onesta nelle foglie (allenata su ciò che vede chi muove).
+    pub fn with_honest_net(iterations: u32, net: Arc<Net>, mix: f64) -> Self {
+        IsmctsPlayer { honest: true, ..IsmctsPlayer::with_net(iterations, net, mix) }
+    }
 }
 
 impl Player for IsmctsPlayer {
     fn name(&self) -> String {
-        if self.value.is_some() {
+        if self.honest {
+            format!("ISMCTS con rete onesta ({} iterazioni)", self.iterations)
+        } else if self.value.is_some() {
             format!("ISMCTS con rete ({} iterazioni)", self.iterations)
         } else if self.policy.is_some() {
             format!("ISMCTS potenziato ({} iterazioni)", self.iterations)
@@ -384,7 +395,7 @@ impl IsmctsPlayer {
                     let solve_at = self.rollout_solve.unwrap_or(0);
                     let net = self.value.as_ref().filter(|_| !leaf.is_over() && leaf.deck_len > solve_at);
                     let by_net = net.map(|net| {
-                        let (w, pts) = net.eval(&leaf);
+                        let (w, pts) = if self.honest { net.eval_obs(&leaf) } else { net.eval(&leaf) };
                         let (w, pts) = (w as f64, pts as f64);
                         if leaf.to_move() == 0 { (w, pts) } else { (1.0 - w, 120.0 - pts) }
                     });

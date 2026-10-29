@@ -644,6 +644,9 @@ mod other_sites {
             Look { bg: Bg::Felt([20, 105, 70]), card_h: 140.0, aspect: Some(0.56), hue: -8.0, fan: -5.0, pile: 0.85, ..d },
             Look { bg: Bg::Felt([45, 45, 50]), card_h: 85.0, hue: 15.0, sat: 0.6, ..d },
             Look { bg: Bg::Felt([90, 60, 30]), card_h: 230.0, aspect: Some(0.66), hue: -15.0, gamma: 1.3, fan: 8.0, cover: 0.55, ..d },
+            Look { bg: Bg::Sea, card_h: 160.0, pile: 0.8, ..d },
+            Look { bg: Bg::Sky, card_h: 140.0, pile: 0.8, cover: 0.5, ..d },
+            Look { bg: Bg::Sea, card_h: 120.0, aspect: Some(0.7), blur: true, fan: 5.0, ..d },
         ]
     }
 

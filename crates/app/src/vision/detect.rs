@@ -783,10 +783,14 @@ pub fn scene(img: &Img) -> Scene {
         .map(|b| b.rect.cy)
         .fold(f32::MAX, f32::min);
     let mid = if backs_y < f32::MAX { (backs_y + bottom) / 2.0 } else { bottom - 2.1 * card_l };
-    // In tavola: carte in piedi non troppo più piccole di quelle in mano (un pezzo di carta non lo è).
+    // In tavola: carte in piedi non troppo più piccole di quelle in mano (un pezzo di carta non lo è)
+    // e più o meno sopra la mano: le carte giocate vanno al centro del tavolo, non in un punto
+    // qualsiasi dello sfondo.
+    let hand_cx = (!hand.is_empty()).then(|| hand.iter().map(|f| f.rect.cx).sum::<f32>() / hand.len() as f32);
+    let central = |f: &Found| hand_cx.is_none_or(|x| (f.rect.cx - x).abs() < 2.5 * card_l);
     let mut table: Vec<&Found> = others
         .into_iter()
-        .filter(|f| upright(f) && f.rect.long() > 0.7 * card_l && !trump.is_some_and(|t| std::ptr::eq(t, *f)))
+        .filter(|f| upright(f) && f.rect.long() > 0.7 * card_l && central(f) && !trump.is_some_and(|t| std::ptr::eq(t, *f)))
         .collect();
     table.sort_by(|x, y| x.rect.cy.total_cmp(&y.rect.cy));
     match table.as_slice() {

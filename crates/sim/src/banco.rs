@@ -7,6 +7,7 @@
 //!   briscola-sim esame   --player SPEC [--positions 20000] [--out FILE]
 //!   briscola-sim strati  --player SPEC --baseline SPEC --opponent SPEC [--deals N] [--out FILE]
 //!   briscola-sim torneo  [--giocatori A,B,...] [--deals 100] [--out FILE]
+//!   briscola-sim diagnosi --player SPEC [--deals 300] [--oracolo ITERAZIONI] [--out FILE]
 
 use crate::arena::{describe, run_games, MatchStats};
 use crate::agents::make_agent;
@@ -471,6 +472,102 @@ pub fn tournament(players: &[String], deals: u64, seed: u64) -> String {
         writeln!(md, "| {} | {} | {:+.0} | {} |", k + 1, describe(&players[i]), elo[i], pct(avg)).unwrap();
     }
     md
+}
+
+// ---------------------------------------------------------------------------
+// Diagnosi: dove sbaglia il giocatore rispetto a chi vede la mano avversaria.
+
+/// Una decisione del giocatore giudicata dall'oracolo.
+struct Judged {
+    deck_len: u8,
+    following: bool,
+    /// Probabilità di vittoria persa secondo l'oracolo (0 se ha scelto la stessa carta).
+    loss: f64,
+    differ: bool,
+}
+
+/// Il giocatore contro se stesso per `deals` mazzi; a ogni sua decisione con il mazzo non vuoto un ISMCTS
+/// potenziato da `oracle_iters` iterazioni che vede la mano avversaria (ma non il mazzo) dice quanto vale ogni carta.
+/// La differenza tra la carta migliore per l'oracolo e quella scelta è la probabilità di vittoria persa
+/// per non sapere le carte avversarie (più il rumore della ricerca).
+pub fn diagnose(player: &str, deals: u64, oracle_iters: u32, seed: u64) -> Result<String, String> {
+    make_agent(player)?;
+    let oracle = briscola_core::ai::IsmctsPlayer::strong(oracle_iters);
+    let judged: Vec<Judged> = (0..deals)
+        .into_par_iter()
+        .flat_map_iter(|d| {
+            let mut rng = SmallRng::seed_from_u64(seed ^ d.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut order: Vec<Card> = (0..NUM_CARDS as u8).collect();
+            order.shuffle(&mut rng);
+            let mut agents = [make_agent(player).unwrap(), make_agent(player).unwrap()];
+            for a in agents.iter_mut() {
+                a.start(&order, 0);
+            }
+            let mut g = Game::from_order(&order, 0);
+            let mut out = Vec::new();
+            while !g.is_over() {
+                let p = g.to_move();
+                let c = agents[p as usize].choose(&g, p, &mut rng);
+                if g.deck_len > 0 && g.hands[p as usize].len() >= 2 {
+                    let obs = Observation::of(&g, p);
+                    let opp = g.hands[1 - p as usize];
+                    let root = oracle.search_with(&obs, &mut rng, |r| obs.determinize_given(opp, r));
+                    let value = |k: &briscola_core::ai::RootChild| k.wins / k.visits.max(1.0);
+                    let best = root.iter().max_by(|a, b| a.visits.partial_cmp(&b.visits).unwrap()).unwrap();
+                    let mine = root.iter().find(|k| k.card == c).unwrap();
+                    out.push(Judged {
+                        deck_len: g.deck_len,
+                        following: g.table.is_some(),
+                        loss: (value(best) - value(mine)).max(0.0),
+                        differ: best.card != c,
+                    });
+                }
+                g.play(c);
+                for a in agents.iter_mut() {
+                    a.observe(c);
+                }
+            }
+            out
+        })
+        .collect();
+    let mut md = String::new();
+    writeln!(md, "## Diagnosi: dove sbaglia {}
+", describe(player)).unwrap();
+    writeln!(
+        md,
+        "{} decisioni col mazzo non vuoto, da {deals} partite contro se stesso. Le giudica un ISMCTS potenziato da {oracle_iters} iterazioni \
+         che vede la mano avversaria. **Mosse diverse**: quante volte l'oracolo avrebbe giocato un'altra carta. **Vittorie perse**: \
+         probabilità di vittoria persa per decisione, secondo l'oracolo; sommata su una partita dice quanto costa non sapere le carte.\n",
+        judged.len()
+    ).unwrap();
+    writeln!(md, "| Momento | Decisioni | Mosse diverse | Vittorie perse per decisione | Vittorie perse a partita | Quota del totale |\n|---|---:|---:|---:|---:|---:|").unwrap();
+    let total: f64 = judged.iter().map(|j| j.loss).sum();
+    type F = fn(&Judged) -> bool;
+    let groups: [(&str, F); 8] = [
+        ("Mazzo 30–33 (prime prese)", |j| j.deck_len >= 30),
+        ("Mazzo 24–29", |j| (24..30).contains(&j.deck_len)),
+        ("Mazzo 18–23", |j| (18..24).contains(&j.deck_len)),
+        ("Mazzo 12–17", |j| (12..18).contains(&j.deck_len)),
+        ("Mazzo 6–11", |j| (6..12).contains(&j.deck_len)),
+        ("Mazzo 1–5 (pre-finale)", |j| (1..6).contains(&j.deck_len)),
+        ("Quando apre", |j| !j.following),
+        ("Quando risponde", |j| j.following),
+    ];
+    for (label, f) in groups {
+        let sel: Vec<&Judged> = judged.iter().filter(|j| f(j)).collect();
+        let n = sel.len().max(1) as f64;
+        let loss: f64 = sel.iter().map(|j| j.loss).sum();
+        writeln!(
+            md,
+            "| {label} | {} | {} | {} | {} | {} |",
+            sel.len(),
+            pct(sel.iter().filter(|j| j.differ).count() as f64 / n),
+            pct(loss / n),
+            pct(loss / deals as f64 / 2.0),
+            pct(loss / total.max(1e-9))
+        ).unwrap();
+    }
+    Ok(md)
 }
 
 #[cfg(test)]

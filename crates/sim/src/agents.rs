@@ -83,12 +83,66 @@ struct Infer {
     game: Option<Game>,
     log: Log,
     me: Option<u8>,
+    /// Diagnosi: nelle situazioni scelte vede la mano avversaria (vedi `oracolo:`).
+    oracle: Option<Moment>,
+}
+
+/// Momento della partita in cui l'oracolo vede la mano avversaria.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Moment {
+    /// Mazzo con 24 carte o più (le prime 5–6 prese).
+    Inizio,
+    /// Mazzo da 12 a 23 carte.
+    Meta,
+    /// Mazzo da 1 a 11 carte: il pre-finale.
+    Prefinale,
+    /// Quando apre la presa.
+    Apre,
+    /// Quando risponde.
+    Risponde,
+    /// Sempre (il baro).
+    Sempre,
+}
+
+impl Moment {
+    pub fn parse(s: &str) -> Option<Moment> {
+        Some(match s {
+            "inizio" => Moment::Inizio,
+            "meta" => Moment::Meta,
+            "prefinale" => Moment::Prefinale,
+            "apre" => Moment::Apre,
+            "risponde" => Moment::Risponde,
+            "sempre" => Moment::Sempre,
+            _ => return None,
+        })
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Moment::Inizio => "a inizio partita (mazzo da 24 carte in su)",
+            Moment::Meta => "a metà partita (mazzo da 12 a 23 carte)",
+            Moment::Prefinale => "nel pre-finale (mazzo da 1 a 11 carte)",
+            Moment::Apre => "quando apre la presa",
+            Moment::Risponde => "quando risponde",
+            Moment::Sempre => "sempre",
+        }
+    }
+    fn holds(self, obs: &Observation) -> bool {
+        match self {
+            Moment::Inizio => obs.deck_len >= 24,
+            Moment::Meta => (12..24).contains(&obs.deck_len),
+            Moment::Prefinale => (1..12).contains(&obs.deck_len),
+            Moment::Apre => obs.table.is_none(),
+            Moment::Risponde => obs.table.is_some(),
+            Moment::Sempre => true,
+        }
+    }
 }
 
 impl Agent for Infer {
     fn name(&self) -> String {
         let floor = if self.floor > 0.0 { format!(", minimo {:.0}%", self.floor * 100.0) } else { String::new() };
-        format!("{} · deduce le carte avversarie (temperatura {}{floor})", self.search.name(), self.temp)
+        let oracle = self.oracle.map_or(String::new(), |m| format!(" · vede la mano avversaria {}", m.label()));
+        format!("{} · deduce le carte avversarie (temperatura {}{floor}){oracle}", self.search.name(), self.temp)
     }
     fn start(&mut self, order: &[Card], first: u8) {
         self.game = Some(Game::from_order(order, first));
@@ -104,6 +158,9 @@ impl Agent for Infer {
         // A mazzo vuoto le carte avversarie sono note: non c'è niente da dedurre.
         let root = if obs.deck_len == 0 {
             self.search.search(&obs, rng)
+        } else if self.oracle.is_some_and(|m| m.holds(&obs)) {
+            let opp = g.hands[1 - me as usize];
+            self.search.search_with(&obs, rng, |r| obs.determinize_given(opp, r))
         } else {
             let belief = Belief::infer(&obs, &self.log.events, &self.policy, self.temp, self.floor, self.pool, rng);
             self.search.search_with(&obs, rng, |r| obs.determinize_given(belief.sample(r), r))
@@ -304,6 +361,30 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
     })
 }
 
+/// Il giocatore `infer:` da `rest` (quello che segue `infer:`).
+fn make_infer(rest: &str, spec: &str) -> Result<Infer, String> {
+    // infer:ITERAZIONI:TEMPERATURA[:MANI[:MINIMO]][:net]
+    let mut parts: Vec<&str> = rest.split(':').collect();
+    let with_net = parts.last() == Some(&"net");
+    if with_net {
+        parts.pop();
+    }
+    let num = |i: usize, d: f64| parts.get(i).map_or(Ok(d), |s| s.parse::<f64>().map_err(|_| format!("numero non valido in '{spec}'")));
+    let n = num(0, 0.0)? as u32;
+    let search = if with_net { IsmctsPlayer::with_net(n, value_net()?, 1.0) } else { IsmctsPlayer::strong(n) };
+    Ok(Infer {
+        search,
+        policy: policy_net()?,
+        temp: num(1, 1.0)? as f32,
+        pool: num(2, 1000.0)? as usize,
+        floor: num(3, 0.0)? as f32,
+        game: None,
+        log: Log::default(),
+        me: None,
+        oracle: None,
+    })
+}
+
 /// Crea un giocatore da SPEC, anche di una versione rilasciata (`vX.Y.Z/SPEC`).
 pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
     if let Some((ver, rest)) = spec.split_once('/') {
@@ -328,26 +409,16 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
         let suffix = if mix < 1.0 { format!(" · rete al {:.0}%", mix * 100.0) } else { String::new() };
         return Ok(Box::new(Current(Box::new(IsmctsPlayer::with_net(n, value_net()?, mix)), suffix)));
     }
+    if let Some(rest) = spec.strip_prefix("oracolo:") {
+        // oracolo:MOMENTO:SPEC_INFER — diagnosi: la deduzione, ma con la mano avversaria vista nel momento dato.
+        let (m, inner) = rest.split_once(':').ok_or(format!("serve oracolo:MOMENTO:infer:..., non '{spec}'"))?;
+        let moment = Moment::parse(m).ok_or(format!("momento sconosciuto: {m} (inizio, meta, prefinale, apre, risponde, sempre)"))?;
+        let mut a = make_infer(inner.strip_prefix("infer:").ok_or(format!("dopo oracolo:{m}: serve infer:..., non '{inner}'"))?, spec)?;
+        a.oracle = Some(moment);
+        return Ok(Box::new(a));
+    }
     if let Some(rest) = spec.strip_prefix("infer:") {
-        // infer:ITERAZIONI:TEMPERATURA[:MANI[:MINIMO]][:net]
-        let mut parts: Vec<&str> = rest.split(':').collect();
-        let with_net = parts.last() == Some(&"net");
-        if with_net {
-            parts.pop();
-        }
-        let num = |i: usize, d: f64| parts.get(i).map_or(Ok(d), |s| s.parse::<f64>().map_err(|_| format!("numero non valido in '{spec}'")));
-        let n = num(0, 0.0)? as u32;
-        let search = if with_net { IsmctsPlayer::with_net(n, value_net()?, 1.0) } else { IsmctsPlayer::strong(n) };
-        return Ok(Box::new(Infer {
-            search,
-            policy: policy_net()?,
-            temp: num(1, 1.0)? as f32,
-            pool: num(2, 1000.0)? as usize,
-            floor: num(3, 0.0)? as f32,
-            game: None,
-            log: Log::default(),
-            me: None,
-        }));
+        return Ok(Box::new(make_infer(rest, spec)?));
     }
     if let Some(n) = spec.strip_prefix("vedetutto:") {
         let n = n.parse::<u32>().map_err(|_| format!("numero non valido in '{spec}'"))?;
@@ -451,6 +522,8 @@ mod tests {
             assert!(make_agent(s).is_ok(), "{s}");
         }
         assert!(make_agent("v9.9.9/engine:20").is_err());
+        assert!(make_agent("oracolo:boh:infer:20:1").is_err());
+        assert_eq!(Moment::parse("prefinale"), Some(Moment::Prefinale));
         assert!(make_agent("boh").is_err());
     }
 }

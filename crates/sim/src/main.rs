@@ -470,6 +470,20 @@ fn main() -> ExitCode {
                 }
             };
         }
+        Some("diagnosi") => {
+            let oracle: u32 = get("--oracolo", "20000").parse().expect("--oracolo");
+            return match banco::diagnose(&player, get("--deals", "300").parse().expect("--deals"), oracle, seed) {
+                Ok(md) => {
+                    println!("{md}");
+                    write_out(&md);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Some("torneo") => {
             let list = get("--giocatori", &banco::REPRESENTATIVES.join(","));
             let players: Vec<String> = list.split(',').map(String::from).collect();

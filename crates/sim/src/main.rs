@@ -84,6 +84,8 @@ fn table_row(name: &str, s: &MatchStats) -> String {
 /// Risultati dei mazzi `start..end`. Con la variabile BRISCOLA_SIM_CACHE (una cartella) si salvano
 /// a blocchi di mazzi, così un rapporto lungo interrotto riparte da dove era arrivato.
 fn chunk_cached(player: &str, opponent: &str, seed: u64, start: u64, end: u64) -> Vec<MatchStats> {
+    // `{avv}` nella SPEC del giocatore diventa l'avversario (es. adatta:20:{avv}@infer:...).
+    let player = &player.replace("{avv}", opponent);
     let play = |r: std::ops::Range<u64>| {
         run_deals(player, opponent, r, seed).unwrap_or_else(|e| {
             eprintln!("{e}");

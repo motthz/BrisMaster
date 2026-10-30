@@ -104,7 +104,8 @@ pub struct Adapt {
     cands: Vec<Persona>,
     /// Pesi all'inizio di ogni partita: quanto imparato dallo storico (vuoto = niente storico).
     history: Vec<f64>,
-    /// Quanto fidarsi del modello riconosciuto (1 = del tutto).
+    /// Quanto fidarsi del modello riconosciuto (1 = del tutto). Di base ½: con fiducia piena un
+    /// modello solo simile all'avversario vero costa punti (−1,8 contro «caricatore»).
     scale: f64,
     /// Logaritmo della verosimiglianza di ogni modello; l'ultimo è quello forte.
     logw: Vec<f64>,
@@ -122,7 +123,7 @@ impl Adapt {
         let cands: Vec<Persona> = (0..n as u64)
             .map(|i| Persona::new(format!("modello {i}"), Knobs::random(ADAPT_SEED + i), ADAPT_SEED + i))
             .collect();
-        Adapt { logw: vec![0.0; n + 1], history: Vec::new(), scale: 1.0, cands, rng: SmallRng::seed_from_u64(ADAPT_SEED) }
+        Adapt { logw: vec![0.0; n + 1], history: Vec::new(), scale: 0.5, cands, rng: SmallRng::seed_from_u64(ADAPT_SEED) }
     }
 
     fn reset(&mut self) {
@@ -651,7 +652,8 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
         if let Some(x) = std::env::var("BRISCOLA_ADAPT_SCALE").ok().and_then(|x| x.parse().ok()) {
             adapt.scale = x;
         }
-        if let Some((k, opp)) = history {
+        // Lo storico si può fare solo contro gli avversari "semplici" (non i motori che deducono).
+        if let Some((k, opp)) = history.filter(|(_, opp)| make_player(opp).is_ok()) {
             adapt.warm_up(opp, k, &a.policy)?;
         }
         a.adapt = Some(adapt);

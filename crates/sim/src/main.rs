@@ -94,7 +94,7 @@ fn chunk_cached(player: &str, opponent: &str, seed: u64, start: u64, end: u64) -
     };
     let Ok(dir) = std::env::var("BRISCOLA_SIM_CACHE") else { return play(start..end) };
     // Le reti fanno parte del giocatore: con reti diverse i risultati salvati non valgono.
-    let nets: String = ["BRISCOLA_NET", "BRISCOLA_POLICY"]
+    let nets: String = ["BRISCOLA_NET", "BRISCOLA_POLICY", "BRISCOLA_PRIOR"]
         .iter()
         .filter(|_| format!("{player} {opponent}").contains("net:") || format!("{player} {opponent}").contains("infer:") || format!("{player} {opponent}").contains("esatta:"))
         .filter_map(|v| std::env::var(v).ok())

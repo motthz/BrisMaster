@@ -274,12 +274,29 @@ pub struct IsmctsPlayer {
     /// Rete "onesta": valuta la foglia da ciò che vede chi deve muovere (`Position::of_obs`),
     /// non dallo stato completo, così la valutazione non usa carte che nessuno conosce.
     pub honest: bool,
+    /// Rete di politica come guida nei primi livelli dell'albero (bias progressivo): la carta
+    /// che la rete preferisce riceve un bonus `prior_weight · P / (1 + visite)`, e tra le carte
+    /// mai provate si espande prima quella preferita.
+    pub prior: Option<Arc<Net>>,
+    pub prior_weight: f64,
 }
+
+/// Profondità dell'albero fino a cui si usa la rete guida (oltre costerebbe troppo).
+const PRIOR_DEPTH: usize = 3;
 
 impl IsmctsPlayer {
     /// ISMCTS classico: simulazioni euristiche con mosse casuali fino alla fine.
     pub fn new(iterations: u32) -> Self {
-        IsmctsPlayer { iterations, policy: None, rollout_solve: None, value: None, value_mix: 1.0, honest: false }
+        IsmctsPlayer {
+            iterations,
+            policy: None,
+            rollout_solve: None,
+            value: None,
+            value_mix: 1.0,
+            honest: false,
+            prior: None,
+            prior_weight: 0.0,
+        }
     }
 
     /// ISMCTS potenziato: le stesse simulazioni del motore principale (a carte scoperte,
@@ -292,6 +309,8 @@ impl IsmctsPlayer {
             value: None,
             value_mix: 1.0,
             honest: false,
+            prior: None,
+            prior_weight: 0.0,
         }
     }
 
@@ -308,7 +327,9 @@ impl IsmctsPlayer {
 
 impl Player for IsmctsPlayer {
     fn name(&self) -> String {
-        if self.honest {
+        if self.prior.is_some() {
+            format!("ISMCTS guidato dalla rete, peso {} ({} iterazioni)", self.prior_weight, self.iterations)
+        } else if self.honest {
             format!("ISMCTS con rete onesta ({} iterazioni)", self.iterations)
         } else if self.value.is_some() {
             format!("ISMCTS con rete ({} iterazioni)", self.iterations)
@@ -394,9 +415,27 @@ impl IsmctsPlayer {
                     cur = id;
                     continue;
                 }
+                // Probabilità della rete guida per le carte di chi muove (vista da lui).
+                let mut guide = [0f64; NUM_CARDS];
+                let guided = match &self.prior {
+                    Some(net) if path.len() <= PRIOR_DEPTH && legal.len() > 1 => {
+                        let o = Observation::of(&g, g.to_move());
+                        let mut pr = [0f32; 3];
+                        let n = net.policy(&o, 1.0, &mut pr);
+                        for (c, &p) in o.hand.iter().zip(pr[..n].iter()) {
+                            guide[c as usize] = p as f64;
+                        }
+                        true
+                    }
+                    _ => false,
+                };
                 if !untried.is_empty() {
                     let v = untried.to_vec();
-                    let c = v[rng.gen_range(0..v.len())];
+                    let c = if guided {
+                        *v.iter().max_by(|&&a, &&b| guide[a as usize].partial_cmp(&guide[b as usize]).unwrap()).unwrap()
+                    } else {
+                        v[rng.gen_range(0..v.len())]
+                    };
                     let mover = g.to_move();
                     g.play(c);
                     nodes.push(Node { card: c, mover, children: vec![], visits: 0.0, avail: 1.0, reward: 0.0, wins: 0.0, points: 0.0 });
@@ -410,7 +449,9 @@ impl IsmctsPlayer {
                     .max_by(|&&a, &&b| {
                         let ucb = |k: usize| {
                             let n = &nodes[k];
-                            n.reward / n.visits + 0.7 * (n.avail.ln() / n.visits).sqrt()
+                            n.reward / n.visits
+                                + 0.7 * (n.avail.ln() / n.visits).sqrt()
+                                + self.prior_weight * guide[n.card as usize] / (1.0 + n.visits)
                         };
                         ucb(a).partial_cmp(&ucb(b)).unwrap()
                     })

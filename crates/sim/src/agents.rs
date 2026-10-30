@@ -8,7 +8,7 @@
 //!       | eng:CHIAVE=VALORE,...        (varianti del motore attuale, vedi make_player)
 //!       | noisy:ERRORE:SPEC            (es. noisy:0.25:heuristic)
 //!       | net:ITERAZIONI[:PESO]        (ISMCTS potenziato con la rete di BRISCOLA_NET nelle foglie)
-//!       | infer:ITERAZIONI:TEMP[:MANI[:MINIMO]][:net|:onesta[PESO%]] (ISMCTS potenziato che deduce le carte avversarie
+//!       | infer:ITERAZIONI:TEMP[:MANI[:MINIMO]][:net|:onesta[PESO%]][:guida[PESO]] (ISMCTS potenziato che deduce le carte avversarie
 //!                                      con la rete di politica di BRISCOLA_POLICY)
 //!       | peek:ITERAZIONI              (baro: ISMCTS potenziato che vede la mano avversaria)
 //!       | vedetutto:ITERAZIONI         (super-baro: vede la mano avversaria e l'ordine del mazzo)
@@ -67,6 +67,12 @@ fn load_net(var: &str) -> NetResult {
 fn value_net() -> NetResult {
     static NET: OnceLock<NetResult> = OnceLock::new();
     NET.get_or_init(|| load_net("BRISCOLA_NET")).clone()
+}
+
+/// Rete guida della ricerca (`infer:...:guida`): dal file in BRISCOLA_PRIOR.
+fn prior_net() -> NetResult {
+    static NET: OnceLock<NetResult> = OnceLock::new();
+    NET.get_or_init(|| load_net("BRISCOLA_PRIOR")).clone()
 }
 
 /// Rete di politica per i giocatori `infer:`: dal file in BRISCOLA_POLICY.
@@ -541,6 +547,13 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
 fn make_infer(rest: &str, spec: &str) -> Result<Infer, String> {
     // infer:ITERAZIONI:TEMPERATURA[:MANI[:MINIMO]][:net|:onesta]
     let mut parts: Vec<&str> = rest.split(':').collect();
+    // guida[PESO]: la rete di BRISCOLA_PRIOR guida i primi livelli dell'albero (peso di base 1).
+    let guide = parts.last().and_then(|p| p.strip_prefix("guida")).map(|w| if w.is_empty() { Ok(1.0) } else {
+        w.parse::<f64>().map_err(|_| format!("peso non valido in '{spec}'"))
+    }).transpose()?;
+    if guide.is_some() {
+        parts.pop();
+    }
     // onesta[PESO%]: rete onesta nelle foglie, da sola o in media con la simulazione (es. onesta50).
     let honest = parts.last().and_then(|p| p.strip_prefix("onesta")).map(|w| if w.is_empty() { Ok(1.0) } else {
         w.parse::<f64>().map(|w| w / 100.0).map_err(|_| format!("peso non valido in '{spec}'"))
@@ -557,6 +570,10 @@ fn make_infer(rest: &str, spec: &str) -> Result<Infer, String> {
         IsmctsPlayer::with_net(n, value_net()?, 1.0)
     } else {
         IsmctsPlayer::strong(n)
+    };
+    let search = match guide {
+        Some(w) => IsmctsPlayer { prior: Some(prior_net()?), prior_weight: w, ..search },
+        None => search,
     };
     Ok(Infer {
         search,

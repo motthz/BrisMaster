@@ -21,7 +21,7 @@
 //!       | vX.Y.Z/SPEC                  (versione rilasciata, es. v0.1.1/engine:1000)
 
 use crate::opponents::*;
-use crate::persona::{Chameleon, Clock, Persona, Tilt};
+use crate::persona::{Chameleon, Clock, Knobs, Persona, Tilt};
 use briscola_core::ai::*;
 use briscola_core::cards::Card;
 use briscola_core::infer::{Belief, Exact, Log};
@@ -29,6 +29,9 @@ use briscola_core::net::Net;
 use std::sync::{Arc, OnceLock};
 use briscola_core::{Game, Observation};
 use rand::rngs::SmallRng;
+use rand::distributions::Distribution;
+use rand::seq::SliceRandom;
+use rand::SeedableRng;
 
 /// Un giocatore visto dal banco di prova. Le versioni precedenti hanno tipi propri,
 /// quindi tengono una copia della partita nel proprio formato e ricevono ogni carta giocata.
@@ -89,6 +92,125 @@ struct Infer {
     exact: Option<Exact>,
     /// Modello dell'avversario da sfruttare nella ricerca, con il suo peso (`sfrutta:`).
     model: Option<(Box<dyn Player>, f64)>,
+    /// Riconosce lo stile dell'avversario durante la partita e lo sfrutta (`adatta:`).
+    adapt: Option<Adapt>,
+}
+
+/// Riconoscimento dello stile durante la partita: un insieme di modelli umani (personaggi con
+/// manopole a caso, semi diversi da quelli del banco di prova) più il modello «forte» (la rete
+/// di politica), pesati in modo bayesiano da quanto spiegano le carte giocate dall'avversario.
+/// Le carte avversarie che non conosco si estraggono a caso: niente di nascosto viene usato.
+pub struct Adapt {
+    cands: Vec<Persona>,
+    /// Pesi all'inizio di ogni partita: quanto imparato dallo storico (vuoto = niente storico).
+    history: Vec<f64>,
+    /// Quanto fidarsi del modello riconosciuto (1 = del tutto).
+    scale: f64,
+    /// Logaritmo della verosimiglianza di ogni modello; l'ultimo è quello forte.
+    logw: Vec<f64>,
+    rng: SmallRng,
+}
+
+/// Primo seme dei modelli: lontano dai personaggi del banco (`persona:0..200`).
+const ADAPT_SEED: u64 = 1_000_000;
+/// Mani avversarie estratte e campioni per modello a ogni mossa avversaria.
+const ADAPT_HANDS: usize = 6;
+const ADAPT_SAMPLES: usize = 8;
+
+impl Adapt {
+    pub fn new(n: usize) -> Adapt {
+        let cands: Vec<Persona> = (0..n as u64)
+            .map(|i| Persona::new(format!("modello {i}"), Knobs::random(ADAPT_SEED + i), ADAPT_SEED + i))
+            .collect();
+        Adapt { logw: vec![0.0; n + 1], history: Vec::new(), scale: 1.0, cands, rng: SmallRng::seed_from_u64(ADAPT_SEED) }
+    }
+
+    fn reset(&mut self) {
+        self.logw.iter_mut().for_each(|w| *w = 0.0);
+        if !self.history.is_empty() {
+            self.logw.copy_from_slice(&self.history);
+        }
+    }
+
+    /// Storico: come se avessi già giocato `games` partite contro `opponent` (le sue mosse,
+    /// viste da me, senza le sue carte nascoste). Calcolato una volta sola per ogni avversario.
+    fn warm_up(&mut self, opponent: &str, games: u64, policy: &Net) -> Result<(), String> {
+        static DONE: OnceLock<std::sync::Mutex<std::collections::HashMap<String, Vec<f64>>>> = OnceLock::new();
+        let key = format!("{opponent}/{games}/{}", self.cands.len());
+        let done = DONE.get_or_init(Default::default);
+        if let Some(h) = done.lock().unwrap().get(&key) {
+            self.history = h.clone();
+            self.reset();
+            return Ok(());
+        }
+        make_player(opponent)?;
+        for i in 0..games {
+            let mut rng = SmallRng::seed_from_u64(ADAPT_SEED ^ i);
+            let mut players = [make_player("heuristic")?, make_player(opponent)?];
+            let mut g = Game::new(&mut rng, (i % 2) as u8);
+            while !g.is_over() {
+                let p = g.to_move();
+                let c = players[p as usize].choose(&Observation::of(&g, p), &mut rng);
+                if p == 1 {
+                    self.update(&g, 0, c, policy);
+                }
+                g.play(c);
+            }
+        }
+        self.history = self.logw.clone();
+        done.lock().unwrap().insert(key, self.history.clone());
+        Ok(())
+    }
+
+    /// Probabilità di ogni modello (l'ultima è quella del modello forte, a priori ½).
+    pub fn posterior(&self) -> Vec<f64> {
+        let n = self.cands.len() as f64;
+        let prior = |k: usize| if k == self.cands.len() { 0.5f64.ln() } else { (0.5 / n).ln() };
+        let lw: Vec<f64> = self.logw.iter().enumerate().map(|(k, w)| w + prior(k)).collect();
+        let max = lw.iter().cloned().fold(f64::MIN, f64::max);
+        let e: Vec<f64> = lw.iter().map(|w| (w - max).exp()).collect();
+        let sum: f64 = e.iter().sum();
+        e.into_iter().map(|x| x / sum).collect()
+    }
+
+    /// L'avversario (che deve muovere in `g`) gioca `c`; `me` sono io.
+    fn update(&mut self, g: &Game, me: u8, c: Card, policy: &Net) {
+        let opp = 1 - me;
+        let n = g.hands[opp as usize].len() as usize;
+        if n < 2 || g.deck_len == 0 {
+            return;
+        }
+        let mine = Observation::of(g, me);
+        // Carte certe nella mano avversaria: quella giocata e la briscola scoperta, se l'ha pescata lui.
+        let mut known = briscola_core::cards::CardSet::default();
+        known.insert(c);
+        if g.trump_card_owner == Some(opp) && !mine.played.contains(g.trump_card) && g.table != Some(g.trump_card) {
+            known.insert(g.trump_card);
+        }
+        let pool: Vec<Card> = mine.unknown().minus(known).to_vec();
+        let need = n.saturating_sub(known.len() as usize);
+        let mut sums = vec![0.0f64; self.logw.len()];
+        for _ in 0..ADAPT_HANDS {
+            let mut hand = known;
+            for &x in pool.choose_multiple(&mut self.rng, need) {
+                hand.insert(x);
+            }
+            let mut w = *g;
+            w.hands[opp as usize] = hand;
+            let obs = Observation::of(&w, opp);
+            let mut pr = [0f32; 3];
+            let k = policy.policy(&obs, 1.0, &mut pr);
+            let at = obs.hand.iter().position(|x| x == c).unwrap();
+            sums[self.cands.len()] += pr[..k][at] as f64;
+            for (i, m) in self.cands.iter_mut().enumerate() {
+                let hits = (0..ADAPT_SAMPLES).filter(|_| m.choose(&obs, &mut self.rng) == c).count();
+                sums[i] += hits as f64 / ADAPT_SAMPLES as f64;
+            }
+        }
+        for (w, s) in self.logw.iter_mut().zip(sums) {
+            *w += (0.9 * s / ADAPT_HANDS as f64 + 0.1 / n as f64).ln();
+        }
+    }
 }
 
 /// Momento della partita in cui l'oracolo vede la mano avversaria.
@@ -150,7 +272,10 @@ impl Agent for Infer {
             return format!("{} · deduzione esatta (temperatura {}{floor})", self.search.name(), self.temp);
         }
         let oracle = self.oracle.map_or(String::new(), |m| format!(" · vede la mano avversaria {}", m.label()));
-        let model = self.model.as_ref().map_or(String::new(), |(m, a)| format!(" · sfrutta il modello «{}» ({:.0}%)", m.name(), a * 100.0));
+        let mut model = self.model.as_ref().map_or(String::new(), |(m, a)| format!(" · sfrutta il modello «{}» ({:.0}%)", m.name(), a * 100.0));
+        if let Some(a) = &self.adapt {
+            model += &format!(" · riconosce lo stile avversario ({} modelli)", a.cands.len());
+        }
         format!("{} · deduce le carte avversarie (temperatura {}{floor}){oracle}{model}", self.search.name(), self.temp)
     }
     fn start(&mut self, order: &[Card], first: u8) {
@@ -159,6 +284,9 @@ impl Agent for Infer {
         self.me = None;
         if self.exact.is_some() {
             self.exact = Some(Exact::default());
+        }
+        if let Some(a) = self.adapt.as_mut() {
+            a.reset();
         }
     }
     fn choose(&mut self, g: &Game, me: u8, rng: &mut SmallRng) -> Card {
@@ -170,7 +298,27 @@ impl Agent for Infer {
         // Il modello dell'avversario decide da ciò che vede lui nel mondo campionato.
         let alpha = self.model.as_ref().map_or(0.0, |(_, a)| *a);
         let mut play_model = self.model.as_mut().map(|(m, _)| move |w: &Game, r: &mut SmallRng| m.choose(&Observation::of(w, w.to_move()), r));
-        let model = play_model.as_mut().map(|f| (f as &mut dyn FnMut(&Game, &mut SmallRng) -> Card, alpha));
+        // Stile riconosciuto: con la probabilità dei modelli umani l'avversario gioca come uno di
+        // loro (estratto secondo il suo peso), altrimenti come un giocatore forte.
+        let (mut adapt_alpha, mut weights) = (0.0, Vec::new());
+        if let Some(a) = &self.adapt {
+            let post = a.posterior();
+            adapt_alpha = (1.0 - post[a.cands.len()]) * a.scale;
+            weights = post[..a.cands.len()].to_vec();
+            if std::env::var_os("BRISCOLA_DEBUG_ADAPT").is_some() && obs.deck_len <= 2 {
+                let best = weights.iter().cloned().fold(0.0, f64::max);
+                eprintln!("adatta: mazzo {} · forte {:.2} · miglior modello {:.2}", obs.deck_len, post[a.cands.len()], best);
+            }
+        }
+        let mut play_adapt = self.adapt.as_mut().filter(|_| adapt_alpha > 0.05).map(|a| {
+            let dist = rand::distributions::WeightedIndex::new(&weights).unwrap();
+            move |w: &Game, r: &mut SmallRng| a.cands[dist.sample(r)].choose(&Observation::of(w, w.to_move()), r)
+        });
+        let model = match (play_model.as_mut(), play_adapt.as_mut()) {
+            (Some(f), _) => Some((f as &mut dyn FnMut(&Game, &mut SmallRng) -> Card, alpha)),
+            (None, Some(f)) => Some((f as &mut dyn FnMut(&Game, &mut SmallRng) -> Card, adapt_alpha)),
+            _ => None,
+        };
         // A mazzo vuoto le carte avversarie sono note: non c'è niente da dedurre.
         let root = if obs.deck_len == 0 {
             self.search.search_model(&obs, rng, |r| obs.determinize(r), model)
@@ -194,6 +342,11 @@ impl Agent for Infer {
         // Il proprio posto si scopre alla prima mossa: se apre l'avversario, la sua prima carta
         // si registra lì, quando il posto è ancora ignoto.
         let me = self.me.unwrap_or(1 - g.to_move());
+        if g.to_move() != me {
+            if let Some(a) = self.adapt.as_mut() {
+                a.update(g, me, c, &self.policy);
+            }
+        }
         self.log.before_play(g, me, c);
         g.play(c);
     }
@@ -416,6 +569,7 @@ fn make_infer(rest: &str, spec: &str) -> Result<Infer, String> {
         oracle: None,
         exact: None,
         model: None,
+        adapt: None,
     })
 }
 
@@ -480,6 +634,27 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
         let alpha = alpha.parse::<f64>().map_err(|_| format!("numero non valido in '{spec}'"))?;
         let mut a = make_searcher(inner)?;
         a.model = Some((make_player(model)?, alpha));
+        return Ok(Box::new(a));
+    }
+    if let Some(rest) = spec.strip_prefix("adatta:") {
+        // adatta:GIOCATORE — GIOCATORE (infer: o esatta:) che riconosce lo stile avversario e lo sfrutta.
+        // adatta:K:AVVERSARIO@GIOCATORE — in più ricorda K partite già giocate contro AVVERSARIO.
+        let (history, inner) = match rest.split_once('@') {
+            Some((h, inner)) => {
+                let (k, opp) = h.split_once(':').ok_or(format!("serve adatta:K:AVVERSARIO@GIOCATORE, non '{spec}'"))?;
+                (Some((k.parse::<u64>().map_err(|_| format!("numero non valido in '{spec}'"))?, opp)), inner)
+            }
+            None => (None, rest),
+        };
+        let mut a = make_searcher(inner)?;
+        let mut adapt = Adapt::new(64);
+        if let Some(x) = std::env::var("BRISCOLA_ADAPT_SCALE").ok().and_then(|x| x.parse().ok()) {
+            adapt.scale = x;
+        }
+        if let Some((k, opp)) = history {
+            adapt.warm_up(opp, k, &a.policy)?;
+        }
+        a.adapt = Some(adapt);
         return Ok(Box::new(a));
     }
     if spec.starts_with("esatta:") || spec.starts_with("infer:") {

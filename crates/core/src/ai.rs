@@ -271,12 +271,32 @@ pub struct IsmctsPlayer {
     pub value: Option<Arc<Net>>,
     /// Peso della rete nella valutazione delle foglie (1 = solo rete, 0.5 = media con la simulazione).
     pub value_mix: f64,
+    /// Rete "onesta": valuta la foglia da ciò che vede chi deve muovere (`Position::of_obs`),
+    /// non dallo stato completo, così la valutazione non usa carte che nessuno conosce.
+    pub honest: bool,
+    /// Rete di politica come guida nei primi livelli dell'albero (bias progressivo): la carta
+    /// che la rete preferisce riceve un bonus `prior_weight · P / (1 + visite)`, e tra le carte
+    /// mai provate si espande prima quella preferita.
+    pub prior: Option<Arc<Net>>,
+    pub prior_weight: f64,
 }
+
+/// Profondità dell'albero fino a cui si usa la rete guida (oltre costerebbe troppo).
+const PRIOR_DEPTH: usize = 3;
 
 impl IsmctsPlayer {
     /// ISMCTS classico: simulazioni euristiche con mosse casuali fino alla fine.
     pub fn new(iterations: u32) -> Self {
-        IsmctsPlayer { iterations, policy: None, rollout_solve: None, value: None, value_mix: 1.0 }
+        IsmctsPlayer {
+            iterations,
+            policy: None,
+            rollout_solve: None,
+            value: None,
+            value_mix: 1.0,
+            honest: false,
+            prior: None,
+            prior_weight: 0.0,
+        }
     }
 
     /// ISMCTS potenziato: le stesse simulazioni del motore principale (a carte scoperte,
@@ -288,6 +308,9 @@ impl IsmctsPlayer {
             rollout_solve: Some(2),
             value: None,
             value_mix: 1.0,
+            honest: false,
+            prior: None,
+            prior_weight: 0.0,
         }
     }
 
@@ -295,11 +318,20 @@ impl IsmctsPlayer {
     pub fn with_net(iterations: u32, net: Arc<Net>, mix: f64) -> Self {
         IsmctsPlayer { value: Some(net), value_mix: mix, ..IsmctsPlayer::strong(iterations) }
     }
+
+    /// ISMCTS potenziato con la rete onesta nelle foglie (allenata su ciò che vede chi muove).
+    pub fn with_honest_net(iterations: u32, net: Arc<Net>, mix: f64) -> Self {
+        IsmctsPlayer { honest: true, ..IsmctsPlayer::with_net(iterations, net, mix) }
+    }
 }
 
 impl Player for IsmctsPlayer {
     fn name(&self) -> String {
-        if self.value.is_some() {
+        if self.prior.is_some() {
+            format!("ISMCTS guidato dalla rete, peso {} ({} iterazioni)", self.prior_weight, self.iterations)
+        } else if self.honest {
+            format!("ISMCTS con rete onesta ({} iterazioni)", self.iterations)
+        } else if self.value.is_some() {
             format!("ISMCTS con rete ({} iterazioni)", self.iterations)
         } else if self.policy.is_some() {
             format!("ISMCTS potenziato ({} iterazioni)", self.iterations)
@@ -327,7 +359,21 @@ impl IsmctsPlayer {
         &self,
         obs: &Observation,
         rng: &mut SmallRng,
+        world: impl FnMut(&mut SmallRng) -> Game,
+    ) -> Vec<RootChild> {
+        self.search_model(obs, rng, world, None)
+    }
+
+    /// Come `search_with`, con un modello dell'avversario per sfruttarlo: `(modello, alfa)`.
+    /// Con probabilità `alfa` l'avversario gioca la carta del modello (nell'albero e nelle
+    /// simulazioni), altrimenti come al solito (il meglio per lui nell'albero, carte scoperte
+    /// nelle simulazioni). Il modello riceve il mondo campionato e decide da ciò che vede lui.
+    pub fn search_model(
+        &self,
+        obs: &Observation,
+        rng: &mut SmallRng,
         mut world: impl FnMut(&mut SmallRng) -> Game,
+        mut model: Option<(&mut dyn FnMut(&Game, &mut SmallRng) -> Card, f64)>,
     ) -> Vec<RootChild> {
         let mut solver = Solver::default();
         let mut nodes = vec![Node { card: 255, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0, wins: 0.0, points: 0.0 }];
@@ -348,9 +394,48 @@ impl IsmctsPlayer {
                 for &k in &kids {
                     nodes[k].avail += 1.0;
                 }
+                let modeled = match model.as_mut() {
+                    Some((m, alpha)) if g.to_move() != obs.me && rng.gen_bool(*alpha) => Some(m(&g, rng)),
+                    _ => None,
+                };
+                if let Some(c) = modeled {
+                    let mover = g.to_move();
+                    g.play(c);
+                    let id = match kids.iter().copied().find(|&k| nodes[k].card == c) {
+                        Some(k) => k,
+                        None => {
+                            nodes.push(Node { card: c, mover, children: vec![], visits: 0.0, avail: 1.0, reward: 0.0, wins: 0.0, points: 0.0 });
+                            let id = nodes.len() - 1;
+                            nodes[cur].children.push(id);
+                            path.push(id);
+                            break;
+                        }
+                    };
+                    path.push(id);
+                    cur = id;
+                    continue;
+                }
+                // Probabilità della rete guida per le carte di chi muove (vista da lui).
+                let mut guide = [0f64; NUM_CARDS];
+                let guided = match &self.prior {
+                    Some(net) if path.len() <= PRIOR_DEPTH && legal.len() > 1 => {
+                        let o = Observation::of(&g, g.to_move());
+                        let mut pr = [0f32; 3];
+                        let n = net.policy(&o, 1.0, &mut pr);
+                        for (c, &p) in o.hand.iter().zip(pr[..n].iter()) {
+                            guide[c as usize] = p as f64;
+                        }
+                        true
+                    }
+                    _ => false,
+                };
                 if !untried.is_empty() {
                     let v = untried.to_vec();
-                    let c = v[rng.gen_range(0..v.len())];
+                    let c = if guided {
+                        *v.iter().max_by(|&&a, &&b| guide[a as usize].partial_cmp(&guide[b as usize]).unwrap()).unwrap()
+                    } else {
+                        v[rng.gen_range(0..v.len())]
+                    };
                     let mover = g.to_move();
                     g.play(c);
                     nodes.push(Node { card: c, mover, children: vec![], visits: 0.0, avail: 1.0, reward: 0.0, wins: 0.0, points: 0.0 });
@@ -364,7 +449,9 @@ impl IsmctsPlayer {
                     .max_by(|&&a, &&b| {
                         let ucb = |k: usize| {
                             let n = &nodes[k];
-                            n.reward / n.visits + 0.7 * (n.avail.ln() / n.visits).sqrt()
+                            n.reward / n.visits
+                                + 0.7 * (n.avail.ln() / n.visits).sqrt()
+                                + self.prior_weight * guide[n.card as usize] / (1.0 + n.visits)
                         };
                         ucb(a).partial_cmp(&ucb(b)).unwrap()
                     })
@@ -379,12 +466,22 @@ impl IsmctsPlayer {
                     rollout(&mut g, 0.1, rng);
                     (result(g.points[0]), g.points[0] as f64)
                 }
+                Some(p) if model.is_some() => {
+                    let (m, alpha) = model.as_mut().unwrap();
+                    let solve_at = self.rollout_solve.unwrap_or(0);
+                    while !g.is_over() && g.deck_len > solve_at {
+                        let c = if g.to_move() != obs.me && rng.gen_bool(*alpha) { m(&g, rng) } else { open_hand_move(&g, &p) };
+                        g.play(c);
+                    }
+                    let p0 = if g.is_over() { g.points[0] } else { solver.solve(&g, 0) };
+                    (result(p0), p0 as f64)
+                }
                 Some(p) => {
                     let leaf = g;
                     let solve_at = self.rollout_solve.unwrap_or(0);
                     let net = self.value.as_ref().filter(|_| !leaf.is_over() && leaf.deck_len > solve_at);
                     let by_net = net.map(|net| {
-                        let (w, pts) = net.eval(&leaf);
+                        let (w, pts) = if self.honest { net.eval_obs(&leaf) } else { net.eval(&leaf) };
                         let (w, pts) = (w as f64, pts as f64);
                         if leaf.to_move() == 0 { (w, pts) } else { (1.0 - w, 120.0 - pts) }
                     });

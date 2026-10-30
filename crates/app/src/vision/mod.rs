@@ -402,7 +402,9 @@ mod tests {
             }
         }
         let mem = Mutex::new(Memory::in_memory());
-        if let Ok(d) = std::env::var("SALVA") { img.save_png(std::path::Path::new(&format!("{d}/asso_sotto.png"))).unwrap(); }
+        if let Ok(d) = std::env::var("SALVA") {
+            img.save_png(std::path::Path::new(&format!("{d}/asso_sotto.png"))).unwrap();
+        }
         let first = read_briscola(&img, &mem).expect("carte");
         let asso = cards::make(1, 0);
         let t = first.trump.as_ref().expect("briscola");
@@ -572,10 +574,29 @@ mod bench {
         println!("card_l {:.0}", a.card_l);
         for f in &a.cards {
             let (c, m) = f.view.best(cards::CardSet::FULL).unwrap();
-            println!("card ({:.0},{:.0}) {:.0}x{:.0} land {} vis {:.2?} score {:.3} {} {:.2}", f.rect.cx, f.rect.cy, 2.0 * f.rect.hw, 2.0 * f.rect.hh, f.rect.landscape(), f.view.vis, f.score, cards::name(c), m);
+            println!(
+                "card ({:.0},{:.0}) {:.0}x{:.0} land {} vis {:.2?} score {:.3} {} {:.2}",
+                f.rect.cx,
+                f.rect.cy,
+                2.0 * f.rect.hw,
+                2.0 * f.rect.hh,
+                f.rect.landscape(),
+                f.view.vis,
+                f.score,
+                cards::name(c),
+                m
+            );
         }
         for b in a.blobs.iter() {
-            println!("   blob ({:.0},{:.0}) {:.0}x{:.0} white {:.2} bg {:.2}", b.rect.cx, b.rect.cy, 2.0 * b.rect.hw, 2.0 * b.rect.hh, b.white, b.bg);
+            println!(
+                "   blob ({:.0},{:.0}) {:.0}x{:.0} white {:.2} bg {:.2}",
+                b.rect.cx,
+                b.rect.cy,
+                2.0 * b.rect.hw,
+                2.0 * b.rect.hh,
+                b.white,
+                b.bg
+            );
         }
     }
 
@@ -598,11 +619,18 @@ mod bench {
                     img.px[y * img.w + x + dx] = keep.at(x, y);
                 }
             }
+            if let Ok(d) = std::env::var("SALVA") {
+                img.save_png(std::path::Path::new(&format!("{d}/mazzo{dx}.png"))).unwrap();
+            }
             let (a, b) = report(&format!("mazzo +{dx}"), &img);
             (ok, auto, n) = (ok + a, auto + b, n + 5);
         }
         // Sfocato (schermo ridimensionato due volte).
-        let (a, b) = report("sfocato", &resize(&resize(&site, 0.55), 1.0 / 0.55));
+        let sf = resize(&resize(&site, 0.55), 1.0 / 0.55);
+        if let Ok(d) = std::env::var("SALVA") {
+            sf.save_png(std::path::Path::new(&format!("{d}/sfocato.png"))).unwrap();
+        }
+        let (a, b) = report("sfocato", &sf);
         (ok, auto, n) = (ok + a, auto + b, n + 5);
         println!("giuste {ok}/{n}, automatiche {auto}/{n}");
         for _ in 0..3 {
@@ -618,7 +646,7 @@ mod bench {
 /// ridisegnate un po' diverse (proporzioni, colori, sfocatura, carte ruotate, scale diverse).
 #[cfg(test)]
 mod other_sites {
-    use super::synth::{table, Bg, Deal, Look};
+    use super::synth::{table, writing_only, Bg, Deal, Look};
     use super::*;
     use briscola_core::cards::{self, Card};
 
@@ -641,9 +669,26 @@ mod other_sites {
             Look { bg: Bg::Felt([30, 60, 140]), card_h: 110.0, aspect: Some(0.68), fan: 6.0, ..d },
             Look { bg: Bg::Felt([120, 25, 30]), card_h: 190.0, hue: 8.0, sat: 1.3, gamma: 0.85, ..d },
             Look { bg: Bg::Wood, card_h: 130.0, sat: 0.75, gamma: 1.2, blur: true, cover: 0.4, ..d },
-            Look { bg: Bg::Felt([20, 105, 70]), card_h: 140.0, aspect: Some(0.56), hue: -8.0, fan: -5.0, pile: 0.85, ..d },
+            Look {
+                bg: Bg::Felt([20, 105, 70]),
+                card_h: 140.0,
+                aspect: Some(0.56),
+                hue: -8.0,
+                fan: -5.0,
+                pile: 0.85,
+                ..d
+            },
             Look { bg: Bg::Felt([45, 45, 50]), card_h: 85.0, hue: 15.0, sat: 0.6, ..d },
-            Look { bg: Bg::Felt([90, 60, 30]), card_h: 230.0, aspect: Some(0.66), hue: -15.0, gamma: 1.3, fan: 8.0, cover: 0.55, ..d },
+            Look {
+                bg: Bg::Felt([90, 60, 30]),
+                card_h: 230.0,
+                aspect: Some(0.66),
+                hue: -15.0,
+                gamma: 1.3,
+                fan: 8.0,
+                cover: 0.55,
+                ..d
+            },
             Look { bg: Bg::Sea, card_h: 160.0, pile: 0.8, ..d },
             Look { bg: Bg::Sky, card_h: 140.0, pile: 0.8, cover: 0.5, ..d },
             Look { bg: Bg::Sea, card_h: 120.0, aspect: Some(0.7), blur: true, fan: 5.0, ..d },
@@ -662,18 +707,39 @@ mod other_sites {
                 r => s.hand.get(r[4..].parse::<usize>().ok()?).cloned(),
             }
         };
-        want.iter()
+        let mut out: Vec<(String, bool, bool)> = want
+            .iter()
             .map(|(role, c)| match get(role).and_then(|v| v.best(CardSet::FULL)) {
-                Some((b, m)) => (format!("{role}: {}{}", cards::name(b), if b == *c { "" } else { " (sbagliata)" }), b == *c, b == *c && m >= 1.4),
+                Some((b, m)) => {
+                    let note = if b != *c {
+                        " (sbagliata)".to_string()
+                    } else if m < 1.4 {
+                        format!(" (da confermare, {m:.2})")
+                    } else {
+                        String::new()
+                    };
+                    (format!("{role}: {}{note}", cards::name(b)), b == *c, b == *c && m >= 1.4)
+                }
                 None => (format!("{role}: non vista"), false, false),
             })
-            .collect()
+            .collect();
+        // Nessuna carta in più (una scritta presa per una carta della mano).
+        let hand = want.iter().filter(|(r, _)| r.starts_with("mano")).count();
+        let seen = s.as_ref().map_or(0, |s| s.hand.len());
+        if seen != hand {
+            out.push((format!("mano di {seen} carte invece di {hand}"), false, false));
+        }
+        out
     }
 
     /// Distribuisce le carte a turno: tre in mano, una per parte in tavola, la briscola.
-    fn run(deck: &[(Card, Img)], label: &str, verbose: bool) -> (usize, usize, usize) {
+    /// Con `writing` scritte attorno alle carte e loghi stampati sul tavolo (sotto le carte, più o
+    /// meno marcati a seconda del tavolo).
+    fn run(deck: &[(Card, Img)], label: &str, writing: bool, verbose: bool) -> (usize, usize, usize) {
         let (mut ok, mut auto, mut n) = (0, 0, 0);
         for (k, look) in looks().iter().enumerate() {
+            let logo = if writing { [0.35, 0.6, 0.9][k % 3] } else { 0.0 };
+            let look = &Look { writing, logo, ..*look };
             let pick = |i: usize| &deck[(k * 6 + i) % deck.len()];
             let (h0, h1, h2, o, m, t) = (pick(0), pick(1), pick(2), pick(3), pick(4), pick(5));
             let deal = Deal { hand: vec![&h0.1, &h1.1, &h2.1], opp: Some(&o.1), mine: Some(&m.1), trump: Some(&t.1) };
@@ -682,11 +748,19 @@ mod other_sites {
                 let dir = std::env::var("SALVA").ok();
                 if let Some(d) = dir {
                     img.save_png(std::path::Path::new(&format!("{d}/{label}_{k}.png"))).unwrap();
-                    screen::diagnose(&img).save_png(std::path::Path::new(&format!("{d}/{label}_{k}_diag.png"))).unwrap();
+                    screen::diagnose(&img)
+                        .save_png(std::path::Path::new(&format!("{d}/{label}_{k}_diag.png")))
+                        .unwrap();
                 }
             }
-            let want =
-                [("mano0", h0.0), ("mano1", h1.0), ("mano2", h2.0), ("avversario", o.0), ("tua", m.0), ("briscola", t.0)];
+            let want = [
+                ("mano0", h0.0),
+                ("mano1", h1.0),
+                ("mano2", h2.0),
+                ("avversario", o.0),
+                ("tua", m.0),
+                ("briscola", t.0),
+            ];
             let res = check(&img, &want);
             if verbose {
                 let line: Vec<String> = res.iter().map(|r| r.0.clone()).collect();
@@ -709,8 +783,11 @@ mod other_sites {
     #[test]
     #[ignore]
     fn banco_siti() {
-        for (label, deck) in [("sconosciuto", unknown_deck()), ("wikimedia", known_deck(0)), ("classico", known_deck(1))] {
-            let (ok, auto, n) = run(&deck, label, true);
+        let writing = std::env::var("SCRITTE").is_ok();
+        for (label, deck) in
+            [("sconosciuto", unknown_deck()), ("wikimedia", known_deck(0)), ("classico", known_deck(1))]
+        {
+            let (ok, auto, n) = run(&deck, label, writing, true);
             println!("== {label}: giuste {ok}/{n}, senza conferma {auto}/{n}");
         }
     }
@@ -720,7 +797,7 @@ mod other_sites {
     /// diversi, sfocato, mano a ventaglio, briscola coperta di più o di meno).
     #[test]
     fn unknown_deck_on_many_tables() {
-        let (ok, auto, n) = run(&unknown_deck(), "sconosciuto", false);
+        let (ok, auto, n) = run(&unknown_deck(), "sconosciuto", false, false);
         assert_eq!((ok, auto), (n, n), "giuste {ok}/{n}, senza conferma {auto}/{n}");
     }
 
@@ -728,8 +805,69 @@ mod other_sites {
     #[test]
     fn known_decks_redrawn() {
         for style in 0..2 {
-            let (ok, auto, n) = run(&known_deck(style), "noto", false);
+            let (ok, auto, n) = run(&known_deck(style), "noto", false, false);
             assert_eq!((ok, auto), (n, n), "mazzo {style}: giuste {ok}/{n}, senza conferma {auto}/{n}");
+        }
+    }
+
+    /// Scritte sullo schermo (finestrelle, chat, punteggi, nomi, scritte grandi, anche toccate dalle
+    /// carte) e loghi stampati sul tavolo: nessuno è preso per una carta e le carte restano giuste.
+    #[test]
+    fn writing_is_not_a_card() {
+        for look in looks() {
+            let img = writing_only(&look);
+            let s = read_briscola(&img, &Mutex::new(Memory::in_memory()));
+            assert!(s.is_none(), "{look:?}: carte viste fra le scritte");
+        }
+        // Tutte giuste. Le carte del mazzo sconosciuto più piccole (85 pixel) sono al limite della
+        // sicurezza: le finestrelle bianche spostano di poco il bianco dello schermo, e una può
+        // chiedere conferma.
+        for (label, deck, confirm) in [("sconosciuto", unknown_deck(), 1), ("noto", known_deck(1), 0)] {
+            let (ok, auto, n) = run(&deck, label, true, false);
+            assert!(ok == n && auto + confirm >= n, "{label} con scritte: giuste {ok}/{n}, senza conferma {auto}/{n}");
+        }
+    }
+
+    /// Bordo e inchiostro delle carte vere e di quello che si prende per carta fra scritte e loghi.
+    /// `cargo test --release -p brismaster misure_scritte -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn misure_scritte() {
+        let show = |tag: &str, img: &Img| {
+            for f in detect::analyze(img).cards {
+                let (b, i) = detect::traits(&f.view.img, f.view.vis);
+                println!(
+                    "{tag} ({:.0},{:.0}) parz {} vis {:.2}-{:.2} sim {:.2} bordo {b:.2} inchiostro {i:.3} tavolo {:.3}",
+                    f.rect.cx,
+                    f.rect.cy,
+                    f.partial(),
+                    f.view.vis[0],
+                    f.view.vis[1],
+                    f.score,
+                    f.inside
+                );
+            }
+        };
+        for (k, look) in looks().iter().enumerate() {
+            show(&format!("FALSA t{k}"), &writing_only(look));
+        }
+        for (label, deck) in [("sconosciuto", unknown_deck()), ("wiki", known_deck(0)), ("classico", known_deck(1))] {
+            for (k, look) in looks().iter().enumerate() {
+                let pick = |i: usize| &deck[(k * 6 + i) % deck.len()];
+                let deal = Deal {
+                    hand: vec![&pick(0).1, &pick(1).1, &pick(2).1],
+                    opp: Some(&pick(3).1),
+                    mine: Some(&pick(4).1),
+                    trump: Some(&pick(5).1),
+                };
+                show(&format!("vera {label} t{k}"), &table(&deal, look));
+                let logo = [0.35, 0.6, 0.9][k % 3];
+                show(&format!("scritte {label} t{k}"), &table(&deal, &Look { writing: true, logo, ..*look }));
+            }
+        }
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
+        for name in ["sito_briscola.png", "solitalian_briscola.png", "solitalian_mare.jpg"] {
+            show(&format!("vera {name}"), &load_jpg(&dir.join(name)));
         }
     }
 }

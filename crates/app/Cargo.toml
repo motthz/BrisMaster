@@ -29,3 +29,7 @@ winresource = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 xcap = "0.9.8"
+# Su Windows le connessioni HTTPS passano dal TLS del sistema (Schannel): si fida di quello di cui
+# si fida Windows, anche dei certificati con cui gli antivirus (Bitdefender) esaminano il traffico.
+native-tls = "0.2"
+ureq = { version = "2", features = ["native-tls"] }

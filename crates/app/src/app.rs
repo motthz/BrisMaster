@@ -286,7 +286,13 @@ impl BrisApp {
                 if ui.small_button("Riprova").clicked() {
                     action = Some(0);
                 }
-                ui.label(RichText::new("Aggiornamento non riuscito").color(Color32::LIGHT_RED)).on_hover_text(e);
+                // Il motivo si vede subito (non solo passando col mouse), con la pagina per scaricare a mano.
+                let short: String = e.chars().take(90).collect();
+                ui.hyperlink_to("Scarica a mano", format!("https://github.com/{}/releases/latest", update::REPO));
+                ui.label(
+                    RichText::new(format!("Aggiornamento non riuscito: {short}")).color(Color32::LIGHT_RED).small(),
+                )
+                .on_hover_text(e);
             }
         }
         match action {

@@ -380,6 +380,107 @@ pub fn warp(img: &Img, r: &RotRect) -> Img {
     out
 }
 
+/// Quanto la zona raddrizzata sembra carta e non scritta, nella fascia visibile `vis`:
+/// (bordo, inchiostro). Il bordo è la frazione del contorno (a pochi pixel dal lato, dove si vede)
+/// chiara e poco colorata come la carta: una carta ha la cornice bianca tutta attorno, una scritta
+/// o una cifra ha attorno lo sfondo. L'inchiostro è la frazione dell'interno disegnata a colori:
+/// le napoletane hanno sempre figure e semi colorati, le scritte sono quasi sempre di un colore solo.
+pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
+    let (y0, y1) = ((vis[0] * CARD_H as f32) as usize, ((vis[1] * CARD_H as f32) as usize).min(CARD_H));
+    if y1 <= y0 + 8 {
+        return (0.0, 0.0);
+    }
+    let lum = |p: [u8; 3]| (p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10;
+    // Il bianco della carta: i punti più chiari della fascia (con la luce dello schermo, anche calda
+    // o scura). I colori si confrontano con quel bianco.
+    let pts: Vec<[u8; 3]> = (y0..y1)
+        .step_by(2)
+        .flat_map(|y| (0..CARD_W).step_by(2).map(move |x| (x, y)))
+        .map(|(x, y)| card.at(x, y))
+        .collect();
+    let mut ls: Vec<u32> = pts.iter().map(|&p| lum(p)).collect();
+    ls.sort_unstable();
+    let top = ls[ls.len() * 9 / 10];
+    let bright: Vec<&[u8; 3]> = pts.iter().filter(|&&p| lum(p) >= top).collect();
+    let white: [f32; 3] =
+        std::array::from_fn(|c| (bright.iter().map(|p| p[c] as f32).sum::<f32>() / bright.len() as f32).max(1.0));
+    let balanced =
+        |p: [u8; 3]| -> [u8; 3] { std::array::from_fn(|c| (p[c] as f32 / white[c] * 230.0).min(255.0) as u8) };
+    let paper = |p: [u8; 3]| lum(p) as f32 >= 0.8 * top as f32 && hsv(balanced(p)).1 < 70;
+    // Un punto del contorno è carta se lo è a 1..5 pixel dal lato: il rettangolo non è mai preciso
+    // al pixel e su alcuni mazzi il disegno arriva quasi al bordo.
+    let mut rim = Vec::new();
+    let m = (y1 - y0) / 12;
+    for y in y0 + m..y1 - m {
+        rim.push((1..=5).any(|d| paper(card.at(d, y))));
+        rim.push((1..=5).any(|d| paper(card.at(CARD_W - 1 - d, y))));
+    }
+    let (mx0, mx1) = (CARD_W / 12, CARD_W - CARD_W / 12);
+    if vis[0] < 0.01 {
+        rim.extend((mx0..mx1).map(|x| (1..=5).any(|d| paper(card.at(x, d)))));
+    }
+    if vis[1] > 0.99 {
+        rim.extend((mx0..mx1).map(|x| (1..=5).any(|d| paper(card.at(x, CARD_H - 1 - d)))));
+    }
+    let border = rim.iter().filter(|&&p| p).count() as f32 / rim.len() as f32;
+    let mut n = 0;
+    let mut ink = 0;
+    for y in (y0 + m..y1 - m).step_by(2) {
+        for x in (CARD_W / 10..CARD_W - CARD_W / 10).step_by(2) {
+            let (_, sat, v) = hsv(balanced(card.at(x, y)));
+            n += 1;
+            if sat >= 60 && v >= 50 {
+                ink += 1;
+            }
+        }
+    }
+    (border, ink as f32 / n.max(1) as f32)
+}
+
+/// Frazione dell'interno della zona raddrizzata `card` (fascia `vis`) che ha i colori dello sfondo
+/// appena fuori dal rettangolo `r`: dentro una carta c'è il disegno, dentro il rettangolo di una
+/// scritta o di una cifra si vede il tavolo fra una lettera e l'altra.
+pub fn table_inside(img: &Img, r: &RotRect, card: &Img, vis: [f32; 2]) -> f32 {
+    // Colori dello sfondo (in celle di 8 livelli per canale, allargate di una cella), senza quelli
+    // chiari e poco colorati come la carta.
+    let mut bins = vec![false; 32 * 32 * 32];
+    for pad in [4.0, 10.0] {
+        for k in 0..256 {
+            let (x, y) = r.outline(k as f32 / 64.0, 1.0, pad);
+            if x < 0.0 || y < 0.0 || x >= img.w as f32 || y >= img.h as f32 {
+                continue;
+            }
+            let p = img.at(x as usize, y as usize);
+            let (_, sat, v) = hsv(p);
+            if v > 170 && sat < 60 {
+                continue;
+            }
+            let [r0, g0, b0] = p.map(|c| (c / 8) as i32);
+            for dr in -1..=1 {
+                for dg in -1..=1 {
+                    for db in -1..=1 {
+                        let (r1, g1, b1) = (r0 + dr, g0 + dg, b0 + db);
+                        if (0..32).contains(&r1) && (0..32).contains(&g1) && (0..32).contains(&b1) {
+                            bins[(r1 * 32 + g1) as usize * 32 + b1 as usize] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let (y0, y1) = ((vis[0] * CARD_H as f32) as usize, ((vis[1] * CARD_H as f32) as usize).min(CARD_H));
+    let m = (y1.saturating_sub(y0)) / 12;
+    let (mut n, mut same) = (0, 0);
+    for y in (y0 + m..y1.saturating_sub(m)).step_by(2) {
+        for x in (CARD_W / 10..CARD_W - CARD_W / 10).step_by(2) {
+            let p = card.at(x, y).map(|c| (c / 8) as usize);
+            n += 1;
+            same += bins[(p[0] * 32 + p[1]) * 32 + p[2]] as usize;
+        }
+    }
+    same as f32 / n.max(1) as f32
+}
+
 /// Somiglianza minima con una carta di riferimento per credere che sia una carta.
 const ACCEPT: f32 = 0.40;
 /// Lo stesso per una carta vista in parte: con meno disegno da confrontare serve più somiglianza.
@@ -405,13 +506,34 @@ pub struct Found {
     pub view: CardView,
     /// Somiglianza con la carta di riferimento più vicina.
     pub score: f32,
+    /// Frazione dell'interno coi colori del tavolo attorno (vedi `table_inside`).
+    pub inside: f32,
 }
 
 impl Found {
     pub fn partial(&self) -> bool {
         self.view.partial
     }
+
+    /// Somiglia abbastanza a una carta (almeno `min`) e ne ha l'aspetto: la cornice chiara tutta
+    /// attorno (le carte arrivano quasi a 1, le scritte prese per carte non oltre 0.87; meno se
+    /// somiglia molto: una carta sfocata, un po' storta o tagliata male) e un po' di colore.
+    /// Scritte, cifre, finestrelle e loghi possono somigliare per caso a una carta, non averne la
+    /// cornice e i colori.
+    fn accepted(&self, min: f32) -> bool {
+        let (border, ink) = traits(&self.view.img, self.view.vis);
+        // Con la cornice tutta attorno basta la somiglianza. Con la cornice incerta (carta sfocata,
+        // toccata da un'altra, tagliata male; ma anche il riquadro di una lettera o di una scritta)
+        // deve somigliare molto, o abbastanza e avere dentro il disegno colorato e non il tavolo.
+        if self.score < min || ink < MIN_INK || border < 0.65 {
+            return false;
+        }
+        border >= 0.9 || self.score >= 0.85 || (self.score >= 0.6 && self.inside < 0.2 && ink >= 0.06)
+    }
 }
+
+/// Frazione minima dell'interno disegnata a colori (gli assi arrivano a 0.07).
+const MIN_INK: f32 = 0.02;
 
 /// Una posizione possibile della carta, confrontata al primo giro con le carte di riferimento.
 struct Try {
@@ -429,10 +551,11 @@ impl Try {
     }
 
     /// Confronto completo.
-    fn finish(self) -> Found {
+    fn finish(self, img: &Img) -> Found {
         let sim = self.m.refine();
         let score = sim.iter().copied().fold(f32::MIN, f32::max);
-        Found { rect: self.rect, view: CardView::new(self.card, self.vis, sim), score }
+        let inside = table_inside(img, &self.rect, &self.card, self.vis);
+        Found { rect: self.rect, view: CardView::new(self.card, self.vis, sim), score, inside }
     }
 }
 
@@ -443,8 +566,8 @@ fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
     let up = Try::new(img, *r, WHOLE);
     let down = Try::new(img, r.flipped(), WHOLE);
     let t = if down.m.top() > up.m.top() + 0.03 { down } else { up };
-    let f = t.finish();
-    (f.score >= ACCEPT).then_some(f)
+    let f = t.finish(img);
+    f.accepted(ACCEPT).then_some(f)
 }
 
 /// La zona come pezzo di una carta con le proporzioni `card_w` / `card_l` delle carte intere: un
@@ -491,8 +614,8 @@ fn as_partial(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Option<Found>
     tries
         .into_iter()
         .take(2)
-        .map(Try::finish)
-        .filter(|f| f.score >= ACCEPT_PARTIAL)
+        .map(|t| t.finish(img))
+        .filter(|f| f.accepted(ACCEPT_PARTIAL))
         .max_by(|a, b| a.score.total_cmp(&b.score))
 }
 
@@ -521,14 +644,46 @@ fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
                 }
             }
             if let Some(t) = tries.into_iter().max_by(|a, b| a.m.top().total_cmp(&b.m.top())) {
-                let f = t.finish();
-                if f.score >= ACCEPT {
+                let f = t.finish(img);
+                if f.accepted(ACCEPT) {
                     out.push(f);
                 }
             }
         }
         if !out.is_empty() {
             break;
+        }
+    }
+    out
+}
+
+/// Due carte in piedi una sopra l'altra che si sovrappongono (le carte giocate al centro), in una
+/// zona sola: si cerca una carta di misura `card_l` x `card_w` a ciascuna estremità della zona,
+/// spostata da una parte o dall'altra (le due carte non sono mai proprio in colonna). L'altra si
+/// ritrova dopo, togliendo questa.
+fn stacked(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
+    let (along, across, len, width) =
+        if r.hh >= r.hw { (r.v, r.u, 2.0 * r.hh, 2.0 * r.hw) } else { (r.u, r.v, 2.0 * r.hw, 2.0 * r.hh) };
+    if len < 1.25 * card_l || !(0.8..=1.5).contains(&(width / card_w)) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for end in [-1.0f32, 1.0] {
+        let mut tries = Vec::new();
+        let a = end * (len - card_l) / 2.0;
+        for side in [-1.0f32, 0.0, 1.0] {
+            let b = side * (width - card_w).max(0.0) / 2.0;
+            let (cx, cy) = (r.cx + along.0 * a + across.0 * b, r.cy + along.1 * a + across.1 * b);
+            for v in [along, (-along.0, -along.1)] {
+                let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: card_w / 2.0, hh: card_l / 2.0 };
+                tries.push(Try::new(img, rect, WHOLE));
+            }
+        }
+        if let Some(t) = tries.into_iter().max_by(|a, b| a.m.top().total_cmp(&b.m.top())) {
+            let f = t.finish(img);
+            if f.accepted(ACCEPT) {
+                out.push(f);
+            }
         }
     }
     out
@@ -619,9 +774,20 @@ pub fn analyze(img: &Img) -> Analysis {
                 break;
             }
         }
-        if split.is_empty() && merged {
+        if merged {
             if let (Some(l), Some(w)) = (known_l, known_w) {
-                split = ends(img, &b.rect, l, w);
+                if split.is_empty() {
+                    split = ends(img, &b.rect, l, w);
+                }
+                // Un pezzo che somiglia poco è spesso una carta ritagliata male (con un pezzo
+                // dell'altra o di quello che c'è sotto): si prova la carta della misura giusta.
+                let worst = |v: &[Found]| v.iter().map(|f| f.score).fold(f32::MAX, f32::min);
+                if split.is_empty() || worst(&split) < 0.85 {
+                    let s = stacked(img, &b.rect, l, w);
+                    if !s.is_empty() && (split.is_empty() || worst(&s) > worst(&split)) {
+                        split = s;
+                    }
+                }
             }
         }
         if split.is_empty() {
@@ -704,8 +870,8 @@ pub fn analyze(img: &Img) -> Analysis {
             // Il verso scelto guardando un pezzo solo può essere sbagliato: si riprovano tutti e due.
             let tries = [Try::new(img, r, span), Try::new(img, r.flipped(), [1.0 - span[1], 1.0 - span[0]])];
             let t = tries.into_iter().max_by(|a, b| a.m.top().total_cmp(&b.m.top())).expect("due versi");
-            let f = t.finish();
-            if f.score >= ACCEPT {
+            let f = t.finish(img);
+            if f.accepted(ACCEPT) {
                 *c = f;
             }
         }
@@ -731,8 +897,21 @@ pub fn analyze(img: &Img) -> Analysis {
             _ => true,
         })
         .collect();
-    let near = |c: &Found| kept.iter().zip(&main).any(|(k, &m)| m && k.rect.dist(&c.rect) < 4.5 * card_l);
-    let keep: Vec<bool> = kept.iter().zip(&main).map(|(c, &m)| m || near(c)).collect();
+    // Vicine anche passando da una carta all'altra: le carte giocate sopra un logo stampato sul
+    // tavolo hanno attorno un altro colore, ma stanno vicino alle altre.
+    let mut keep = main.clone();
+    loop {
+        let more: Vec<usize> = (0..kept.len())
+            .filter(|&i| !keep[i])
+            .filter(|&i| (0..kept.len()).any(|j| keep[j] && kept[j].rect.dist(&kept[i].rect) < 4.5 * card_l))
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        for i in more {
+            keep[i] = true;
+        }
+    }
     let cards = kept.iter().zip(keep).filter(|(_, k)| *k).map(|(c, _)| c.clone()).collect();
     Analysis { cards, card_l, table, blobs: base }
 }

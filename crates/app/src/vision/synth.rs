@@ -38,6 +38,10 @@ pub struct Look {
     pub pile: f32,
     /// Frazione della briscola coperta dal mazzo.
     pub cover: f32,
+    /// Scritte sul tavolo: finestrelle, chat, punteggi, nomi, scritte grandi (sotto le carte).
+    pub writing: bool,
+    /// Loghi e scritte stampati sul tavolo, sotto le carte (opacità 0..1; 0 niente).
+    pub logo: f32,
 }
 
 impl Default for Look {
@@ -53,6 +57,8 @@ impl Default for Look {
             fan: 0.0,
             pile: 1.0,
             cover: 0.45,
+            writing: false,
+            logo: 0.0,
         }
     }
 }
@@ -152,6 +158,52 @@ fn draw_back(img: &mut Img, cx: f32, cy: f32, w: f32, h: f32) {
     draw(img, cx, cy, w, h, 0.0, &paint);
 }
 
+/// Le scritte di testdata/scritte, con dove metterle (frazioni dello schermo). Il magenta è
+/// trasparente.
+const WRITING: [(&str, f32, f32); 11] = [
+    ("popup", 0.63, 0.33),
+    ("badge", 0.30, 0.62),
+    ("chat", 0.77, 0.69),
+    ("punti", 0.84, 0.04),
+    ("tocca", 0.37, 0.23),
+    ("vinto", 0.61, 0.52),
+    ("briscola", 0.08, 0.64),
+    ("nome", 0.41, 0.77),
+    ("numero", 0.03, 0.04),
+    ("java", 0.66, 0.77),
+    ("banner", 0.02, 0.27),
+];
+
+/// Una scritta di testdata/scritte.
+pub fn writing(name: &str) -> Img {
+    screenshot(&format!("scritte/{name}.png"))
+}
+
+/// I loghi stampati sul tavolo, col centro in (frazioni dello schermo): lo stemma sotto le carte
+/// giocate, la scritta fra le carte giocate e la mano, il marchio del sito vicino al mazzo.
+const LOGOS: [(&str, f32, f32); 3] = [("stemma", 0.5, 0.5), ("scritta_tavolo", 0.5, 0.71), ("marchio", 0.2, 0.3)];
+
+/// Incolla una scritta con l'angolo in alto a sinistra in (x, y), senza il magenta, con opacità
+/// `alpha`.
+fn stamp(img: &mut Img, s: &Img, x: usize, y: usize, alpha: f32) {
+    for j in 0..s.h.min(img.h.saturating_sub(y)) {
+        for i in 0..s.w.min(img.w.saturating_sub(x)) {
+            let p = s.at(i, j);
+            if !(p[0] > 200 && p[1] < 80 && p[2] > 200) {
+                let q = &mut img.px[(y + j) * img.w + x + i];
+                for c in 0..3 {
+                    q[c] = (alpha * p[c] as f32 + (1.0 - alpha) * q[c] as f32).round() as u8;
+                }
+            }
+        }
+    }
+}
+
+/// Solo le scritte e i loghi, su un tavolo senza carte.
+pub fn writing_only(look: &Look) -> Img {
+    table(&Deal { hand: vec![], opp: None, mine: None, trump: None }, &Look { writing: true, logo: 0.9, ..*look })
+}
+
 /// Il tavolo con le carte, come lo vedrebbe la lettura dello schermo.
 pub fn table(deal: &Deal, look: &Look) -> Img {
     let mut img = Img::new(W, H);
@@ -167,6 +219,18 @@ pub fn table(deal: &Deal, look: &Look) -> Img {
                 (_, Some(t)) => mirrored(t, x, y),
                 _ => [128, 128, 128],
             };
+        }
+    }
+    if look.logo > 0.0 {
+        for (name, fx, fy) in LOGOS {
+            let l = writing(name);
+            let (x, y) = (fx * W as f32 - l.w as f32 / 2.0, fy * H as f32 - l.h as f32 / 2.0);
+            stamp(&mut img, &l, x.max(0.0) as usize, y.max(0.0) as usize, look.logo);
+        }
+    }
+    if look.writing {
+        for (name, fx, fy) in WRITING {
+            stamp(&mut img, &writing(name), (fx * W as f32) as usize, (fy * H as f32) as usize, 1.0);
         }
     }
     let h = look.card_h;

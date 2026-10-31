@@ -175,7 +175,7 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
     if !found {
         return None;
     }
-    let mem = mem.lock().unwrap();
+    let mem = mem.lock().unwrap_or_else(|e| e.into_inner());
     for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
         recognize(v, &mem);
     }
@@ -185,7 +185,7 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
 /// Lettura per la scopa: mano e carte in tavola, riconosciute (None se il tavolo non si vede).
 pub fn read_scopa(img: &Img, mem: &Mutex<Memory>) -> Option<ScopaScene> {
     let mut scene = detect::scopa(img)?;
-    let mem = mem.lock().unwrap();
+    let mem = mem.lock().unwrap_or_else(|e| e.into_inner());
     for v in scene.hand.iter_mut().chain(&mut scene.table) {
         recognize(v, &mem);
     }
@@ -226,11 +226,21 @@ impl<S: Send + 'static> Reader<S> {
                 let reading = match capture::grab(monitor) {
                     Ok((img, count)) => {
                         let table = screen::table(&img, &area);
-                        let scene = read(&table, &mem);
-                        *frame.lock().unwrap() = Some(table);
+                        // Un errore nella lettura di una schermata non deve fermare le letture
+                        // dopo: si mostra e si continua.
+                        let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&table, &mem)));
+                        *frame.lock().unwrap_or_else(|e| e.into_inner()) = Some(table);
                         match scene {
-                            Some(s) => Reading::Scene(s),
-                            None => {
+                            Err(e) => {
+                                let why = e
+                                    .downcast_ref::<&str>()
+                                    .map(|s| s.to_string())
+                                    .or_else(|| e.downcast_ref::<String>().cloned())
+                                    .unwrap_or_default();
+                                Reading::Error(format!("errore interno ({why})"))
+                            }
+                            Ok(Some(s)) => Reading::Scene(s),
+                            Ok(None) => {
                                 // Senza un'area scelta, prova il monitor successivo.
                                 if area.rect.is_none() {
                                     monitor = (monitor + 1) % count.max(1);
@@ -253,7 +263,7 @@ impl<S: Send + 'static> Reader<S> {
 
     /// L'ultima schermata letta (già ritagliata sul tavolo), per la diagnosi.
     pub fn last_frame(&self) -> Option<Img> {
-        self.last.lock().unwrap().clone()
+        self.last.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
@@ -409,7 +419,7 @@ mod tests {
         let asso = cards::make(1, 0);
         let t = first.trump.as_ref().expect("briscola");
         // La partita la inserisce dalla mano, e la ricorda.
-        mem.lock().unwrap().remember(&first.hand[1].img, first.hand[1].vis, asso);
+        mem.lock().unwrap_or_else(|e| e.into_inner()).remember(&first.hand[1].img, first.hand[1].vis, asso);
         let again = read_briscola(&img, &mem).expect("carte");
         let t2 = again.trump.as_ref().expect("briscola");
         let (c, margin) = t2.best(CardSet::FULL).unwrap();

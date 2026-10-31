@@ -1,7 +1,8 @@
 //! Allena le reti sui dati di `selfplay`: valutazione (file `.bin`) o politica (`--kind policy`, file `.pol`).
 //!
 //! Uso:
-//!   train --data CARTELLA[,CARTELLA...] --out FILE [--kind value|policy] [--epochs N] [--lr X] [--batch N] [--seed X] [--init FILE]
+//!   train --data CARTELLA[,CARTELLA...] --out FILE [--kind value|policy] [--epochs N] [--lr X] [--batch N] [--seed X]
+//!         [--init FILE | --hidden 96x32]
 //!
 //! L'ultimo blocco di ogni cartella resta fuori dall'allenamento e serve da controllo:
 //! sono partite intere mai viste, così la perdita di controllo non è falsata da posizioni
@@ -56,6 +57,8 @@ fn load(dirs: &str, policy: bool) -> (Vec<Sample>, Vec<Sample>) {
 fn zeros_like(n: &Net) -> Net {
     Net {
         n_out: n.n_out,
+        h1: n.h1,
+        h2: n.h2,
         w1: vec![0.0; n.w1.len()],
         b1: vec![0.0; n.b1.len()],
         w2: vec![0.0; n.w2.len()],
@@ -112,8 +115,9 @@ fn backprop(net: &Net, s: &Sample, g: &mut Net) -> (f32, f32) {
         dz[1] = yp - s.pts;
         (bce(yw, s.win), bce(yp, s.pts))
     };
-    let mut dh2 = [0f32; H2];
-    for i in 0..H2 {
+    let (n1, n2) = (net.h1, net.h2);
+    let mut dh2 = [0f32; MAX_H2];
+    for i in 0..n2 {
         let mut acc = 0.0;
         for j in 0..k {
             g.w3[i * k + j] += f.h2[i] * dz[j];
@@ -126,38 +130,38 @@ fn backprop(net: &Net, s: &Sample, g: &mut Net) -> (f32, f32) {
     for j in 0..k {
         g.b3[j] += dz[j];
     }
-    let mut dh1 = [0f32; H1];
-    for i in 0..H1 {
+    let mut dh1 = [0f32; MAX_H1];
+    for i in 0..n1 {
         if f.h1[i] > 0.0 {
-            let row = &net.w2[i * H2..(i + 1) * H2];
-            let grow = &mut g.w2[i * H2..(i + 1) * H2];
+            let row = &net.w2[i * n2..(i + 1) * n2];
+            let grow = &mut g.w2[i * n2..(i + 1) * n2];
             let mut acc = 0.0;
-            for j in 0..H2 {
+            for j in 0..n2 {
                 grow[j] += f.h1[i] * dh2[j];
                 acc += row[j] * dh2[j];
             }
             dh1[i] = acc;
         }
     }
-    for j in 0..H2 {
+    for j in 0..n2 {
         g.b2[j] += dh2[j];
     }
     let mut idx = [0u16; 42];
     let (dense, n) = s.pos.active(&mut idx);
     for &i in &idx[..n] {
-        let row = &mut g.w1[i as usize * H1..(i as usize + 1) * H1];
-        for j in 0..H1 {
+        let row = &mut g.w1[i as usize * n1..(i as usize + 1) * n1];
+        for j in 0..n1 {
             row[j] += dh1[j];
         }
     }
     let base = N_IN - 2;
     for (k, &x) in dense.iter().enumerate() {
-        let row = &mut g.w1[(base + k) * H1..(base + k + 1) * H1];
-        for j in 0..H1 {
+        let row = &mut g.w1[(base + k) * n1..(base + k + 1) * n1];
+        for j in 0..n1 {
             row[j] += dh1[j] * x;
         }
     }
-    for j in 0..H1 {
+    for j in 0..n1 {
         g.b1[j] += dh1[j];
     }
     losses
@@ -201,12 +205,17 @@ fn main() {
     let wd: f32 = get("--wd", "0.0001").parse().unwrap();
 
     let policy = get("--kind", "value") == "policy";
+    let hidden: (usize, usize) = {
+        let h = get("--hidden", &format!("{H1}x{H2}"));
+        let (a, b) = h.split_once('x').expect("--hidden LARGO1xLARGO2");
+        (a.parse().unwrap(), b.parse().unwrap())
+    };
     let (mut train, val) = load(&data, policy);
     eprintln!("{} posizioni di allenamento, {} di controllo", train.len(), val.len());
     let mut rng = SmallRng::seed_from_u64(seed);
     let mut net = match args.iter().position(|a| a == "--init") {
         Some(i) => Net::from_bytes(&std::fs::read(&args[i + 1]).unwrap()).unwrap(),
-        None => Net::random(seed, if policy { POLICY_OUT } else { VALUE_OUT }),
+        None => Net::random_sized(seed, if policy { POLICY_OUT } else { VALUE_OUT }, hidden.0, hidden.1),
     };
     let (lw, lp, mse, acc) = validate(&net, &val);
     eprintln!("inizio: perdita vittoria {lw:.4}, punti {lp:.4}, errore² {mse:.4}, esiti giusti {:.1}%", acc * 100.0);

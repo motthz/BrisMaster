@@ -279,6 +279,17 @@ pub struct IsmctsPlayer {
     /// mai provate si espande prima quella preferita.
     pub prior: Option<Arc<Net>>,
     pub prior_weight: f64,
+    /// Costante di esplorazione dell'UCB (0,7).
+    pub ucb_c: f64,
+    /// Ricompensa = vittoria + punti / `pts_div` (1200); 0 = conta solo vincere.
+    pub pts_div: f64,
+    /// Mosse a caso nelle simulazioni (0).
+    pub rollout_eps: f64,
+    /// Ogni mondo campionato si usa per tante iterazioni di fila (1).
+    pub reuse: u32,
+    /// Dove gioca il modello dell'avversario di `search_model`: nell'albero, nelle simulazioni.
+    pub model_tree: bool,
+    pub model_rollout: bool,
 }
 
 /// Profondità dell'albero fino a cui si usa la rete guida (oltre costerebbe troppo).
@@ -296,6 +307,12 @@ impl IsmctsPlayer {
             honest: false,
             prior: None,
             prior_weight: 0.0,
+            ucb_c: 0.7,
+            pts_div: 1200.0,
+            rollout_eps: 0.0,
+            reuse: 1,
+            model_tree: true,
+            model_rollout: true,
         }
     }
 
@@ -311,6 +328,12 @@ impl IsmctsPlayer {
             honest: false,
             prior: None,
             prior_weight: 0.0,
+            ucb_c: 0.7,
+            pts_div: 1200.0,
+            rollout_eps: 0.0,
+            reuse: 1,
+            model_tree: true,
+            model_rollout: true,
         }
     }
 
@@ -377,8 +400,12 @@ impl IsmctsPlayer {
     ) -> Vec<RootChild> {
         let mut solver = Solver::default();
         let mut nodes = vec![Node { card: 255, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0, wins: 0.0, points: 0.0 }];
-        for _ in 0..self.iterations {
-            let mut g = world(rng);
+        let mut base = None;
+        for it in 0..self.iterations {
+            if it % self.reuse.max(1) == 0 {
+                base = Some(world(rng));
+            }
+            let mut g = base.unwrap();
             let mut path = vec![0usize];
             let mut cur = 0usize;
             // Selezione ed espansione.
@@ -395,7 +422,7 @@ impl IsmctsPlayer {
                     nodes[k].avail += 1.0;
                 }
                 let modeled = match model.as_mut() {
-                    Some((m, alpha)) if g.to_move() != obs.me && rng.gen_bool(*alpha) => Some(m(&g, rng)),
+                    Some((m, alpha)) if self.model_tree && g.to_move() != obs.me && rng.gen_bool(*alpha) => Some(m(&g, rng)),
                     _ => None,
                 };
                 if let Some(c) = modeled {
@@ -450,7 +477,7 @@ impl IsmctsPlayer {
                         let ucb = |k: usize| {
                             let n = &nodes[k];
                             n.reward / n.visits
-                                + 0.7 * (n.avail.ln() / n.visits).sqrt()
+                                + self.ucb_c * (n.avail.ln() / n.visits).sqrt()
                                 + self.prior_weight * guide[n.card as usize] / (1.0 + n.visits)
                         };
                         ucb(a).partial_cmp(&ucb(b)).unwrap()
@@ -466,11 +493,18 @@ impl IsmctsPlayer {
                     rollout(&mut g, 0.1, rng);
                     (result(g.points[0]), g.points[0] as f64)
                 }
-                Some(p) if model.is_some() => {
+                Some(p) if model.is_some() && self.model_rollout => {
                     let (m, alpha) = model.as_mut().unwrap();
                     let solve_at = self.rollout_solve.unwrap_or(0);
                     while !g.is_over() && g.deck_len > solve_at {
-                        let c = if g.to_move() != obs.me && rng.gen_bool(*alpha) { m(&g, rng) } else { open_hand_move(&g, &p) };
+                        let c = if g.to_move() != obs.me && rng.gen_bool(*alpha) {
+                            m(&g, rng)
+                        } else if self.rollout_eps > 0.0 && rng.gen_bool(self.rollout_eps) {
+                            let v = g.legal_moves().to_vec();
+                            v[rng.gen_range(0..v.len())]
+                        } else {
+                            open_hand_move(&g, &p)
+                        };
                         g.play(c);
                     }
                     let p0 = if g.is_over() { g.points[0] } else { solver.solve(&g, 0) };
@@ -486,7 +520,7 @@ impl IsmctsPlayer {
                         if leaf.to_move() == 0 { (w, pts) } else { (1.0 - w, 120.0 - pts) }
                     });
                     let mut by_rollout = || {
-                        rollout_until(&mut g, Some(&p), 0.0, self.rollout_solve, rng);
+                        rollout_until(&mut g, Some(&p), self.rollout_eps, self.rollout_solve, rng);
                         let p0 = if g.is_over() { g.points[0] } else { solver.solve(&g, 0) };
                         (result(p0), p0 as f64)
                     };
@@ -505,7 +539,7 @@ impl IsmctsPlayer {
                 let n = &mut nodes[id];
                 let (w, pts) = if n.mover == 0 { (w0, p0) } else { (1.0 - w0, 120.0 - p0) };
                 n.visits += 1.0;
-                n.reward += w + pts / 1200.0;
+                n.reward += if self.pts_div > 0.0 { w + pts / self.pts_div } else { w };
                 n.wins += w;
                 n.points += pts;
             }

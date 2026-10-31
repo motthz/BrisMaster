@@ -100,6 +100,52 @@ struct Infer {
     model: Option<(Box<dyn Player>, f64)>,
     /// Riconosce lo stile dell'avversario durante la partita e lo sfrutta (`adatta:`).
     adapt: Option<Adapt>,
+    /// Varianti da provare (`prova:`).
+    opts: Opts,
+}
+
+/// Varianti del giocatore per le prove delle idee (`prova:CHIAVE=VALORE,...@GIOCATORE`).
+#[derive(Clone, Copy)]
+struct Opts {
+    by_mean: bool,
+    trees: u32,
+    solve0: bool,
+    prefin: u8,
+    prefin_worlds: u32,
+    lead_mult: f64,
+    follow_mult: f64,
+    pref_mult: f64,
+    first_mult: f64,
+    doubt: bool,
+    ahead: bool,
+    behind: bool,
+    /// Temperatura della deduzione moltiplicata a inizio mazzo (24+) e a fine mazzo (12 o meno).
+    temp_early: f64,
+    temp_late: f64,
+    /// Sceglie a caso tra le mosse con almeno questa quota delle visite della migliore (0 = no).
+    vary: f64,
+}
+
+impl Default for Opts {
+    fn default() -> Self {
+        Opts {
+            by_mean: false,
+            trees: 1,
+            solve0: false,
+            prefin: 0,
+            prefin_worlds: 200,
+            lead_mult: 1.0,
+            follow_mult: 1.0,
+            pref_mult: 1.0,
+            first_mult: 1.0,
+            doubt: false,
+            ahead: false,
+            behind: false,
+            temp_early: 1.0,
+            temp_late: 1.0,
+            vary: 0.0,
+        }
+    }
 }
 
 /// Storico: come se avessi già giocato `games` partite contro `opponent` (le sue mosse,
@@ -239,22 +285,116 @@ impl Agent for Infer {
             (None, Some(f)) => Some((f as &mut dyn FnMut(&Game, &mut SmallRng) -> Card, adapt_alpha)),
             _ => None,
         };
+        let mut model = model;
         // A mazzo vuoto le carte avversarie sono note: non c'è niente da dedurre.
-        let root = if obs.deck_len == 0 {
-            self.search.search_model(&obs, rng, |r| obs.determinize(r), model)
-        } else if self.oracle.is_some_and(|m| m.holds(&obs)) {
-            let opp = g.hands[1 - me as usize];
-            self.search.search_model(&obs, rng, |r| obs.determinize_given(opp, r), model)
+        let opp_hand = g.hands[1 - me as usize];
+        let oracle = self.oracle.is_some_and(|m| m.holds(&obs));
+        let belief = if obs.deck_len == 0 || oracle {
+            None
         } else {
-            let belief = match self.exact.as_mut() {
+            Some(match self.exact.as_mut() {
                 Some(ex) => {
                     ex.update(&obs, &self.log.events, &self.policy, self.temp, self.floor);
                     ex.belief(&obs)
                 }
-                None => Belief::infer(&obs, &self.log.events, &self.policy, self.temp, self.floor, self.pool, rng),
-            };
-            self.search.search_model(&obs, rng, |r| obs.determinize_given(belief.sample(r), r), model)
+                None => {
+                    let t = match obs.deck_len {
+                        24.. => self.temp * self.opts.temp_early as f32,
+                        0..=12 => self.temp * self.opts.temp_late as f32,
+                        _ => self.temp,
+                    };
+                    Belief::infer(&obs, &self.log.events, &self.policy, t, self.floor, self.pool, rng)
+                }
+            })
         };
+        let world = |r: &mut SmallRng| match &belief {
+            Some(b) => obs.determinize_given(b.sample(r), r),
+            None if oracle => obs.determinize_given(opp_hand, r),
+            None => obs.determinize(r),
+        };
+        let o = self.opts;
+        // Finale e pre-finale esatti: per ogni mondo (pesato dalla deduzione) il risolutore.
+        if (o.solve0 && obs.deck_len == 0) || (o.prefin > 0 && obs.deck_len > 0 && obs.deck_len <= o.prefin) {
+            let worlds = if obs.deck_len == 0 { 1 } else { o.prefin_worlds };
+            let moves = obs.hand.to_vec();
+            let mut solver = Solver::default();
+            let mut score = vec![(0.0f64, 0.0f64); moves.len()];
+            for _ in 0..worlds {
+                let w = world(rng);
+                for (i, &c) in moves.iter().enumerate() {
+                    let mut n = w;
+                    n.play(c);
+                    let pts = solver.solve(&n, me);
+                    score[i].0 += if pts > 60 { 1.0 } else if pts == 60 { 0.5 } else { 0.0 };
+                    score[i].1 += pts as f64;
+                }
+            }
+            let best = (0..moves.len()).max_by(|&i, &j| (score[i].0 + score[i].1 / 1200.0).partial_cmp(&(score[j].0 + score[j].1 / 1200.0)).unwrap()).unwrap();
+            return moves[best];
+        }
+        // Tempo per mossa: più iterazioni dove servono.
+        let base_iters = self.search.iterations;
+        let mut mult = if obs.table.is_none() { o.lead_mult } else { o.follow_mult };
+        if (2..=8).contains(&obs.deck_len) {
+            mult *= o.pref_mult;
+        }
+        if obs.played.is_empty() && obs.table.is_none() && obs.points == [0, 0] {
+            mult *= o.first_mult;
+        }
+        // Rischio secondo il punteggio: avanti conta solo vincere, sotto contano di più i punti.
+        let base_pts = self.search.pts_div;
+        let (mine, theirs) = (obs.points[me as usize], obs.points[1 - me as usize]);
+        if o.ahead && mine > theirs {
+            self.search.pts_div = 0.0;
+        }
+        if o.behind && mine < theirs {
+            self.search.pts_div = base_pts / 4.0;
+        }
+        let trees = o.trees.max(1);
+        let first = if o.doubt { 0.7 } else { 1.0 };
+        self.search.iterations = ((base_iters as f64 * mult * first) as u32 / trees).max(1);
+        let mut root: Vec<RootChild> = Vec::new();
+        let mut run = |search: &IsmctsPlayer, root: &mut Vec<RootChild>, rng: &mut SmallRng| {
+            for _ in 0..trees {
+                let m = model.as_mut().map(|(f, a)| (&mut **f as &mut dyn FnMut(&Game, &mut SmallRng) -> Card, *a));
+                for c in search.search_model(&obs, rng, world, m) {
+                    match root.iter_mut().find(|x| x.card == c.card) {
+                        Some(x) => {
+                            x.visits += c.visits;
+                            x.reward += c.reward;
+                            x.wins += c.wins;
+                            x.points += c.points;
+                        }
+                        None => root.push(c),
+                    }
+                }
+            }
+        };
+        run(&self.search, &mut root, rng);
+        if o.doubt {
+            // Mossa in dubbio (le due migliori quasi alla pari): si cerca ancora.
+            let mut v: Vec<f64> = root.iter().map(|c| c.visits).collect();
+            v.sort_by(|a, b| b.partial_cmp(a).unwrap());
+            if v.len() > 1 && v[1] > 0.8 * v[0] {
+                run(&self.search, &mut root, rng);
+            }
+        }
+        self.search.iterations = base_iters;
+        self.search.pts_div = base_pts;
+        if o.vary > 0.0 {
+            let most = root.iter().map(|c| c.visits).fold(0.0, f64::max);
+            let near: Vec<Card> = root.iter().filter(|c| c.visits >= o.vary * most).map(|c| c.card).collect();
+            return near[rand::Rng::gen_range(rng, 0..near.len())];
+        }
+        if o.by_mean {
+            let most = root.iter().map(|c| c.visits).fold(0.0, f64::max);
+            return root
+                .iter()
+                .filter(|c| c.visits >= 0.1 * most)
+                .max_by(|a, b| (a.reward / a.visits).partial_cmp(&(b.reward / b.visits)).unwrap())
+                .unwrap()
+                .card;
+        }
         root.iter().max_by(|a, b| a.visits.partial_cmp(&b.visits).unwrap()).unwrap().card
     }
     fn observe(&mut self, c: Card) {
@@ -426,6 +566,10 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
             }
             Box::new(EnginePlayer::new(cfg))
         }
+        // Modelli generici di un giocatore umano, per le idee della 0.6.0 (non sono nel banco di prova).
+        "umano-medio" => Box::new(Persona::new("Umano medio".into(), briscola_core::style::Knobs::MEDIO, 7)),
+        "umano-errori" => Box::new(Persona::new("Umano medio che sbaglia una mossa su dieci".into(), briscola_core::style::Knobs { errori: 0.1, ..briscola_core::style::Knobs::MEDIO }, 7)),
+        "umano-smemorato" => Box::new(Persona::new("Umano medio che non ricorda le carte".into(), briscola_core::style::Knobs { memoria: 0.0, ..briscola_core::style::Knobs::MEDIO }, 7)),
         s if s.starts_with("stile:") => Box::new(Persona::style(&s[6..]).ok_or(format!("stile sconosciuto: {}", &s[6..]))?),
         s if s.starts_with("persona:") => Box::new(Persona::numbered(num(&s[8..], "numero del personaggio")? as u64)),
         s if s.starts_with("fretta:") || s.starts_with("tilt:") => {
@@ -501,11 +645,92 @@ fn make_infer(rest: &str, spec: &str) -> Result<Infer, String> {
         exact: None,
         model: None,
         adapt: None,
+        opts: Opts::default(),
     })
 }
 
-/// Giocatore `infer:` o `esatta:` da SPEC intera.
+/// Giocatore `infer:`, `esatta:`, `adatta:` o `prova:` da SPEC intera.
 fn make_searcher(spec: &str) -> Result<Infer, String> {
+    if let Some(rest) = spec.strip_prefix("prova:") {
+        // prova:CHIAVE=VALORE,...@GIOCATORE — GIOCATORE con le varianti delle 50 idee.
+        let (kv, inner) = rest.split_once('@').ok_or(format!("serve prova:CHIAVE=VALORE,...@GIOCATORE, non '{spec}'"))?;
+        let mut a = make_searcher(inner)?;
+        let mut model: Option<(String, f64)> = None;
+        for item in kv.split(',').filter(|x| !x.is_empty()) {
+            let (k, v) = item.split_once('=').ok_or(format!("serve chiave=valore, non '{item}'"))?;
+            let num = || v.parse::<f64>().map_err(|_| format!("numero non valido in '{item}'"));
+            let rp = a.search.policy.get_or_insert_with(Default::default);
+            match k {
+                "ucb" => a.search.ucb_c = num()?,
+                "pts" => a.search.pts_div = num()?,
+                "eps" => a.search.rollout_eps = num()?,
+                "riuso" => a.search.reuse = num()? as u32,
+                "rsolve" => a.search.rollout_solve = if v == "no" { None } else { Some(num()? as u8) },
+                "tb" => rp.trump_base = num()? as i32,
+                "tm" => rp.trump_mult = num()? as i32,
+                "lb" => rp.lead_bonus = num()? as i32,
+                "os" => rp.opp_spend = num()? as i32,
+                "mix" => {
+                    a.search.value = Some(value_net()?);
+                    a.search.value_mix = num()?;
+                }
+                "guida" => {
+                    a.search.prior = Some(prior_net()?);
+                    a.search.prior_weight = num()?;
+                }
+                "media" => a.opts.by_mean = v == "1",
+                "dove" => (a.search.model_tree, a.search.model_rollout) = match v {
+                    "albero" => (true, false),
+                    "simulazioni" => (false, true),
+                    _ => (true, true),
+                },
+                "tinizio" => a.opts.temp_early = num()?,
+                "tfine" => a.opts.temp_late = num()?,
+                "varia" => a.opts.vary = num()?,
+                "alberi" => a.opts.trees = num()? as u32,
+                "solve0" => a.opts.solve0 = v == "1",
+                "prefin" => a.opts.prefin = num()? as u8,
+                "mondi" => a.opts.prefin_worlds = num()? as u32,
+                "apre" => a.opts.lead_mult = num()?,
+                "risp" => a.opts.follow_mult = num()?,
+                "pref" => a.opts.pref_mult = num()?,
+                "primo" => a.opts.first_mult = num()?,
+                "dubbio" => a.opts.doubt = v == "1",
+                "avanti" => a.opts.ahead = v == "1",
+                "sotto" => a.opts.behind = v == "1",
+                "modello" => model = Some((v.replace(';', ":"), model.map_or(0.3, |m| m.1))),
+                "alfa" => model = Some((model.map_or(String::new(), |m| m.0), num()?)),
+                "fiducia" => a.adapt.as_mut().ok_or("fiducia vale solo con adatta:")?.scale = num()?,
+                other => return Err(format!("opzione sconosciuta: {other}")),
+            }
+        }
+        if let Some((m, alpha)) = model {
+            a.model = Some((make_player(&m)?, alpha));
+        }
+        return Ok(a);
+    }
+    if let Some(rest) = spec.strip_prefix("adatta:") {
+        // adatta:GIOCATORE — GIOCATORE (infer: o esatta:) che riconosce lo stile avversario e lo sfrutta.
+        // adatta:K:AVVERSARIO@GIOCATORE — in più ricorda K partite già giocate contro AVVERSARIO.
+        let (history, inner) = match rest.split_once('@') {
+            Some((h, inner)) => {
+                let (k, opp) = h.split_once(':').ok_or(format!("serve adatta:K:AVVERSARIO@GIOCATORE, non '{spec}'"))?;
+                (Some((k.parse::<u64>().map_err(|_| format!("numero non valido in '{spec}'"))?, opp)), inner)
+            }
+            None => (None, rest),
+        };
+        let mut a = make_searcher(inner)?;
+        let mut adapt = Adapt::new(64);
+        if let Some(x) = std::env::var("BRISCOLA_ADAPT_SCALE").ok().and_then(|x| x.parse().ok()) {
+            adapt.scale = x;
+        }
+        // Lo storico si può fare solo contro gli avversari "semplici" (non i motori che deducono).
+        if let Some((k, opp)) = history.filter(|(_, opp)| make_player(opp).is_ok()) {
+            warm_up(&mut adapt, opp, k, &a.policy)?;
+        }
+        a.adapt = Some(adapt);
+        return Ok(a);
+    }
     if let Some(rest) = spec.strip_prefix("esatta:") {
         // esatta:ITERAZIONI:TEMPERATURA:MINIMO[:net|:onesta] — come infer:, ma con tutte le mani possibili pesate in modo esatto.
         let mut p: Vec<&str> = rest.split(':').collect();
@@ -567,29 +792,7 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
         a.model = Some((make_player(model)?, alpha));
         return Ok(Box::new(a));
     }
-    if let Some(rest) = spec.strip_prefix("adatta:") {
-        // adatta:GIOCATORE — GIOCATORE (infer: o esatta:) che riconosce lo stile avversario e lo sfrutta.
-        // adatta:K:AVVERSARIO@GIOCATORE — in più ricorda K partite già giocate contro AVVERSARIO.
-        let (history, inner) = match rest.split_once('@') {
-            Some((h, inner)) => {
-                let (k, opp) = h.split_once(':').ok_or(format!("serve adatta:K:AVVERSARIO@GIOCATORE, non '{spec}'"))?;
-                (Some((k.parse::<u64>().map_err(|_| format!("numero non valido in '{spec}'"))?, opp)), inner)
-            }
-            None => (None, rest),
-        };
-        let mut a = make_searcher(inner)?;
-        let mut adapt = Adapt::new(64);
-        if let Some(x) = std::env::var("BRISCOLA_ADAPT_SCALE").ok().and_then(|x| x.parse().ok()) {
-            adapt.scale = x;
-        }
-        // Lo storico si può fare solo contro gli avversari "semplici" (non i motori che deducono).
-        if let Some((k, opp)) = history.filter(|(_, opp)| make_player(opp).is_ok()) {
-            warm_up(&mut adapt, opp, k, &a.policy)?;
-        }
-        a.adapt = Some(adapt);
-        return Ok(Box::new(a));
-    }
-    if spec.starts_with("esatta:") || spec.starts_with("infer:") {
+    if ["esatta:", "infer:", "adatta:", "prova:"].iter().any(|p| spec.starts_with(p)) {
         return Ok(Box::new(make_searcher(spec)?));
     }
     if let Some(n) = spec.strip_prefix("vedetutto:") {

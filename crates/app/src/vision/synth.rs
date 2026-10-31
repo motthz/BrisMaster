@@ -69,6 +69,8 @@ pub struct Deal<'a> {
     pub opp: Option<&'a Img>,
     pub mine: Option<&'a Img>,
     pub trump: Option<&'a Img>,
+    /// Il mazzo coperto sopra la briscola (finito, resta solo la briscola).
+    pub deck: bool,
 }
 
 const W: usize = 1400;
@@ -201,7 +203,7 @@ fn stamp(img: &mut Img, s: &Img, x: usize, y: usize, alpha: f32) {
 
 /// Solo le scritte e i loghi, su un tavolo senza carte.
 pub fn writing_only(look: &Look) -> Img {
-    table(&Deal { hand: vec![], opp: None, mine: None, trump: None }, &Look { writing: true, logo: 0.9, ..*look })
+    table(&Deal { hand: vec![], opp: None, mine: None, trump: None, deck: true }, &Look { writing: true, logo: 0.9, ..*look })
 }
 
 /// Il tavolo con le carte, come lo vedrebbe la lettura dello schermo.
@@ -251,7 +253,9 @@ pub fn table(deal: &Deal, look: &Look) -> Img {
         let paint = |u: f32, v: f32| tint(t.sample(u * (t.w - 1) as f32, v * (t.h - 1) as f32), look);
         draw(&mut img, left + paint_h / 2.0, deck_y, tw, paint_h, 90.0, &paint);
     }
-    draw_back(&mut img, deck_x, deck_y, pw, ph);
+    if deal.deck {
+        draw_back(&mut img, deck_x, deck_y, pw, ph);
+    }
     // Le carte giocate al centro: quella dell'avversario più in alto, la tua più in basso.
     if let Some(c) = deal.opp {
         draw_card(&mut img, c, look, W as f32 / 2.0, H as f32 / 2.0 - h * 0.45, h, 0.0);

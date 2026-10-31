@@ -729,20 +729,26 @@ impl Assistant {
         let mut sig: Vec<Option<Card>> =
             [&scene.trump, &scene.opp_slot, &scene.my_slot].iter().map(|v| v.as_ref().and_then(best)).collect();
         sig.extend(scene.hand.iter().map(best));
-        if self.vision.seen.as_ref() != Some(&sig) {
-            self.vision.seen = Some(sig);
-            return;
+        let prev = self.vision.seen.replace(sig.clone());
+        let Some(prev) = prev else { return };
+        if prev == sig {
+            self.check_hand(scene);
+            self.check_mismatch(scene);
         }
-        self.check_hand(scene);
-        self.check_mismatch(scene);
-        // Più passi in una volta: briscola, chi comincia, le tre carte, la prima giocata...
+        // Più passi in una volta: briscola, chi comincia, le tre carte, la prima giocata... Ogni
+        // passo guarda solo la sua parte dello schermo, e basta che quella si ripeta uguale: una
+        // carta letta in modo incerto altrove non ferma la partita.
         for _ in 0..8 {
+            if !steady(self.pos.step(), &prev, &sig) {
+                break;
+            }
             let before = (self.pos.step(), self.history.len());
             self.sync_step(scene);
             if (self.pos.step(), self.history.len()) == before || self.vision.confirm.is_some() {
                 break;
             }
         }
+        // Gli inserimenti azzerano la lettura precedente: questa resta il confronto per la prossima.
         self.vision.seen = Some(sig);
     }
 
@@ -854,11 +860,19 @@ impl Assistant {
                 }
                 return;
             }
-            Step::Draw(_) => unmatched_hand(scene, &pos)
-                .into_iter()
-                .filter_map(|v| v.best(allowed.union(pos.played)).map(|(c, m)| (c, m, v)))
-                .filter(|(c, _, _)| allowed.contains(*c))
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()),
+            Step::Draw(_) => {
+                let mut views: Vec<&CardView> = scene.hand.iter().collect();
+                // Ho aperto io la prima presa prima che l'app vedesse la mano: la carta in tavola
+                // era una delle tre in mano (sullo schermo ne restano due).
+                if pos.tricks == 0 && pos.first == Some(ME) && pos.table.is_none() {
+                    views.extend(scene.my_slot.as_ref());
+                }
+                unmatched(views, &pos)
+                    .into_iter()
+                    .filter_map(|v| v.best(allowed.union(pos.played)).map(|(c, m)| (c, m, v)))
+                    .filter(|(c, _, _)| allowed.contains(*c))
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            }
             Step::OppMove => scene
                 .opp_slot
                 .as_ref()
@@ -1446,10 +1460,30 @@ impl Assistant {
     }
 }
 
+/// Vero se la parte dello schermo che serve al passo `step` è uguale nelle due letture (carte
+/// riconosciute: briscola, avversario, tua, poi la mano).
+fn steady(step: Step, prev: &[Option<Card>], now: &[Option<Card>]) -> bool {
+    let same = |i: usize| prev.get(i) == now.get(i);
+    let hand = prev.len() == now.len() && prev[3..] == now[3..];
+    match step {
+        Step::Trump => same(0),
+        Step::First => same(1) && same(2) && hand,
+        Step::Draw(_) => hand && same(2),
+        Step::OppMove => same(1),
+        Step::MyMove => same(2),
+        Step::Over => true,
+    }
+}
+
 /// Carte della mano sullo schermo tolte quelle che corrispondono alle carte già in mano
 /// (a ciascuna carta nota la vista che le somiglia di più).
 fn unmatched_hand<'a>(scene: &'a Scene, pos: &Position) -> Vec<&'a CardView> {
-    let mut views: Vec<&CardView> = scene.hand.iter().collect();
+    unmatched(scene.hand.iter().collect(), pos)
+}
+
+/// Le carte viste (`views`) che restano togliendo, per ogni carta in mano, quella che le somiglia
+/// di più.
+fn unmatched<'a>(mut views: Vec<&'a CardView>, pos: &Position) -> Vec<&'a CardView> {
     for k in pos.hand.iter() {
         let best = (0..views.len())
             .max_by(|&a, &b| views[a].scores[k as usize].partial_cmp(&views[b].scores[k as usize]).unwrap());
@@ -2014,4 +2048,166 @@ mod tests {
         let r = explain(&obs, &evals);
         assert!(r[0].starts_with("Prendi la presa"), "{r:?}");
     }
+
+    /// Una partita intera giocata su un tavolo finto e seguita solo dallo schermo, come la vedrebbe
+    /// l'app: ogni fotogramma del sito (carta giocata, risposta, presa che resta in tavola, pescata,
+    /// tavolo sgombro) passa dalla lettura vera dello schermo. `linger` tiene la presa in tavola
+    /// anche dopo la pescata (molti siti la lasciano un momento). Restituisce le prese seguite e le
+    /// conferme chieste, o dove si è fermata.
+    fn play_on_screen(seed: u64, style: usize, look: crate::vision::synth::Look, linger: bool) -> Result<(u8, u32), String> {
+        use crate::vision::reference::card_image;
+        use crate::vision::synth::{table, Deal};
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let first = (seed % 2) as u8;
+        let mut g = Game::new(&mut rng, first);
+        let imgs: Vec<Img> = (0..40u8).map(|c| card_image(style, c)).collect();
+        let mut a = Assistant::default();
+        let mut confirms = 0;
+        // La mano sullo schermo, nell'ordine in cui il sito la disegna.
+        let mut hand: Vec<Card> = g.hands[0].iter().collect();
+        let mut frame = 0;
+        let mut look_at = |a: &mut Assistant, hand: &[Card], opp: Option<Card>, mine: Option<Card>, g: &Game, what: &str| -> Result<(), String> {
+            let trump = (g.deck_len > 0).then(|| &imgs[g.trump_card as usize]);
+            let deal = Deal {
+                hand: hand.iter().map(|&c| &imgs[c as usize]).collect(),
+                opp: opp.map(|c| &imgs[c as usize]),
+                mine: mine.map(|c| &imgs[c as usize]),
+                trump,
+                deck: g.deck_len > 1,
+            };
+            let img = table(&deal, &look);
+            frame += 1;
+            if let Ok(d) = std::env::var("SALVA") {
+                img.save_png(std::path::Path::new(&format!("{d}/partita_{seed}_{frame:03}.png"))).unwrap();
+            }
+            let Some(scene) = read_briscola(&img, &a.vision.memory) else { return Ok(()) };
+            show(a, &scene);
+            // L'utente conferma le carte che l'app chiede (se sono giuste).
+            for _ in 0..3 {
+                let Some(c) = &a.vision.confirm else { break };
+                let right = match c.step {
+                    Step::Trump => Some(g.trump_card),
+                    _ => None,
+                };
+                if right.is_some_and(|r| r != c.card) {
+                    return Err(format!("{what}: chiede conferma di {} invece di {}", cards::name(c.card), cards::name(right.unwrap())));
+                }
+                confirms += 1;
+                a.accept_vision();
+                show(a, &scene);
+            }
+            Ok(())
+        };
+        let check = |a: &Assistant, g: &Game, what: &str| -> Result<(), String> {
+            let (o, real) = (a.pos.observation(), Observation::of(g, 0));
+            if a.pos.step() == Step::Trump || a.pos.step() == Step::First || matches!(a.pos.step(), Step::Draw(_)) && a.pos.tricks == 0 {
+                return Err(format!("{what}: ferma al passo {:?}", a.pos.step()));
+            }
+            // L'ultima carta la gioca l'app da sola: può essere avanti di una presa.
+            if g.deck_len == 0 && g.hands[0].len() <= 1 {
+                return Ok(());
+            }
+            if o.hand != real.hand || o.table != real.table || o.played != real.played || o.leader != real.leader {
+                return Err(format!(
+                    "{what}: passo {:?}, prese {} (vere {}), mano {:?} (vera {:?}), tavolo {:?} (vero {:?})",
+                    a.pos.step(),
+                    a.pos.tricks,
+                    real.played.len() / 2,
+                    o.hand.iter().map(cards::name).collect::<Vec<_>>(),
+                    real.hand.iter().map(cards::name).collect::<Vec<_>>(),
+                    o.table.map(cards::name),
+                    real.table.map(cards::name)
+                ));
+            }
+            Ok(())
+        };
+        // L'inizio: briscola e mano, tavolo vuoto.
+        look_at(&mut a, &hand, None, None, &g, "inizio")?;
+        while !g.is_over() {
+            let n = g.played.len() / 2 + 1;
+            let mut slots: [Option<Card>; 2] = [None, None];
+            let mut drawn = Vec::new();
+            for turn in 0..2 {
+                let p = g.to_move();
+                let m = g.legal_moves().to_vec();
+                let c = m[rng.gen_range(0..m.len())];
+                let before = g.hands[0];
+                g.play(c);
+                slots[p as usize] = Some(c);
+                if p == ME {
+                    hand.retain(|&h| h != c);
+                }
+                drawn = g.hands[0].minus(before).iter().filter(|d| !hand.contains(d)).collect();
+                let what = format!("presa {n}, {} gioca {}", if p == ME { "io" } else { "lui" }, cards::name(c));
+                look_at(&mut a, &hand, slots[1], slots[0], &g, &what)?;
+                if turn == 0 {
+                    check(&a, &g, &what)?;
+                }
+            }
+            // La presa resta in tavola un momento.
+            look_at(&mut a, &hand, slots[1], slots[0], &g, &format!("presa {n} in tavola"))?;
+            hand.extend(drawn);
+            if linger {
+                look_at(&mut a, &hand, slots[1], slots[0], &g, &format!("presa {n}, pescata con la presa in tavola"))?;
+            }
+            look_at(&mut a, &hand, None, None, &g, &format!("presa {n}, pescata"))?;
+            check(&a, &g, &format!("dopo la presa {n}"))?;
+        }
+        Ok((a.pos.tricks, confirms))
+    }
+
+    /// Partite intere seguite dallo schermo, su tavoli diversi: non si fermano mai e finiscono
+    /// con la partita giusta.
+    #[test]
+    fn follows_whole_games_on_screen() {
+        use crate::vision::synth::{Bg, Look};
+        let d = Look::default();
+        let looks = [d, Look { bg: Bg::Wood, card_h: 150.0, pile: 0.8, ..d }, Look { writing: true, logo: 0.5, ..d }];
+        let mut failed = Vec::new();
+        for (k, look) in looks.iter().enumerate() {
+            for (seed, linger) in [(k as u64 * 2 + 1, false), (k as u64 * 2 + 2, true)] {
+                match play_on_screen(seed, k % 2, *look, linger) {
+                    Ok((tricks, confirms)) => {
+                        println!("tavolo {k} partita {seed}: {tricks} prese, {confirms} conferme");
+                        if tricks != 20 {
+                            failed.push(format!("tavolo {k} partita {seed}: {tricks} prese"));
+                        }
+                    }
+                    Err(e) => failed.push(format!("tavolo {k} partita {seed}: {e}")),
+                }
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// Più partite su più tavoli, stampate una per una.
+    /// `cargo test --release -p brismaster banco_partite -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn banco_partite() {
+        use crate::vision::synth::{Bg, Look};
+        let d = Look::default();
+        let looks = [
+            Look { writing: true, logo: 0.8, ..d },
+            Look { bg: Bg::Sea, card_h: 130.0, ..d },
+            Look { bg: Bg::Sky, card_h: 140.0, pile: 0.8, cover: 0.5, writing: true, ..d },
+            Look { bg: Bg::Felt([30, 60, 140]), card_h: 110.0, aspect: Some(0.68), fan: 6.0, ..d },
+            Look { bg: Bg::Wood, card_h: 130.0, blur: true, logo: 0.4, ..d },
+        ];
+        let (mut ok, mut n) = (0, 0);
+        for (k, look) in looks.iter().enumerate() {
+            for seed in [100 + k as u64 * 2, 101 + k as u64 * 2] {
+                n += 1;
+                match play_on_screen(seed, k % 2, *look, seed % 2 == 0) {
+                    Ok((t, c)) => {
+                        ok += (t == 20) as usize;
+                        println!("tavolo {k} partita {seed}: {t} prese, {c} conferme");
+                    }
+                    Err(e) => println!("tavolo {k} partita {seed}: {e}"),
+                }
+            }
+        }
+        println!("== partite finite: {ok}/{n}");
+    }
 }
+

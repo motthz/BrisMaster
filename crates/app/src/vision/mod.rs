@@ -9,7 +9,7 @@ pub mod memory;
 pub mod reference;
 pub mod screen;
 #[cfg(test)]
-mod synth;
+pub(crate) mod synth;
 
 /// Immagine RGB.
 #[derive(Clone, Debug)]
@@ -742,7 +742,8 @@ mod other_sites {
             let look = &Look { writing, logo, ..*look };
             let pick = |i: usize| &deck[(k * 6 + i) % deck.len()];
             let (h0, h1, h2, o, m, t) = (pick(0), pick(1), pick(2), pick(3), pick(4), pick(5));
-            let deal = Deal { hand: vec![&h0.1, &h1.1, &h2.1], opp: Some(&o.1), mine: Some(&m.1), trump: Some(&t.1) };
+            let deal =
+                Deal { hand: vec![&h0.1, &h1.1, &h2.1], opp: Some(&o.1), mine: Some(&m.1), trump: Some(&t.1), deck: true };
             let img = table(&deal, look);
             if verbose {
                 let dir = std::env::var("SALVA").ok();
@@ -859,6 +860,7 @@ mod other_sites {
                     opp: Some(&pick(3).1),
                     mine: Some(&pick(4).1),
                     trump: Some(&pick(5).1),
+                    deck: true,
                 };
                 show(&format!("vera {label} t{k}"), &table(&deal, look));
                 let logo = [0.35, 0.6, 0.9][k % 3];

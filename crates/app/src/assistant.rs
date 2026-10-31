@@ -451,7 +451,7 @@ impl Assistant {
         // Se si è annullata una carta inserita dalla lettura dello schermo, era sbagliata.
         if let Some((c, img, len)) = self.vision.last.take() {
             if self.history.len() <= len {
-                self.vision.memory.lock().unwrap().forget(&img);
+                self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).forget(&img);
                 self.vision.doubts.push((self.pos.step(), c));
             }
         }
@@ -669,7 +669,7 @@ impl Assistant {
                     };
                     if self.enter(c) {
                         if let Some((img, vis)) = seen.map(|v| (v.img, v.vis)).or(shown) {
-                            self.vision.memory.lock().unwrap().remember(&img, vis, c);
+                            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&img, vis, c);
                         }
                     } else {
                         self.entry_error = Some(format!("{} non è possibile adesso", cards::name(c)));
@@ -732,6 +732,11 @@ impl Assistant {
         let prev = self.vision.seen.replace(sig.clone());
         let Some(prev) = prev else { return };
         if prev == sig {
+            // Una partita nuova si riconosce solo da letture uguali di tutto lo schermo: una
+            // briscola letta male una volta non deve far ricominciare la partita.
+            if self.new_deal(scene) {
+                self.reset();
+            }
             self.check_hand(scene);
             self.check_mismatch(scene);
         }
@@ -773,7 +778,7 @@ impl Assistant {
         }
         let (wrong, right) = (*wrong, *right);
         if self.correct_draw(wrong, right) {
-            self.vision.memory.lock().unwrap().remember(&view.img, view.vis, right);
+            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&view.img, view.vis, right);
             self.vision.status = format!("Mano corretta: {} era {}", cards::name(wrong), cards::name(right));
         }
     }
@@ -832,9 +837,6 @@ impl Assistant {
 
     /// Un passo della partita a partire dalla lettura dello schermo.
     fn sync_step(&mut self, scene: &Scene) {
-        if self.new_deal(scene) {
-            self.reset();
-        }
         let step = self.pos.step();
         if step == Step::Over {
             return;
@@ -893,7 +895,7 @@ impl Assistant {
             let img = view.img.clone();
             let len = self.history.len();
             if self.enter(card) {
-                self.vision.memory.lock().unwrap().remember(&img, view.vis, card);
+                self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&img, view.vis, card);
                 self.vision.last = Some((card, img, len));
             }
         } else {
@@ -925,7 +927,7 @@ impl Assistant {
     fn accept_vision(&mut self) {
         let Some(c) = self.vision.confirm.take() else { return };
         if c.step == self.pos.step() && self.enter(c.card) {
-            self.vision.memory.lock().unwrap().remember(&c.img, c.vis, c.card);
+            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&c.img, c.vis, c.card);
         }
     }
 
@@ -962,7 +964,7 @@ impl Assistant {
                 self.set_vision(on, ui.ctx());
             }
             if on {
-                let n = self.vision.memory.lock().unwrap().len();
+                let n = self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).len();
                 ui.label(RichText::new(format!("{n}/40 carte in memoria")).small().weak())
                     .on_hover_text("Le carte già riconosciute si ricordano da sole e la volta dopo si riconoscono al primo colpo");
             }
@@ -2009,7 +2011,7 @@ mod tests {
         assert_eq!(a.vision.confirm.as_ref().map(|c| c.card), Some(cards::make(0, 7)));
         a.accept_vision();
         assert_eq!(a.pos.trump_card, Some(cards::make(0, 7)));
-        assert_eq!(a.vision.memory.lock().unwrap().len(), 1, "confermata: ora la ricorda");
+        assert_eq!(a.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).len(), 1, "confermata: ora la ricorda");
 
         let mut b = Assistant::default();
         let scene = Scene { trump: Some(seen(cards::make(2, 2), 4.0)), ..Default::default() };
@@ -2017,7 +2019,7 @@ mod tests {
         assert_eq!(b.pos.trump_card, Some(cards::make(2, 2)));
         b.undo();
         assert!(b.pos.trump_card.is_none());
-        assert_eq!(b.vision.memory.lock().unwrap().len(), 0, "annullata: dimenticata");
+        assert_eq!(b.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).len(), 0, "annullata: dimenticata");
         show(&mut b, &scene);
         assert!(b.pos.trump_card.is_none() && b.vision.confirm.is_some(), "ora chiede conferma");
     }
@@ -2054,7 +2056,13 @@ mod tests {
     /// tavolo sgombro) passa dalla lettura vera dello schermo. `linger` tiene la presa in tavola
     /// anche dopo la pescata (molti siti la lasciano un momento). Restituisce le prese seguite e le
     /// conferme chieste, o dove si è fermata.
-    fn play_on_screen(seed: u64, style: usize, look: crate::vision::synth::Look, linger: bool) -> Result<(u8, u32), String> {
+    fn play_on_screen(
+        seed: u64,
+        style: usize,
+        look: crate::vision::synth::Look,
+        linger: bool,
+        flicker: bool,
+    ) -> Result<(u8, u32), String> {
         use crate::vision::reference::card_image;
         use crate::vision::synth::{table, Deal};
         let mut rng = SmallRng::seed_from_u64(seed);
@@ -2082,6 +2090,18 @@ mod tests {
             }
             let Some(scene) = read_briscola(&img, &a.vision.memory) else { return Ok(()) };
             show(a, &scene);
+            if flicker {
+                // Mentre lo schermo è fermo, una lettura vede la briscola come un'altra carta, con
+                // sicurezza; poi torna giusta.
+                let mut wrong = scene.clone();
+                if let Some(t) = &mut wrong.trump {
+                    let other = (g.trump_card as usize + 7) % 40;
+                    t.scores.swap(g.trump_card as usize, other);
+                    t.sim.swap(g.trump_card as usize, other);
+                }
+                a.sync(&wrong);
+                show(a, &scene);
+            }
             // L'utente conferma le carte che l'app chiede (se sono giuste).
             for _ in 0..3 {
                 let Some(c) = &a.vision.confirm else { break };
@@ -2157,7 +2177,7 @@ mod tests {
     }
 
     /// Partite intere seguite dallo schermo, su tavoli diversi: non si fermano mai e finiscono
-    /// con la partita giusta.
+    /// con la partita giusta. Sull'ultimo tavolo una lettura su tre vede la briscola sbagliata.
     #[test]
     fn follows_whole_games_on_screen() {
         use crate::vision::synth::{Bg, Look};
@@ -2166,7 +2186,7 @@ mod tests {
         let mut failed = Vec::new();
         for (k, look) in looks.iter().enumerate() {
             for (seed, linger) in [(k as u64 * 2 + 1, false), (k as u64 * 2 + 2, true)] {
-                match play_on_screen(seed, k % 2, *look, linger) {
+                match play_on_screen(seed, k % 2, *look, linger, k == 2) {
                     Ok((tricks, confirms)) => {
                         println!("tavolo {k} partita {seed}: {tricks} prese, {confirms} conferme");
                         if tricks != 20 {
@@ -2198,7 +2218,7 @@ mod tests {
         for (k, look) in looks.iter().enumerate() {
             for seed in [100 + k as u64 * 2, 101 + k as u64 * 2] {
                 n += 1;
-                match play_on_screen(seed, k % 2, *look, seed % 2 == 0) {
+                match play_on_screen(seed, k % 2, *look, seed % 2 == 0, k % 2 == 0) {
                     Ok((t, c)) => {
                         ok += (t == 20) as usize;
                         println!("tavolo {k} partita {seed}: {t} prese, {c} conferme");
@@ -2208,6 +2228,36 @@ mod tests {
             }
         }
         println!("== partite finite: {ok}/{n}");
+    }
+
+    /// La briscola letta in modo diverso una lettura sì e una no (sicura ma sbagliata) non fa
+    /// ricominciare la partita, e la partita prosegue.
+    #[test]
+    fn a_flickering_trump_does_not_restart_the_game() {
+        let mut a = Assistant::default();
+        let c = |s, r| cards::make(s, r);
+        let hand = vec![seen(c(3, 1), 4.0), seen(c(2, 6), 4.0), seen(c(1, 0), 4.0)];
+        let mut scene = Scene { trump: Some(seen(c(0, 8), 4.0)), hand: hand.clone(), ..Default::default() };
+        show(&mut a, &scene);
+        a.set_first(OPP);
+        show(&mut a, &scene);
+        assert_eq!(a.pos.step(), Step::OppMove);
+        let wrong = Scene { trump: Some(seen(c(2, 3), 4.0)), ..scene.clone() };
+        for _ in 0..6 {
+            a.sync(&wrong);
+            a.sync(&scene);
+        }
+        assert_eq!(a.pos.trump_card, Some(c(0, 8)), "la partita è ricominciata");
+        assert_eq!(a.pos.first, Some(OPP));
+        // L'avversario gioca mentre la briscola continua a cambiare: la carta entra lo stesso.
+        scene.opp_slot = Some(seen(c(3, 2), 4.0));
+        let wrong = Scene { trump: Some(seen(c(2, 3), 4.0)), ..scene.clone() };
+        for _ in 0..3 {
+            a.sync(&scene);
+            a.sync(&wrong);
+        }
+        assert_eq!(a.pos.table, Some(c(3, 2)));
+        assert_eq!(a.pos.trump_card, Some(c(0, 8)));
     }
 }
 

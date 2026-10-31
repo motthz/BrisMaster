@@ -317,7 +317,7 @@ impl Assist {
         // Se si è annullata una carta inserita dalla lettura dello schermo, era sbagliata.
         if let Some((c, img, len)) = self.vision.last.take() {
             if self.history.len() <= len {
-                self.vision.memory.lock().unwrap().forget(&img);
+                self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).forget(&img);
                 self.vision.doubts.push((self.step(), c));
             }
         }
@@ -608,7 +608,7 @@ impl Assist {
                     let shown = self.unmatched_view(step).map(|v| (v.img.clone(), v.vis));
                     if self.enter(c) {
                         if let Some((img, vis)) = seen.map(|v| (v.img, v.vis)).or(shown) {
-                            self.vision.memory.lock().unwrap().remember(&img, vis, c);
+                            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&img, vis, c);
                         }
                     } else {
                         self.entry_error = Some(format!("{} non è possibile adesso", name(c)));
@@ -830,7 +830,7 @@ impl Assist {
             let img = view.img.clone();
             let len = self.history.len();
             if self.enter(card) {
-                self.vision.memory.lock().unwrap().remember(&img, view.vis, card);
+                self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&img, view.vis, card);
                 self.vision.last = Some((card, img, len));
             }
         } else {
@@ -842,7 +842,7 @@ impl Assist {
     fn accept_vision(&mut self) {
         let Some(c) = self.vision.confirm.take() else { return };
         if c.step == self.step() && self.enter(c.card) {
-            self.vision.memory.lock().unwrap().remember(&c.img, c.vis, c.card);
+            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&c.img, c.vis, c.card);
         }
     }
 
@@ -1105,7 +1105,7 @@ fn vision_ui(a: &mut Assist, ui: &mut egui::Ui) {
             a.set_vision(on, ui.ctx());
         }
         if on {
-            let n = a.vision.memory.lock().unwrap().len();
+            let n = a.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).len();
             ui.label(RichText::new(format!("{n}/40 carte in memoria")).small().weak())
                 .on_hover_text("Le carte già riconosciute si ricordano da sole e la volta dopo si riconoscono al primo colpo");
         }
@@ -1561,7 +1561,7 @@ mod tests {
         assert_eq!(a.vision.confirm.as_ref().map(|c| c.card), Some(AD));
         a.accept_vision();
         assert_eq!(a.obs.unwrap().table, single(AD));
-        assert_eq!(a.vision.memory.lock().unwrap().len(), 1, "confermata: ora la ricorda");
+        assert_eq!(a.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).len(), 1, "confermata: ora la ricorda");
 
         let mut b = Assist::default();
         b.start(AI);
@@ -1570,7 +1570,7 @@ mod tests {
         assert_eq!(b.obs.unwrap().table, single(C2));
         b.undo();
         assert!(b.obs.unwrap().table.is_empty());
-        assert_eq!(b.vision.memory.lock().unwrap().len(), 0, "annullata: dimenticata");
+        assert_eq!(b.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).len(), 0, "annullata: dimenticata");
         show(&mut b, &s);
         assert!(b.obs.unwrap().table.is_empty() && b.vision.confirm.is_some(), "ora chiede conferma");
     }

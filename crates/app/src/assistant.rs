@@ -1783,9 +1783,11 @@ impl Sightings {
         if let Some(c) = lead.filter(|&c| allowed.contains(c)) {
             return Some((c, self.on_table(c)));
         }
-        // Una carta nuova in mano vista più volte, ma senza sicurezza: si chiede.
+        // Una carta nuova in mano vista molte volte, ma mai con sicurezza (coperta proprio dove
+        // differisce da un'altra): si aspetta, perché quando la gioco si vede in tavola; se resta
+        // incerta per qualche secondo si chiede.
         (0..40u8)
-            .filter(|&c| allowed.contains(c) && self.hand[c as usize].count >= 3)
+            .filter(|&c| allowed.contains(c) && self.hand[c as usize].count >= 20)
             .max_by_key(|&c| (self.hand[c as usize].count, (self.hand[c as usize].margin * 10.0) as i32))
             .map(|c| (c, false))
     }
@@ -2542,6 +2544,7 @@ mod tests {
                 .map(|e| e["hand"].as_array().unwrap().iter().filter_map(|v| by_name(v.as_str()?)).collect())
                 .collect();
             let mut opp_cards: Vec<Card> = Vec::new();
+            let mut recent_cards: Vec<Vec<Card>> = Vec::new();
             let mut typed = 0;
             // Primo punto in cui l'app resta indietro (o avanti) sul mazzo vero per più di 6 letture.
             let (mut off, mut first_off): (u32, Option<String>) = (0, None);
@@ -2581,8 +2584,13 @@ mod tests {
                     }
                 }
                 // L'utente conferma le carte che l'app chiede, se sono una di quelle sullo schermo.
+                // Le carte viste sullo schermo nelle ultime letture (l'utente se le ricorda).
+                recent_cards.push(truth_hand.iter().copied().chain(truth_trick.iter().map(|t| t.0)).collect::<Vec<Card>>());
+                if recent_cards.len() > 6 {
+                    recent_cards.remove(0);
+                }
                 if let Some(c) = &a.vision.confirm {
-                    let visible = c.card == trump || truth_hand.contains(&c.card) || truth_trick.iter().any(|t| t.0 == c.card);
+                    let visible = c.card == trump || recent_cards.iter().any(|r| r.contains(&c.card));
                     if visible {
                         confirms += 1;
                         a.accept_vision();

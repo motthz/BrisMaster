@@ -1681,8 +1681,10 @@ impl Sightings {
         self.hand.get(c as usize).is_some_and(|s| s.sure())
     }
 
+    /// Vista in tavola: due volte con sicurezza, o una volta sola se poi è sparita (il sito ha
+    /// chiuso la presa prima della lettura dopo).
     fn on_table(&self, c: Card) -> bool {
-        self.table.get(c as usize).is_some_and(|s| s.sure())
+        self.table.get(c as usize).is_some_and(|s| s.sure() || (s.count >= 1 && s.margin >= AUTO_MARGIN && s.last < self.frame))
     }
 
     /// Chi ha aperto la partita: la prima carta comparsa in tavola era mia se l'avevo vista in
@@ -1739,21 +1741,12 @@ impl Sightings {
     }
 
     /// La prossima giocata dell'avversario: una carta mai stata in mano mia comparsa in tavola,
-    /// la prima in ordine di tempo. Vista una volta sola basta se era sicura e la presa è già
-    /// chiusa (in tavola non c'è più).
+    /// la prima in ordine di tempo.
     fn next_opp_play(&self, pos: &Position, scene: &Scene) -> Option<Card> {
         let allowed = pos.allowed();
-        let visible: Vec<Card> = [&scene.opp_slot, &scene.my_slot]
-            .into_iter()
-            .flatten()
-            .filter_map(|v| v.best(CardSet::FULL).map(|b| b.0))
-            .collect();
+        let _ = scene;
         (0..40u8)
-            .filter(|&c| allowed.contains(c) && !self.in_hand(c))
-            .filter(|&c| {
-                let s = &self.table[c as usize];
-                s.sure() || (s.count >= 1 && s.margin >= AUTO_MARGIN && !visible.contains(&c))
-            })
+            .filter(|&c| allowed.contains(c) && !self.in_hand(c) && self.on_table(c))
             .min_by_key(|&c| self.table[c as usize].first)
     }
 }

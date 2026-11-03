@@ -790,11 +790,11 @@ impl Assistant {
             Step::MyMove => sights.next_my_play(&pos, scene),
             Step::OppMove => sights.next_opp_play(&pos, scene),
         };
-        let Some(card) = event else { return false };
+        let Some((card, sure)) = event else { return false };
         let step = pos.step();
         let view = self.vision.sightings.view(card);
-        // Una carta annullata dall'utente non si rimette da sola: si chiede.
-        if self.vision.doubts.contains(&(step, card)) {
+        // Una carta letta senza sicurezza, o annullata dall'utente, non si mette da sola: si chiede.
+        if !sure || self.vision.doubts.contains(&(step, card)) {
             if let Some((img, vis)) = view {
                 self.vision.confirm = Some(Confirm { step, card, img, vis, texture: None });
             }
@@ -822,8 +822,8 @@ impl Assistant {
         // Al mio turno una carta sparita dalla mano e una nuova al suo posto sono una giocata e la
         // pescata che la segue (il sito ha chiuso la presa in un attimo), non una pescata letta male.
         let pending = match self.pos.step() {
-            Step::MyMove => self.vision.sightings.next_my_play(&self.pos, scene).is_some(),
-            _ => self.vision.sightings.next_opp_play(&self.pos, scene).is_some(),
+            Step::MyMove => self.vision.sightings.next_my_play(&self.pos, scene).is_some_and(|e| e.1),
+            _ => self.vision.sightings.next_opp_play(&self.pos, scene).is_some_and(|e| e.1),
         };
         if pending {
             return;
@@ -1687,44 +1687,75 @@ impl Sightings {
         self.table.get(c as usize).is_some_and(|s| s.sure() || (s.count >= 1 && s.margin >= AUTO_MARGIN && s.last < self.frame))
     }
 
-    /// Chi ha aperto la partita: la prima carta comparsa in tavola era mia se l'avevo vista in
-    /// mano, o se in quel momento in mano me ne restavano due.
+    /// Vista in tavola almeno una volta, anche senza sicurezza.
+    fn glimpsed(&self, c: Card) -> bool {
+        self.table.get(c as usize).is_some_and(|s| s.count >= 1)
+    }
+
+    /// Chi ha aperto la partita: la prima carta comparsa in tavola (anche letta male) era mia se
+    /// l'avevo vista in mano, o se in quel momento in mano me ne restavano due.
     fn first_player(&self, pos: &Position) -> Option<u8> {
-        let lead = (0..40u8)
-            .filter(|&c| Some(c) != pos.trump_card && self.on_table(c))
-            .min_by_key(|&c| self.table[c as usize].first)?;
+        if !(0..40u8).any(|c| Some(c) != pos.trump_card && self.on_table(c)) {
+            return None;
+        }
+        let lead = self.first_table_card(pos)?;
         Some(if self.in_hand(lead) || self.hand_at_first_play == Some(2) { ME } else { OPP })
     }
 
     /// La prossima pescata: la carta vista in mano da più tempo fra quelle non ancora inserite.
     /// All'inizio, se ho aperto io senza che la mia carta si vedesse prima in mano, è quella.
-    fn next_draw(&self, pos: &Position) -> Option<Card> {
+    fn next_draw(&self, pos: &Position) -> Option<(Card, bool)> {
         let allowed = pos.allowed();
         let opening = pos.tricks == 0 && pos.first == Some(ME) && pos.table.is_none();
-        let lead = opening.then(|| self.first_player(pos).map(|_| self.first_table_card(pos))).flatten().flatten();
+        let lead = if opening { self.first_table_card(pos) } else { None };
+        let sure = (0..40u8)
+            .filter(|&c| allowed.contains(c) && self.in_hand(c))
+            .min_by_key(|&c| self.hand[c as usize].first);
+        if let Some(c) = sure {
+            return Some((c, true));
+        }
+        if let Some(c) = lead.filter(|&c| allowed.contains(c)) {
+            return Some((c, self.on_table(c)));
+        }
+        // Una carta nuova in mano vista più volte, ma senza sicurezza: si chiede.
         (0..40u8)
-            .filter(|&c| allowed.contains(c))
-            .filter(|&c| self.in_hand(c) || Some(c) == lead)
-            .min_by_key(|&c| if self.in_hand(c) { self.hand[c as usize].first } else { u64::MAX })
+            .filter(|&c| allowed.contains(c) && self.hand[c as usize].count >= 3)
+            .max_by_key(|&c| (self.hand[c as usize].count, (self.hand[c as usize].margin * 10.0) as i32))
+            .map(|c| (c, false))
     }
 
+    /// La prima carta comparsa in tavola fra quelle non ancora giocate (anche letta male).
     fn first_table_card(&self, pos: &Position) -> Option<Card> {
         (0..40u8)
-            .filter(|&c| Some(c) != pos.trump_card && self.on_table(c) && !pos.played.contains(c))
-            .min_by_key(|&c| self.table[c as usize].first)
+            .filter(|&c| Some(c) != pos.trump_card && self.glimpsed(c) && !pos.played.contains(c))
+            .min_by_key(|&c| (self.table[c as usize].first, std::cmp::Reverse((self.table[c as usize].margin * 10.0) as i32)))
     }
 
     /// La mia prossima giocata: una mia carta vista in tavola, o sparita dalla mano mentre al suo
     /// posto è arrivata la pescata (o, a mazzo finito, la mano si è accorciata).
-    fn next_my_play(&self, pos: &Position, scene: &Scene) -> Option<Card> {
+    fn next_my_play(&self, pos: &Position, scene: &Scene) -> Option<(Card, bool)> {
         if let Some(c) = pos
             .hand
             .iter()
             .filter(|&c| self.on_table(c) && self.table[c as usize].last >= self.hand[c as usize].first)
             .min_by_key(|&c| self.table[c as usize].first)
         {
-            return Some(c);
+            return Some((c, true));
         }
+        if let Some(c) = self.played_from_hand(pos, scene) {
+            return Some((c, true));
+        }
+        // Una mia carta vista in tavola più volte ma senza sicurezza: si chiede.
+        pos.hand
+            .iter()
+            .filter(|&c| self.table[c as usize].count >= 2)
+            .max_by_key(|&c| self.table[c as usize].count)
+            .map(|c| (c, false))
+    }
+
+    /// La mia carta sparita dalla mano mentre al suo posto è arrivata la pescata (o, a mazzo
+    /// finito, la mano si è accorciata).
+    fn played_from_hand(&self, pos: &Position, scene: &Scene) -> Option<Card> {
         // Le ultime due letture sicure della mano dicono la stessa cosa.
         let [.., (_, a), (_, b)] = self.full_hands.as_slice() else { return None };
         if a != b || b.len() != scene.hand.len() {
@@ -1742,12 +1773,18 @@ impl Sightings {
 
     /// La prossima giocata dell'avversario: una carta mai stata in mano mia comparsa in tavola,
     /// la prima in ordine di tempo.
-    fn next_opp_play(&self, pos: &Position, scene: &Scene) -> Option<Card> {
+    fn next_opp_play(&self, pos: &Position, scene: &Scene) -> Option<(Card, bool)> {
         let allowed = pos.allowed();
         let _ = scene;
-        (0..40u8)
-            .filter(|&c| allowed.contains(c) && !self.in_hand(c) && self.on_table(c))
-            .min_by_key(|&c| self.table[c as usize].first)
+        let candidates = (0..40u8).filter(|&c| allowed.contains(c) && !self.in_hand(c));
+        if let Some(c) = candidates.clone().filter(|&c| self.on_table(c)).min_by_key(|&c| self.table[c as usize].first) {
+            return Some((c, true));
+        }
+        // Vista più volte ma senza sicurezza: si chiede.
+        candidates
+            .filter(|&c| self.table[c as usize].count >= 2)
+            .max_by_key(|&c| (self.table[c as usize].count, (self.table[c as usize].margin * 10.0) as i32))
+            .map(|c| (c, false))
     }
 }
 

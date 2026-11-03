@@ -1771,11 +1771,10 @@ impl Sightings {
             .min_by_key(|&c| self.hand[c as usize].first);
         // Devo ancora pescare ma la presa dopo è già cominciata: per l'ordine di gioco la mia carta
         // è la prima comparsa in tavola se apro io, la seconda se apre l'avversario. Se non è fra
-        // quelle che so di avere, è proprio la pescata (giocata prima che la vedessi in mano). Vale
-        // anche vista senza sicurezza (allora si chiede), se è comparsa prima della carta in mano.
-        if pos.tricks > 0 && pos.table.is_none() {
+        // quelle che so di avere, è proprio la pescata (giocata prima che la vedessi in mano).
+        if pos.tricks > 0 && pos.table.is_none() && sure.is_none() {
             let mut new: Vec<Card> = (0..40u8)
-                .filter(|&c| !pos.played.contains(c) && Some(c) != pos.trump_card && self.glimpsed(c))
+                .filter(|&c| !pos.played.contains(c) && Some(c) != pos.trump_card && self.on_table(c))
                 .collect();
             new.sort_by_key(|&c| self.table[c as usize].first);
             // (Se in tavola c'è una carta che so di avere, è quella la mia di questa presa: ne gioco
@@ -1783,10 +1782,7 @@ impl Sightings {
             let known = new.iter().any(|&c| pos.hand.contains(c));
             let mine = new.get(if pos.leader == ME { 0 } else { 1 }).copied().filter(|_| !known);
             if let Some(c) = mine.filter(|&c| allowed.contains(c)) {
-                let earlier = sure.is_none_or(|h| self.table[c as usize].first < self.hand[h as usize].first);
-                if earlier && !self.in_hand(c) {
-                    return Some((c, self.on_table(c)));
-                }
+                return Some((c, true));
             }
         }
         if let Some(c) = sure {

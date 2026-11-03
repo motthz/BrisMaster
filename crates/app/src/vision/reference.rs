@@ -436,12 +436,16 @@ impl Match {
     /// Una carta di cui si vede la fascia `vis` dell'altezza e la striscia `cols` della larghezza
     /// (tutta, o una parte se è coperta di lato da un'altra carta, come nelle mani a ventaglio).
     pub fn with_cols(card: &Img, vis: [f32; 2], cols: [f32; 2]) -> Match {
+        Match::crops(card, vis, cols, &SX, &SY)
+    }
+
+    fn crops(card: &Img, vis: [f32; 2], cols: [f32; 2], xs: &[f32], ys: &[f32]) -> Match {
         let mut seen = Seen::new(card, vis, cols);
         let (w, h) = (CARD_W as f32, CARD_H as f32);
         let hues = Hues::new(card, (0.1 * w).max(cols[0] * w), 0.06 * h, (0.9 * w).min(cols[1] * w), 0.94 * h);
         let mut best = vec![(-1.0f32, 0.0f32, 0.0f32); NT];
-        for &sx in &SX {
-            for &sy in &SY {
+        for &sx in xs {
+            for &sy in ys {
                 let crop = Crop::new(sx, sy, 0.0, 0.0);
                 for (k, slot) in best.iter_mut().enumerate() {
                     let s = seen.score(crop, k);

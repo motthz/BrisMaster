@@ -740,9 +740,10 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
     let ext_y = r.hw * r.u.1.abs() + r.hh * r.v.1.abs();
     let step = card_w / 3.0;
     let (nx, ny) = ((2.0 * ext_x / step) as usize + 1, (2.0 * ext_y / step) as usize + 1);
-    // Frazione chiara di un rettangolo (su una griglia di punti).
+    // Frazione chiara di un rettangolo (su una griglia di punti), 0 se dentro non c'è disegno
+    // colorato (riquadri e finestrelle con testo scuro: le napoletane hanno sempre colori).
     let light = |rect: &RotRect| {
-        let (mut n, mut k) = (0, 0);
+        let (mut n, mut k, mut ink) = (0, 0, 0);
         for j in 0..8 {
             for i in 0..6 {
                 let (a, b) = ((i as f32 + 0.5) / 6.0 - 0.5, (j as f32 + 0.5) / 8.0 - 0.5);
@@ -753,18 +754,25 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
                 }
                 n += 1;
                 k += paper[y as usize * img.w + x as usize] as usize;
+                let (_, sat, v) = hsv(img.at(x as usize, y as usize));
+                ink += (sat >= 60 && v >= 50) as usize;
             }
         }
-        if n == 0 {
+        if n == 0 || ink == 0 {
             0.0
         } else {
             k as f32 / n as f32
         }
     };
+    // I centri provati: una griglia, più quelli di una carta appoggiata a ciascun bordo della
+    // zona (la prima e l'ultima carta di una fila sovrapposta toccano il bordo).
+    let mut xs: Vec<f32> = (0..nx).map(|i| r.cx - ext_x + i as f32 * step).collect();
+    let mut ys: Vec<f32> = (0..ny).map(|j| r.cy - ext_y + j as f32 * step).collect();
+    xs.extend([r.cx - ext_x + card_w / 2.0, r.cx + ext_x - card_w / 2.0]);
+    ys.extend([r.cy - ext_y + card_l / 2.0, r.cy + ext_y - card_l / 2.0]);
     let mut rects = Vec::new();
-    for j in 0..ny {
-        for i in 0..nx {
-            let (cx, cy) = (r.cx - ext_x + i as f32 * step, r.cy - ext_y + j as f32 * step);
+    for &cy in &ys {
+        for &cx in &xs {
             if !r.contains(cx, cy) {
                 continue;
             }
@@ -781,6 +789,10 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
                 }
             }
         }
+    }
+    // Al più qualche centinaio di prove: una zona enorme (un riquadro del sito) non è una mano.
+    if rects.len() > 450 {
+        return Vec::new();
     }
     let mut tries: Vec<Try> = par_chunks(&rects, |(rect, cols)| Try::with_cols(img, *rect, WHOLE, *cols));
     tries.retain(|t| t.m.top() >= 0.45);
@@ -810,12 +822,16 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
             continue;
         }
         let f = t.finish(img);
-        if f.accepted(ACCEPT) {
+        // Cercando dappertutto qualcosa somiglia per caso: si chiede di più.
+        if f.accepted(SCAN_ACCEPT) {
             out.push(f);
         }
     }
     out
 }
+
+/// Somiglianza minima per una carta trovata facendo scorrere la finestra.
+const SCAN_ACCEPT: f32 = 0.7;
 
 /// Applica `f` agli elementi divisi fra pochi thread (gli elementi possono essere tanti).
 fn par_chunks<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {

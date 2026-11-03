@@ -345,6 +345,8 @@ struct Vision {
     doubts: Vec<(Step, Card)>,
     /// Letture stabili di fila in cui lo schermo contraddice la partita inserita.
     mismatch: u32,
+    /// Letture stabili di fila che mostrano una partita nuova.
+    new_deal: u32,
     /// Le carte viste finora in questa partita, in mano e in tavola: la partita si ricostruisce da
     /// qui, qualunque sia la velocità del sito e il posto in cui disegna le carte.
     sightings: Sightings,
@@ -737,8 +739,15 @@ impl Assistant {
         if prev == sig {
             // Una partita nuova si riconosce solo da letture uguali di tutto lo schermo: una
             // briscola letta male una volta non deve far ricominciare la partita.
+            // E solo se lo dicono più letture di fila: un errore di lettura non deve ricominciare
+            // una partita in corso.
             if self.new_deal(scene) {
-                self.reset();
+                self.vision.new_deal += 1;
+                if self.vision.new_deal >= 4 || self.pos.step() == Step::Over {
+                    self.reset();
+                }
+            } else {
+                self.vision.new_deal = 0;
             }
             self.check_mismatch(scene);
         }
@@ -860,8 +869,10 @@ impl Assistant {
         let replayed = scene.hand.iter().filter_map(sure).any(|c| self.pos.played.contains(c));
         // Briscola diversa: dalla carta riconosciuta (regge anche se cambia lo sfondo), o, se non
         // è sicura, dall'immagine.
-        let other_trump = match sure(t) {
+        let very_sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= 2.0 * AUTO_MARGIN).map(|b| b.0);
+        let other_trump = match very_sure(t) {
             Some(c) => Some(c) != self.pos.trump_card,
+            None if sure(t).is_some() => false,
             None => match &self.vision.trump_img {
                 Some(known) => similarity(known, &t.img, t.vis) < 0.75,
                 None => false,
@@ -2094,7 +2105,10 @@ mod tests {
         assert_eq!(a.pos.hand.len(), 3);
         assert_eq!(a.pos.step(), Step::MyMove);
         let sea = read_briscola(&shot("solitalian_mare.jpg"), &mem).expect("mare");
-        show(&mut a, &sea);
+        // La partita nuova si riconosce dopo qualche lettura uguale (circa un secondo e mezzo).
+        for _ in 0..3 {
+            show(&mut a, &sea);
+        }
         assert_eq!(a.pos.trump_card, Some(c(3, 1)), "briscola della partita nuova");
         assert_eq!(a.pos.step(), Step::First, "si aspetta chi comincia");
         a.set_first(OPP);
@@ -2180,7 +2194,9 @@ mod tests {
         // Il sito distribuisce di nuovo: briscola diversa.
         let new_hand = vec![seen(c(2, 0), 4.0), seen(c(3, 4), 4.0), seen(c(1, 5), 4.0)];
         let deal = Scene { trump: Some(seen(c(1, 2), 4.0)), hand: new_hand, ..Default::default() };
-        show(&mut a, &deal);
+        for _ in 0..3 {
+            show(&mut a, &deal);
+        }
         assert_eq!(a.pos.trump_card, Some(c(1, 2)));
         assert_eq!(a.pos.step(), Step::First);
     }

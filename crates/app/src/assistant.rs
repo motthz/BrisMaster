@@ -1778,7 +1778,10 @@ impl Sightings {
                 .filter(|&c| !pos.played.contains(c) && Some(c) != pos.trump_card && self.glimpsed(c))
                 .collect();
             new.sort_by_key(|&c| self.table[c as usize].first);
-            let mine = new.get(if pos.leader == ME { 0 } else { 1 }).copied();
+            // (Se in tavola c'è una carta che so di avere, è quella la mia di questa presa: ne gioco
+            // una sola.)
+            let known = new.iter().any(|&c| pos.hand.contains(c));
+            let mine = new.get(if pos.leader == ME { 0 } else { 1 }).copied().filter(|_| !known);
             if let Some(c) = mine.filter(|&c| allowed.contains(c)) {
                 let earlier = sure.is_none_or(|h| self.table[c as usize].first < self.hand[h as usize].first);
                 if earlier && !self.in_hand(c) {

@@ -851,6 +851,10 @@ impl Assistant {
             seen.iter().filter(|(c, m, _)| !self.pos.hand.contains(*c) && *m >= AUTO_MARGIN).collect();
         let missing: Vec<Card> = self.pos.hand.iter().filter(|h| !seen.iter().any(|(c, ..)| c == h)).collect();
         let ([(right, _, view)], [wrong]) = (extra.as_slice(), missing.as_slice()) else { return };
+        // La carta che manca si è vista in tavola: l'ho giocata, non era una pescata letta male.
+        if self.vision.sightings.glimpsed(*wrong) {
+            return;
+        }
         // La carta vista dev'essere ancora in gioco (non già uscita, né la briscola).
         let out = self.pos.played.contains(*right) || self.pos.table == Some(*right) || self.pos.trump_card == Some(*right);
         if out {
@@ -2496,6 +2500,8 @@ mod tests {
             let mut confirms = 0;
             let mut wrong = Vec::new();
             let mut before: Vec<Card> = Vec::new();
+            let mut opp_cards: Vec<Card> = Vec::new();
+            let mut typed = 0;
             // Primo punto in cui l'app resta indietro (o avanti) sul mazzo vero per più di 6 letture.
             let (mut off, mut first_off): (u32, Option<String>) = (0, None);
             let mut recent: Vec<String> = Vec::new();
@@ -2513,6 +2519,21 @@ mod tests {
                 let scene = read_briscola(&img, &a.vision.memory);
                 if let Some(scene) = &scene {
                     a.sync(scene);
+                }
+                // Le carte dell'avversario viste davvero finora (per scriverle quando l'app le chiede).
+                for t in &truth_trick {
+                    if !t.1 && !opp_cards.contains(&t.0) {
+                        opp_cards.push(t.0);
+                    }
+                }
+                if a.vision.status.starts_with("Non ho visto la carta giocata") && a.pos.step() == Step::OppMove {
+                    let gone = |c: Card| a.pos.played.contains(c) || a.pos.table == Some(c);
+                    if let Some(&c) = opp_cards.iter().find(|&&c| !gone(c)) {
+                        if a.enter(c) {
+                            typed += 1;
+                            a.vision.status.clear();
+                        }
+                    }
                 }
                 // L'utente conferma le carte che l'app chiede, se sono una di quelle sullo schermo.
                 if let Some(c) = &a.vision.confirm {
@@ -2582,11 +2603,12 @@ mod tests {
             let done = a.pos.tricks == 20 && wrong.is_empty();
             ok += done as usize;
             println!(
-                "{}: {} prese su 20, passo {:?}, {} conferme{}{}",
+                "{}: {} prese su 20, passo {:?}, {} conferme, {} scritte a mano{}{}",
                 dir.file_name().unwrap().to_string_lossy(),
                 a.pos.tricks,
                 a.pos.step(),
                 confirms,
+                typed,
                 if wrong.is_empty() { String::new() } else { format!(", errori: {}", wrong.join("; ")) },
                 if a.vision.status.is_empty() { String::new() } else { format!(" [{}]", a.vision.status) }
             );

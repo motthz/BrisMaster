@@ -728,6 +728,25 @@ fn stacked(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
     out
 }
 
+/// Frazione del rettangolo disegnata a colori vivi (su una griglia di punti).
+fn colored(img: &Img, r: &RotRect) -> f32 {
+    let (mut n, mut k) = (0, 0);
+    for j in 0..20 {
+        for i in 0..20 {
+            let (a, b) = ((i as f32 + 0.5) / 20.0 - 0.5, (j as f32 + 0.5) / 20.0 - 0.5);
+            let x = r.cx + 2.0 * r.hw * a * r.u.0 + 2.0 * r.hh * b * r.v.0;
+            let y = r.cy + 2.0 * r.hw * a * r.u.1 + 2.0 * r.hh * b * r.v.1;
+            if x < 0.0 || y < 0.0 || x >= img.w as f32 || y >= img.h as f32 {
+                continue;
+            }
+            n += 1;
+            let (_, sat, v) = hsv(img.at(x as usize, y as usize));
+            k += (sat >= 80 && v >= 60) as usize;
+        }
+    }
+    k as f32 / n.max(1) as f32
+}
+
 /// Le carte di misura `card_l` x `card_w` dentro una zona chiara che le altre divisioni non
 /// spezzano (carte che si sovrappongono fra loro o a un foglietto, a una scritta chiara, a un
 /// riquadro del sito): si fa scorrere una carta della misura giusta, dritta o un po' girata, sui
@@ -790,9 +809,9 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
             }
         }
         if n == 0 || ink == 0 {
-            0.0
+            (0.0, 0)
         } else {
-            k as f32 / n as f32
+            (k as f32 / n as f32, ink)
         }
     };
     // I centri provati: una griglia, più quelli di una carta appoggiata a ciascun bordo della
@@ -812,16 +831,18 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
                 // In piedi, con la testa in alto (v va dalla testa ai piedi), girata di `deg`.
                 let v = (-sin, cos);
                 let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: card_w / 2.0, hh: card_l / 2.0 };
-                if light(&rect) >= 0.45 {
-                    rects.push(rect);
+                let (l, ink) = light(&rect);
+                if l >= 0.45 {
+                    rects.push((ink, rect));
                 }
             }
         }
     }
-    // Al più qualche centinaio di prove: una zona enorme (un riquadro del sito) non è una mano.
-    if rects.len() > 300 {
-        return Vec::new();
-    }
+    // Al più qualche centinaio di prove: in una zona enorme (una carta attaccata a un riquadro del
+    // sito) si provano le posizioni con più disegno colorato.
+    rects.sort_by(|a, b| b.0.cmp(&a.0));
+    rects.truncate(300);
+    let rects: Vec<RotRect> = rects.into_iter().map(|(_, r)| r).collect();
     // Primo giro veloce: per ogni posizione la carta si raddrizza una volta sola e si confronta
     // intera e coperta da una parte o dall'altra.
     const COLS: [[f32; 2]; 3] = [WHOLE, [0.0, 0.6], [0.4, 1.0]];
@@ -950,7 +971,10 @@ pub fn analyze(img: &Img) -> Analysis {
         // Le carte hanno i disegni: le zone quasi tutte bianche sono riquadri del sito. Una zona
         // può essere anche molto più grande di una carta: carte che toccano un foglietto, un
         // riquadro o una scritta chiara del sito.
-        let merged = b.white < 0.85 && known_l.is_none_or(|l| (1.35..20.0).contains(&(b.rect.area() / (l * l * RATIO))));
+        // (Una zona molto bianca è un riquadro, a meno che dentro ci siano disegni colorati: una
+        // carta attaccata a un foglietto.)
+        let merged = (b.white < 0.85 || colored(img, &b.rect) >= 0.03)
+            && known_l.is_none_or(|l| (1.35..20.0).contains(&(b.rect.area() / (l * l * RATIO))));
         let piece = |q: &Blob| match known_l {
             Some(l) => (0.8..=1.2).contains(&(q.rect.long() / l)),
             None => q.rect.long() >= 0.5 * b.rect.long() && q.rect.area() < 0.85 * b.rect.area(),
@@ -1064,8 +1088,34 @@ pub fn analyze(img: &Img) -> Analysis {
             }
         }
     }
-    // Carte coperte in parte.
+    // Una carta divisa in pezzi affiancati (dal disegno che la attraversa dall'alto in basso, da
+    // un adesivo, da una scritta): due pezzi vicini che insieme hanno la misura di una carta si
+    // riprovano come una carta sola.
     leftover.retain(|b| !cards.iter().any(|c| c.rect.contains(b.rect.cx, b.rect.cy)));
+    let mut joined = vec![false; leftover.len()];
+    for i in 0..leftover.len() {
+        for j in i + 1..leftover.len() {
+            let (a, b) = (&leftover[i].rect, &leftover[j].rect);
+            if joined[i] || joined[j] || a.dist(b) > card_w {
+                continue;
+            }
+            let pts: Vec<(f32, f32)> = (0..4).flat_map(|k| [a.outline(k as f32, 1.0, 0.0), b.outline(k as f32, 1.0, 0.0)]).collect();
+            let Some(u) = min_area_rect(pts) else { continue };
+            if !(0.6..=1.2).contains(&(u.long() / card_l)) || !(0.6..=1.25).contains(&(u.short() / card_w)) {
+                continue;
+            }
+            // Si cerca una carta intera attorno ai due pezzi (una parte può essere coperta).
+            let (hw, hh) = if u.hh >= u.hw { (card_w, card_l) } else { (card_l, card_w) };
+            let around = RotRect { hw: u.hw.max(hw / 2.0) + 0.2 * card_w, hh: u.hh.max(hh / 2.0) + 0.2 * card_w, ..u };
+            let found = as_full(img, &u).or_else(|| scan(img, &paper, &around, card_l, card_w).into_iter().next());
+            if let Some(f) = found {
+                cards.push(f);
+                (joined[i], joined[j]) = (true, true);
+            }
+        }
+    }
+    let leftover: Vec<Blob> = leftover.into_iter().zip(joined).filter(|(_, j)| !j).map(|(b, _)| b).collect();
+    // Carte coperte in parte.
     cards.extend(par_map(&leftover, |b| as_partial(img, &b.rect, card_l, card_w)).into_iter().flatten());
     // Una carta divisa da una scritta che la attraversa: dentro la sagoma della carta vista in parte
     // c'è anche l'altro pezzo, e si confronta la carta da un pezzo all'altro.

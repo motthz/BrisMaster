@@ -347,6 +347,8 @@ struct Vision {
     mismatch: u32,
     /// Letture stabili di fila che mostrano una partita nuova.
     new_deal: u32,
+    /// Letture di fila con le carte in vista ma senza la briscola.
+    no_trump: u32,
     /// Le carte viste finora in questa partita, in mano e in tavola: la partita si ricostruisce da
     /// qui, qualunque sia la velocità del sito e il posto in cui disegna le carte.
     sightings: Sightings,
@@ -758,6 +760,15 @@ impl Assistant {
         // La briscola, da due letture uguali.
         if self.pos.step() == Step::Trump && prev.first() == sig.first() {
             self.sync_trump(scene);
+        }
+        // Le carte si vedono ma la briscola no (coperta, attaccata a qualcos'altro): si chiede.
+        if self.pos.step() == Step::Trump && scene.trump.is_none() && !scene.hand.is_empty() {
+            self.vision.no_trump += 1;
+            if self.vision.no_trump >= 8 {
+                self.vision.status = "Non trovo la briscola sullo schermo: scrivila (per esempio 7d) e continuo da solo".into();
+            }
+        } else {
+            self.vision.no_trump = 0;
         }
         // Poi gli eventi dedotti da quello che si è visto, nell'ordine in cui il gioco li vuole.
         for _ in 0..12 {
@@ -2545,6 +2556,10 @@ mod tests {
                     if !t.1 && !opp_cards.contains(&t.0) {
                         opp_cards.push(t.0);
                     }
+                }
+                if a.vision.status.starts_with("Non trovo la briscola") && a.pos.step() == Step::Trump && a.enter(trump) {
+                    typed += 1;
+                    a.vision.status.clear();
                 }
                 if a.vision.status.starts_with("Non ho visto la carta giocata") && a.pos.step() == Step::OppMove {
                     let gone = |c: Card| a.pos.played.contains(c) || a.pos.table == Some(c);

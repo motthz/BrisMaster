@@ -887,4 +887,33 @@ mod other_sites {
             show(&format!("vera {name}"), &load_jpg(&dir.join(name)));
         }
     }
+
+    /// Per ogni carta disegnata piccola (110 pixel, come sul tavolo di prova) quale carta si legge
+    /// e con che distacco dalla seconda. `cargo test --release -p brismaster distacco_carte -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn distacco_carte() {
+        let style: usize = std::env::var("STILE").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+        let deck = known_deck(style);
+        let look = Look { card_h: 110.0, aspect: Some(76.0 / 110.0), ..Look::default() };
+        let mut rows = Vec::new();
+        for chunk in deck.chunks(3) {
+            let hand: Vec<&Img> = chunk.iter().map(|c| &c.1).collect();
+            let img = table(&Deal { hand, opp: None, mine: None, trump: None, deck: true }, &look);
+            let s = read_briscola(&img, &Mutex::new(Memory::in_memory())).expect("carte");
+            for (k, v) in s.hand.iter().enumerate() {
+                let Some(&(want, _)) = chunk.get(k) else { continue };
+                let (got, m) = v.best(CardSet::FULL).unwrap();
+                // La seconda carta più probabile.
+                let mut sc: Vec<(Card, f32)> = (0..40u8).map(|c| (c, v.scores[c as usize])).collect();
+                sc.sort_by(|a, b| b.1.total_cmp(&a.1));
+                rows.push((m, format!("{:<20} -> {:<20} distacco {m:5.2}  seconda {}", cards::name(want), cards::name(got), cards::name(sc[1].0))));
+            }
+        }
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, r) in rows.iter().take(15) {
+            println!("{r}");
+        }
+    }
 }
+

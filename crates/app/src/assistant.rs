@@ -1677,7 +1677,16 @@ impl Sightings {
                     all_sure &= m >= AUTO_MARGIN;
                     full.push(c);
                 }
-                _ => all_sure = false,
+                // Letta senza sicurezza (coperta proprio dove due carte differiscono): conta come
+                // avvistamento incerto, e se si ripete si chiede conferma.
+                Some((c, m)) => {
+                    self.hand[c as usize].bump(f, m);
+                    if self.views[c as usize].is_none() {
+                        self.views[c as usize] = Some((v.img.clone(), v.vis));
+                    }
+                    all_sure = false;
+                }
+                None => all_sure = false,
             }
         }
         if all_sure {

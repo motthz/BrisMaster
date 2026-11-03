@@ -1726,6 +1726,11 @@ impl Sightings {
         (0..40u8).any(|c| allowed.contains(c) && !pos.hand.contains(c) && Some(c) != pos.table && self.in_hand(c) && !self.on_table(c))
     }
 
+    /// Vista nelle ultime letture.
+    fn recent(&self, s: &Sighting) -> bool {
+        self.frame.saturating_sub(s.last) <= 6
+    }
+
     fn view(&self, c: Card) -> Option<(Img, [f32; 2])> {
         self.views.get(c as usize).cloned().flatten()
     }
@@ -1787,7 +1792,7 @@ impl Sightings {
         // differisce da un'altra): si aspetta, perché quando la gioco si vede in tavola; se resta
         // incerta per qualche secondo si chiede.
         (0..40u8)
-            .filter(|&c| allowed.contains(c) && self.hand[c as usize].count >= 20)
+            .filter(|&c| allowed.contains(c) && self.hand[c as usize].count >= 20 && self.recent(&self.hand[c as usize]))
             .max_by_key(|&c| (self.hand[c as usize].count, (self.hand[c as usize].margin * 10.0) as i32))
             .map(|c| (c, false))
     }
@@ -1816,7 +1821,7 @@ impl Sightings {
         // Una mia carta vista in tavola più volte ma senza sicurezza: si chiede.
         pos.hand
             .iter()
-            .filter(|&c| self.table[c as usize].count >= 2)
+            .filter(|&c| self.table[c as usize].count >= 2 && self.recent(&self.table[c as usize]))
             .max_by_key(|&c| self.table[c as usize].count)
             .map(|c| (c, false))
     }
@@ -1848,9 +1853,10 @@ impl Sightings {
         if let Some(c) = candidates.clone().filter(|&c| self.on_table(c)).min_by_key(|&c| self.table[c as usize].first) {
             return Some((c, true));
         }
-        // Vista più volte ma senza sicurezza: si chiede.
+        // Vista più volte di recente ma senza sicurezza: si chiede (una lettura sbagliata di tanto
+        // tempo fa non conta).
         candidates
-            .filter(|&c| self.table[c as usize].count >= 2)
+            .filter(|&c| self.table[c as usize].count >= 2 && self.recent(&self.table[c as usize]))
             .max_by_key(|&c| (self.table[c as usize].count, (self.table[c as usize].margin * 10.0) as i32))
             .map(|c| (c, false))
     }
@@ -2598,6 +2604,7 @@ mod tests {
                         // Proposta sbagliata: l'utente scrive la carta giusta.
                         wrong.push(format!("{f}: chiede {}", cards::name(c.card)));
                         let step = c.step;
+                        let (img, vis) = (c.img.clone(), c.vis);
                         a.vision.confirm = None;
                         let allowed = a.pos.allowed();
                         let right = match step {
@@ -2608,7 +2615,9 @@ mod tests {
                             _ => None,
                         };
                         if let Some(r) = right {
+                            // Come nell'app: la carta scritta a mano si impara dall'immagine proposta.
                             if step == a.pos.step() && a.enter(r) {
+                                a.vision.memory.lock().unwrap().remember(&img, vis, r);
                                 typed += 1;
                             }
                         }

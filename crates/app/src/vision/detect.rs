@@ -233,10 +233,21 @@ fn canonical(mut r: RotRect) -> RotRect {
 
 /// Zone chiare dopo un'erosione di raggio `r` (i rettangoli vengono poi riallargati di `r`).
 fn blobs_r(img: &Img, paper: &[bool], r: usize) -> Vec<Blob> {
-    let (w, h) = (img.w, img.h);
-    let er = erode(paper, w, h, r);
+    blobs_in(img, paper, r, (0, 0, img.w, img.h))
+}
+
+/// Come `blobs_r`, solo dentro il riquadro (x0, y0, x1, y1): per dividere una zona sola non serve
+/// erodere tutto lo schermo.
+fn blobs_in(img: &Img, paper: &[bool], r: usize, (x0, y0, x1, y1): (usize, usize, usize, usize)) -> Vec<Blob> {
+    let (x1, y1) = (x1.min(img.w), y1.min(img.h));
+    if x1 <= x0 || y1 <= y0 {
+        return Vec::new();
+    }
+    let (w, h) = (x1 - x0, y1 - y0);
+    let sub: Vec<bool> = (y0..y1).flat_map(|y| paper[y * img.w + x0..y * img.w + x1].iter().copied()).collect();
+    let er = erode(&sub, w, h, r);
     // Basta poco: di un asso di denari piccolo resta solo la cornice bianca.
-    let min_area = ((w * h) as f32 * 0.0002) as usize;
+    let min_area = ((img.w * img.h) as f32 * 0.0002) as usize;
     let mut seen = vec![false; w * h];
     let mut out = Vec::new();
     let mut stack = Vec::new();
@@ -267,7 +278,7 @@ fn blobs_r(img: &Img, paper: &[bool], r: usize) -> Vec<Blob> {
                 }
             }
             if border {
-                edge.push((x as f32, y as f32));
+                edge.push(((x + x0) as f32, (y + y0) as f32));
             }
         }
         if count < min_area {
@@ -571,11 +582,22 @@ impl Try {
 /// giro (la carta dell'avversario su alcuni siti), che vince solo se somiglia chiaramente di più:
 /// le carte quasi simmetriche restano dritte, sempre nello stesso verso.
 fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
-    let up = Try::new(img, *r, WHOLE);
-    let down = Try::new(img, r.flipped(), WHOLE);
-    let t = if down.m.top() > up.m.top() + 0.03 { down } else { up };
-    let f = t.finish(img);
+    // Il verso si sceglie col confronto veloce; quello completo si fa solo per il verso scelto.
+    let up = reference::quick_tops(&warp(img, r), &[WHOLE])[0];
+    let down = reference::quick_tops(&warp(img, &r.flipped()), &[WHOLE])[0];
+    if up.max(down) < 0.25 {
+        return None;
+    }
+    let rect = if down > up + 0.03 { r.flipped() } else { *r };
+    let f = Try::new(img, rect, WHOLE).finish(img);
     f.accepted(ACCEPT).then_some(f)
+}
+
+/// Fra molte posizioni possibili di una carta, la più promettente al confronto veloce (None se
+/// nessuna somiglia a qualcosa).
+fn most_promising(img: &Img, rects: &[RotRect]) -> Option<RotRect> {
+    let tops = par_chunks(rects, |r| reference::quick_tops(&warp(img, r), &[WHOLE])[0]);
+    rects.iter().zip(tops).filter(|(_, t)| *t >= 0.25).max_by(|a, b| a.1.total_cmp(&b.1)).map(|(r, _)| *r)
 }
 
 /// La zona come pezzo di una carta con le proporzioni `card_w` / `card_l` delle carte intere: un
@@ -648,11 +670,11 @@ fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
                 let v = (across.0 * cos - across.1 * sin, across.0 * sin + across.1 * cos);
                 for v in [v, (-v.0, -v.1)] {
                     let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: card_w / 2.0, hh: height.min(card_l) / 2.0 };
-                    tries.push(Try::new(img, rect, WHOLE));
+                    tries.push(rect);
                 }
             }
-            if let Some(t) = tries.into_iter().max_by(|a, b| a.m.top().total_cmp(&b.m.top())) {
-                let f = t.finish(img);
+            if let Some(rect) = most_promising(img, &tries) {
+                let f = Try::new(img, rect, WHOLE).finish(img);
                 if f.accepted(ACCEPT) {
                     out.push(f);
                 }
@@ -684,11 +706,11 @@ fn stacked(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
             let (cx, cy) = (r.cx + along.0 * a + across.0 * b, r.cy + along.1 * a + across.1 * b);
             for v in [along, (-along.0, -along.1)] {
                 let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: card_w / 2.0, hh: card_l / 2.0 };
-                tries.push(Try::new(img, rect, WHOLE));
+                tries.push(rect);
             }
         }
-        if let Some(t) = tries.into_iter().max_by(|a, b| a.m.top().total_cmp(&b.m.top())) {
-            let f = t.finish(img);
+        if let Some(rect) = most_promising(img, &tries) {
+            let f = Try::new(img, rect, WHOLE).finish(img);
             if f.accepted(ACCEPT) {
                 out.push(f);
             }
@@ -782,46 +804,54 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
                 let v = (-sin, cos);
                 let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: card_w / 2.0, hh: card_l / 2.0 };
                 if light(&rect) >= 0.45 {
-                    rects.push((rect, WHOLE));
-                    // Coperta di lato da un'altra carta (mano a ventaglio, carte sovrapposte).
-                    rects.push((rect, [0.0, 0.6]));
-                    rects.push((rect, [0.4, 1.0]));
+                    rects.push(rect);
                 }
             }
         }
     }
     // Al più qualche centinaio di prove: una zona enorme (un riquadro del sito) non è una mano.
-    if rects.len() > 450 {
+    if rects.len() > 300 {
         return Vec::new();
     }
-    let mut tries: Vec<Try> = par_chunks(&rects, |(rect, cols)| Try::with_cols(img, *rect, WHOLE, *cols));
-    tries.retain(|t| t.m.top() >= 0.45);
-    tries.sort_by(|a, b| b.m.top().total_cmp(&a.m.top()));
+    // Primo giro veloce: per ogni posizione la carta si raddrizza una volta sola e si confronta
+    // intera e coperta da una parte o dall'altra.
+    const COLS: [[f32; 2]; 3] = [WHOLE, [0.0, 0.6], [0.4, 1.0]];
+    let quick = |rect: &RotRect, cols: &[[f32; 2]]| reference::quick_tops(&warp(img, rect), cols);
+    let tops = par_chunks(&rects, |rect| quick(rect, &COLS));
+    let mut cands: Vec<(f32, RotRect, [f32; 2])> = rects
+        .iter()
+        .zip(&tops)
+        .flat_map(|(r, t)| COLS.iter().zip(t).map(move |(c, &s)| (s, *r, *c)))
+        .filter(|c| c.0 >= 0.35)
+        .collect();
+    cands.sort_by(|a, b| b.0.total_cmp(&a.0));
     let mut out: Vec<Found> = Vec::new();
-    for t in tries {
-        if out.len() >= 6 || out.iter().any(|f| f.rect.dist(&t.rect) < 0.5 * card_w) {
+    let mut tried = 0;
+    for (_, rect, cols) in cands {
+        if out.len() >= 6 || tried >= 12 || out.iter().any(|f| f.rect.dist(&rect) < 0.5 * card_w) {
             continue;
         }
+        tried += 1;
         // Si affina intorno: un po' spostata e girata (la griglia è grossolana).
         let (sin, cos) = 4f32.to_radians().sin_cos();
         let turn = |v: (f32, f32), s: f32| (v.0 * cos - s * v.1 * sin, s * v.0 * sin + v.1 * cos);
-        let mut near = Vec::new();
+        let mut near = vec![rect];
         for dy in [-0.5f32, 0.0, 0.5] {
             for dx in [-0.5f32, 0.0, 0.5] {
                 for s in [-1.0f32, 0.0, 1.0] {
-                    let v = if s == 0.0 { t.rect.v } else { turn(t.rect.v, s) };
-                    let (cx, cy) = (t.rect.cx + dx * step, t.rect.cy + dy * step);
-                    near.push(RotRect { cx, cy, u: (v.1, -v.0), v, ..t.rect });
+                    let v = if s == 0.0 { rect.v } else { turn(rect.v, s) };
+                    let (cx, cy) = (rect.cx + dx * step, rect.cy + dy * step);
+                    near.push(RotRect { cx, cy, u: (v.1, -v.0), v, ..rect });
                 }
             }
         }
-        let cols = t.cols;
-        let refined = par_chunks(&near, |rect| Try::with_cols(img, *rect, WHOLE, cols));
-        let t = refined.into_iter().chain(std::iter::once(t)).max_by(|a, b| a.m.top().total_cmp(&b.m.top())).expect("posizioni");
-        if out.iter().any(|f| f.rect.dist(&t.rect) < 0.5 * card_w) {
+        let scores = par_chunks(&near, |r| quick(r, &[cols])[0]);
+        let best = near.iter().zip(&scores).max_by(|a, b| a.1.total_cmp(b.1)).map(|(r, _)| *r).expect("posizioni");
+        if out.iter().any(|f| f.rect.dist(&best) < 0.5 * card_w) {
             continue;
         }
-        let f = t.finish(img);
+        // Il confronto completo solo per la posizione migliore.
+        let f = Try::with_cols(img, best, WHOLE, cols).finish(img);
         // Cercando dappertutto qualcosa somiglia per caso: si chiede di più.
         if f.accepted(SCAN_ACCEPT) {
             out.push(f);
@@ -917,11 +947,17 @@ pub fn analyze(img: &Img) -> Analysis {
             None => q.rect.long() >= 0.5 * b.rect.long() && q.rect.area() < 0.85 * b.rect.area(),
         };
         let mut split = Vec::new();
+        // Il riquadro della zona (con un po' di margine): si erode solo lì.
+        let ext_x = b.rect.hw * b.rect.u.0.abs() + b.rect.hh * b.rect.v.0.abs() + 4.0;
+        let ext_y = b.rect.hw * b.rect.u.1.abs() + b.rect.hh * b.rect.v.1.abs() + 4.0;
+        let bbox = (
+            (b.rect.cx - ext_x).max(0.0) as usize,
+            (b.rect.cy - ext_y).max(0.0) as usize,
+            (b.rect.cx + ext_x) as usize + 1,
+            (b.rect.cy + ext_y) as usize + 1,
+        );
         for r in [3, 5, 8, 12].into_iter().filter(|_| merged) {
-            if !levels.iter().any(|(k, _)| *k == r) {
-                levels.push((r, blobs_r(img, &paper, r)));
-            }
-            let level = &levels.iter().find(|(k, _)| *k == r).unwrap().1;
+            let level = blobs_in(img, &paper, r, bbox);
             split = level
                 .iter()
                 .filter(|q| b.rect.contains(q.rect.cx, q.rect.cy) && card_shaped(&q.rect) && piece(q))

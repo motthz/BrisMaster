@@ -420,6 +420,42 @@ impl Seen {
     }
 }
 
+/// Ritagli del confronto veloce (per far scorrere una finestra su molte posizioni).
+const QX: [f32; 3] = [0.04, 0.08, 0.12];
+const QY: [f32; 2] = [0.03, 0.06];
+
+/// Somiglianza migliore della carta raddrizzata con le carte di riferimento, per ciascuna striscia
+/// visibile `cols` della larghezza, con pochi ritagli: le miniature si calcolano una volta sola.
+pub fn quick_tops(card: &Img, cols_list: &[[f32; 2]]) -> Vec<f32> {
+    let mut seen = Seen::new(card, WHOLE, WHOLE);
+    let n = templates().len();
+    // Prima un ritaglio solo: le posizioni che non somigliano a niente si scartano subito.
+    let probe = Crop::new(0.08, 0.045, 0.0, 0.0);
+    let hopeful = cols_list.iter().any(|&cols| {
+        seen.cols = cols;
+        (0..n).any(|k| seen.score(probe, k) >= 0.3)
+    });
+    if !hopeful {
+        return vec![-1.0; cols_list.len()];
+    }
+    cols_list
+        .iter()
+        .map(|&cols| {
+            seen.cols = cols;
+            let mut top = -1.0f32;
+            for &sx in &QX {
+                for &sy in &QY {
+                    let crop = Crop::new(sx, sy, 0.0, 0.0);
+                    for k in 0..n {
+                        top = top.max(seen.score(crop, k));
+                    }
+                }
+            }
+            top
+        })
+        .collect()
+}
+
 /// Confronto di una carta raddrizzata (CARD_W x CARD_H, testa in alto) con le 40 carte, guardando
 /// solo la fascia visibile `vis` (frazioni dell'altezza dalla testa). Il primo giro prova pochi
 /// ritagli e basta a scartare quello che non è una carta; `refine` affina le più somiglianti.

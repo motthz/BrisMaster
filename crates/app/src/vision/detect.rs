@@ -703,10 +703,42 @@ fn stacked(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
 /// punti della zona coperti abbastanza di chiaro, e si tengono le posizioni che somigliano di più
 /// a una carta, lontane fra loro almeno mezza carta.
 fn scan(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
+    // Lo schermo cambia poco fra una lettura e l'altra: se la zona è identica a una già esaminata
+    // (stessi pixel, stessa misura delle carte) si riusa il risultato.
+    let key = region_key(img, r, card_l);
+    static CACHE: std::sync::Mutex<Vec<(u64, Vec<Found>)>> = std::sync::Mutex::new(Vec::new());
+    if let Some((_, found)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
+        return found.clone();
+    }
+    let found = scan_region(img, paper, r, card_l, card_w);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.push((key, found.clone()));
+    if cache.len() > 24 {
+        cache.remove(0);
+    }
+    found
+}
+
+/// Impronta dei pixel nel riquadro della zona (e della misura delle carte).
+fn region_key(img: &Img, r: &RotRect, card_l: f32) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let ext_x = r.hw * r.u.0.abs() + r.hh * r.v.0.abs();
+    let ext_y = r.hw * r.u.1.abs() + r.hh * r.v.1.abs();
+    let (x0, x1) = ((r.cx - ext_x).max(0.0) as usize, ((r.cx + ext_x) as usize).min(img.w));
+    let (y0, y1) = ((r.cy - ext_y).max(0.0) as usize, ((r.cy + ext_y) as usize).min(img.h));
+    (x0, x1, y0, y1, card_l.round() as i32).hash(&mut h);
+    for y in y0..y1 {
+        img.px[y * img.w + x0..y * img.w + x1].hash(&mut h);
+    }
+    h.finish()
+}
+
+fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
     // Il riquadro (dritto) della zona.
     let ext_x = r.hw * r.u.0.abs() + r.hh * r.v.0.abs();
     let ext_y = r.hw * r.u.1.abs() + r.hh * r.v.1.abs();
-    let step = card_w / 4.0;
+    let step = card_w / 3.0;
     let (nx, ny) = ((2.0 * ext_x / step) as usize + 1, (2.0 * ext_y / step) as usize + 1);
     // Frazione chiara di un rettangolo (su una griglia di punti).
     let light = |rect: &RotRect| {

@@ -1765,14 +1765,16 @@ impl Sightings {
         if let Some(c) = sure {
             return Some((c, true));
         }
-        // Tocca a me aprire e devo ancora pescare: la prima carta nuova in tavola è mia, e se non
-        // è fra quelle che ho è proprio la pescata (giocata prima che la vedessi in mano).
-        if pos.tricks > 0 && pos.leader == ME && pos.table.is_none() {
-            // (Se invece la prima è una carta che so di avere, ho aperto con quella.)
-            let lead = (0..40u8)
+        // Devo ancora pescare ma la presa dopo è già cominciata: per l'ordine di gioco la mia carta
+        // è la prima comparsa in tavola se apro io, la seconda se apre l'avversario. Se non è fra
+        // quelle che so di avere, è proprio la pescata (giocata prima che la vedessi in mano).
+        if pos.tricks > 0 && pos.table.is_none() {
+            let mut new: Vec<Card> = (0..40u8)
                 .filter(|&c| !pos.played.contains(c) && Some(c) != pos.trump_card && self.on_table(c))
-                .min_by_key(|&c| self.table[c as usize].first);
-            if let Some(c) = lead.filter(|&c| allowed.contains(c)) {
+                .collect();
+            new.sort_by_key(|&c| self.table[c as usize].first);
+            let mine = new.get(if pos.leader == ME { 0 } else { 1 }).copied();
+            if let Some(c) = mine.filter(|&c| allowed.contains(c)) {
                 return Some((c, true));
             }
         }

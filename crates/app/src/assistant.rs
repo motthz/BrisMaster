@@ -920,7 +920,9 @@ impl Assistant {
     fn check_mismatch(&mut self, scene: &Scene) {
         let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
         let trump = scene.trump.as_ref().and_then(sure).filter(|&c| self.pos.trump_card.is_some_and(|t| t != c));
-        let replayed = scene.hand.iter().filter_map(sure).find(|&c| self.pos.played.contains(c));
+        // (La briscola già giocata può restare disegnata al suo posto: non conta.)
+        let replayed =
+            scene.hand.iter().filter_map(sure).find(|&c| self.pos.played.contains(c) && Some(c) != self.pos.trump_card);
         self.vision.mismatch = match (trump, replayed) {
             (None, None) => 0,
             _ => self.vision.mismatch + 1,
@@ -2533,12 +2535,18 @@ mod tests {
             let mut confirms = 0;
             let mut wrong = Vec::new();
             let mut before: Vec<Card> = Vec::new();
+            // La mano vera della lettura dopo (l'app può essere avanti di un attimo: la briscola
+            // dell'ultima pescata le arriva da sola).
+            let hands: Vec<Vec<Card>> = log
+                .iter()
+                .map(|e| e["hand"].as_array().unwrap().iter().filter_map(|v| by_name(v.as_str()?)).collect())
+                .collect();
             let mut opp_cards: Vec<Card> = Vec::new();
             let mut typed = 0;
             // Primo punto in cui l'app resta indietro (o avanti) sul mazzo vero per più di 6 letture.
             let (mut off, mut first_off): (u32, Option<String>) = (0, None);
             let mut recent: Vec<String> = Vec::new();
-            for e in &log {
+            for (idx, e) in log.iter().enumerate() {
                 let f = e["frame"].as_str().unwrap();
                 let img = crate::vision::capture::load_png(&dir.join(format!("{f}.png"))).unwrap();
                 let truth_hand: Vec<Card> = e["hand"].as_array().unwrap().iter().filter_map(|v| by_name(v.as_str()?)).collect();
@@ -2579,8 +2587,23 @@ mod tests {
                         confirms += 1;
                         a.accept_vision();
                     } else {
+                        // Proposta sbagliata: l'utente scrive la carta giusta.
                         wrong.push(format!("{f}: chiede {}", cards::name(c.card)));
+                        let step = c.step;
                         a.vision.confirm = None;
+                        let allowed = a.pos.allowed();
+                        let right = match step {
+                            Step::Trump => Some(trump),
+                            Step::Draw(_) => truth_hand.iter().copied().find(|&h| allowed.contains(h)),
+                            Step::OppMove => truth_trick.iter().find(|t| !t.1 && allowed.contains(t.0)).map(|t| t.0),
+                            Step::MyMove => truth_trick.iter().find(|t| t.1 && allowed.contains(t.0)).map(|t| t.0),
+                            _ => None,
+                        };
+                        if let Some(r) = right {
+                            if step == a.pos.step() && a.enter(r) {
+                                typed += 1;
+                            }
+                        }
                     }
                 }
                 let truth_deck: u8 = e["deck"].as_str().unwrap_or("").trim_start_matches("Mazzo: ").parse().unwrap_or(0);
@@ -2626,7 +2649,8 @@ mod tests {
                 // La mano dell'app deve essere (un sottoinsieme di) quella vera.
                 for c in a.pos.hand.iter() {
                     // (la situazione vera si legge un attimo dopo la schermata: vale anche quella prima)
-                    let held = truth_hand.contains(&c) || before.contains(&c) || truth_trick.iter().any(|t| t.0 == c && t.1);
+                    let next = hands.get(idx + 1).is_some_and(|h| h.contains(&c));
+                    let held = truth_hand.contains(&c) || before.contains(&c) || next || truth_trick.iter().any(|t| t.0 == c && t.1);
                     if !held && a.pos.step() != Step::Over {
                         let msg = format!("{f}: l'app crede di avere {}", cards::name(c));
                         if !wrong.contains(&msg) && wrong.len() < 5 {
@@ -2637,7 +2661,8 @@ mod tests {
             }
             n += 1;
             let _ = &mut before;
-            let done = a.pos.tricks == 20 && wrong.is_empty();
+            // (Le proposte sbagliate corrette dall'utente non contano come errori della partita.)
+            let done = a.pos.tricks == 20 && wrong.iter().all(|w| w.contains("chiede"));
             ok += done as usize;
             println!(
                 "{}: {} prese su 20, passo {:?}, {} conferme, {} scritte a mano{}{}",

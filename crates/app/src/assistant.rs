@@ -1757,10 +1757,11 @@ impl Sightings {
         // Tocca a me aprire e devo ancora pescare: la prima carta nuova in tavola è mia, e se non
         // è fra quelle che ho è proprio la pescata (giocata prima che la vedessi in mano).
         if pos.tricks > 0 && pos.leader == ME && pos.table.is_none() {
+            // (Se invece la prima è una carta che so di avere, ho aperto con quella.)
             let lead = (0..40u8)
-                .filter(|&c| allowed.contains(c) && Some(c) != pos.trump_card && self.on_table(c))
+                .filter(|&c| !pos.played.contains(c) && Some(c) != pos.trump_card && self.on_table(c))
                 .min_by_key(|&c| self.table[c as usize].first);
-            if let Some(c) = lead {
+            if let Some(c) = lead.filter(|&c| allowed.contains(c)) {
                 return Some((c, true));
             }
         }

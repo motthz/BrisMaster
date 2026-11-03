@@ -13,7 +13,7 @@
 //! disegna le carte con un bordo bianco diverso: si provano più ritagli e piccoli spostamenti e si
 //! tiene il migliore. Della carta coperta in parte si confronta solo la fascia visibile.
 
-use super::{hsv, Img, CARD_H, CARD_W};
+use super::{hsv, Img, CARD_H, CARD_W, WHOLE};
 use briscola_core::cards;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -145,6 +145,35 @@ fn corr(o: &Stats, t: &Stats, (r0, r1): (usize, usize)) -> f32 {
         vt += t.sq[r1][c] - t.sq[r0][c] - st * st / n;
     }
     // Meno di 6 livelli di scarto medio: niente disegni.
+    if vo < 36.0 * n || vt < 1e-3 {
+        return 0.0;
+    }
+    (num / (vo * vt).sqrt()) as f32
+}
+
+/// Come `corr`, ma solo sulle colonne c0..c1 (la carta coperta di lato da un'altra).
+fn corr_rect(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize, usize)) -> f32 {
+    if r1 < r0 + 4 || c1 < c0 + 4 {
+        return -1.0;
+    }
+    let n = ((r1 - r0) * (c1 - c0)) as f64;
+    let (mut num, mut vo, mut vt) = (0.0, 0.0, 0.0);
+    for c in 0..3 {
+        let (mut so, mut st, mut d, mut qo, mut qt) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for j in r0..r1 {
+            for i in c0..c1 {
+                let (a, b) = (o.px[j * TW + i][c] as f64, t.px[j * TW + i][c] as f64);
+                so += a;
+                st += b;
+                d += a * b;
+                qo += a * a;
+                qt += b * b;
+            }
+        }
+        num += d - so * st / n;
+        vo += qo - so * so / n;
+        vt += qt - st * st / n;
+    }
     if vo < 36.0 * n || vt < 1e-3 {
         return 0.0;
     }
@@ -298,19 +327,30 @@ impl Crop {
         let last = (0..TH).rev().find(|&j| y(j) <= vis[1]).map_or(0, |j| j + 1);
         (first, last.max(first))
     }
+
+    /// Colonne della miniatura che cadono nella striscia visibile della carta (frazioni della
+    /// larghezza da sinistra).
+    fn cols(&self, cols: [f32; 2]) -> (usize, usize) {
+        let x = |i: usize| self.x0 + (i as f32 + 0.5) / TW as f32 * self.w;
+        let first = (0..TW).find(|&i| x(i) >= cols[0]).unwrap_or(TW);
+        let last = (0..TW).rev().find(|&i| x(i) <= cols[1]).map_or(0, |i| i + 1);
+        (first, last.max(first))
+    }
 }
 
 /// La carta vista, con le somme cumulate dei canali: la miniatura di un ritaglio qualsiasi costa
 /// poche operazioni per pixel, e si possono provare molti ritagli.
 struct Seen {
     vis: [f32; 2],
+    /// Striscia visibile in larghezza (tutta, tranne le carte coperte di lato).
+    cols: [f32; 2],
     /// Somme dei canali sul rettangolo [0, x) x [0, y), (CARD_W + 1) x (CARD_H + 1).
     sat: Vec<[f64; 3]>,
     cache: HashMap<[i32; 4], Stats>,
 }
 
 impl Seen {
-    fn new(img: &Img, vis: [f32; 2]) -> Seen {
+    fn new(img: &Img, vis: [f32; 2], cols: [f32; 2]) -> Seen {
         let w = CARD_W + 1;
         let mut sat = vec![[0.0f64; 3]; w * (CARD_H + 1)];
         for y in 0..CARD_H {
@@ -323,7 +363,7 @@ impl Seen {
                 }
             }
         }
-        Seen { vis, sat, cache: HashMap::new() }
+        Seen { vis, cols, sat, cache: HashMap::new() }
     }
 
     /// Somma cumulata in un punto qualsiasi (interpolata; fuori dalla carta si ferma al bordo).
@@ -371,7 +411,12 @@ impl Seen {
 
     fn score(&mut self, crop: Crop, card: usize) -> f32 {
         let rows = crop.rows(self.vis);
-        corr(self.thumb(crop), &templates()[card], rows)
+        if self.cols == WHOLE {
+            corr(self.thumb(crop), &templates()[card], rows)
+        } else {
+            let cols = crop.cols(self.cols);
+            corr_rect(self.thumb(crop), &templates()[card], rows, cols)
+        }
     }
 }
 
@@ -388,10 +433,12 @@ pub struct Match {
 }
 
 impl Match {
-    pub fn new(card: &Img, vis: [f32; 2]) -> Match {
-        let mut seen = Seen::new(card, vis);
+    /// Una carta di cui si vede la fascia `vis` dell'altezza e la striscia `cols` della larghezza
+    /// (tutta, o una parte se è coperta di lato da un'altra carta, come nelle mani a ventaglio).
+    pub fn with_cols(card: &Img, vis: [f32; 2], cols: [f32; 2]) -> Match {
+        let mut seen = Seen::new(card, vis, cols);
         let (w, h) = (CARD_W as f32, CARD_H as f32);
-        let hues = Hues::new(card, 0.1 * w, 0.06 * h, 0.9 * w, 0.94 * h);
+        let hues = Hues::new(card, (0.1 * w).max(cols[0] * w), 0.06 * h, (0.9 * w).min(cols[1] * w), 0.94 * h);
         let mut best = vec![(-1.0f32, 0.0f32, 0.0f32); NT];
         for &sx in &SX {
             for &sy in &SY {
@@ -435,8 +482,10 @@ impl Match {
         // Seme dal colore: si toglie la differenza fra le firme di colore, rispetto alla carta
         // col colore più vicino (che non perde niente: la somiglianza resta confrontabile con le
         // soglie per dire se è una carta).
+        // (I colori di riferimento sono di tutta la larghezza: per una striscia non si confrontano.)
         let vis = self.seen.vis;
-        if let Some(seen) = self.hues.share(vis) {
+        let whole_width = self.seen.cols == WHOLE;
+        if let Some(seen) = self.hues.share(vis).filter(|_| whole_width) {
             let dist: Vec<Option<f32>> = template_hues()
                 .iter()
                 .map(|t| t.share(vis).map(|t| seen.iter().zip(&t).map(|(a, b)| (a - b).abs()).sum()))
@@ -485,7 +534,7 @@ mod tests {
                         }
                     }
                 }
-                let s = Match::new(&card, [0.0, 1.0]).refine();
+                let s = Match::with_cols(&card, WHOLE, WHOLE).refine();
                 let best = (0..40).max_by(|&a, &b| s[a].total_cmp(&s[b])).unwrap();
                 assert_eq!(best as u8, cards::make(suit, col as u8), "{}", cards::name(best as u8));
             }

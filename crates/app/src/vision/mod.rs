@@ -580,7 +580,12 @@ mod bench {
     #[ignore]
     fn diagnosi_immagine() {
         let img = capture::load_png(std::path::Path::new(&std::env::var("IMG").unwrap())).unwrap();
+        let t0 = std::time::Instant::now();
         let a = detect::analyze(&img);
+        println!("analisi in {:?}", t0.elapsed());
+        if let Ok(out) = std::env::var("DIAG") {
+            screen::diagnose(&img).save_png(std::path::Path::new(&out)).unwrap();
+        }
         println!("card_l {:.0}", a.card_l);
         for f in &a.cards {
             let (c, m) = f.view.best(cards::CardSet::FULL).unwrap();

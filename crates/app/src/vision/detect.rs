@@ -1159,13 +1159,34 @@ pub fn scene(img: &Img) -> Scene {
     // Solo carte in piedi grandi quanto le altre: un pezzo di carta vicino (la briscola sotto il
     // mazzo) non è in mano. Una carta della mano vista in parte (il disegno che la attraversa da
     // un lato all'altro divide il bianco in due) sì, se la sua sagoma intera ha la misura giusta.
+    // La mano può stare su più righe (a griglia, in colonna): comprende le righe di carte subito
+    // sopra la più bassa, attaccate l'una all'altra; le carte giocate stanno più staccate.
+    // (Fra una riga e l'altra della mano c'è un piccolo spazio, mai una sovrapposizione; e in mano
+    // non ci sono più di tre carte.)
+    let mut rows: Vec<f32> = a.cards.iter().filter(upright).filter(full_size).map(|f| f.rect.cy).collect();
+    rows.sort_by(|x, y| y.total_cmp(x));
+    let mut top = bottom;
+    let in_rows = |top: f32| a.cards.iter().filter(upright).filter(full_size).filter(|f| f.rect.cy >= top - 0.35 * card_l).count();
+    for cy in rows {
+        if cy >= top - 0.35 * card_l {
+            continue;
+        }
+        let gap = top - cy - card_l;
+        if (-0.05 * card_l..=0.2 * card_l).contains(&gap) && in_rows(cy) <= 3 {
+            top = cy;
+        } else {
+            break;
+        }
+    }
     let in_hand = |f: &Found| {
-        !f.rect.landscape()
-            && (0.85..1.2).contains(&(f.rect.long() / card_l))
-            && f.rect.cy >= bottom - 0.35 * card_l
+        !f.rect.landscape() && (0.85..1.2).contains(&(f.rect.long() / card_l)) && f.rect.cy >= top - 0.35 * card_l
     };
     let mut hand: Vec<&Found> = a.cards.iter().filter(|f| in_hand(f)).collect();
-    hand.sort_by(|x, y| x.rect.cx.total_cmp(&y.rect.cx));
+    // Per righe, da sinistra a destra.
+    hand.sort_by(|x, y| {
+        let row = |f: &Found| ((f.rect.cy - top) / (0.7 * card_l)).round() as i32;
+        row(x).cmp(&row(y)).then(x.rect.cx.total_cmp(&y.rect.cx))
+    });
     // La briscola: di traverso, o coperta in parte vicino alla mano (sotto il mazzo).
     let others: Vec<&Found> = a.cards.iter().filter(|f| !in_hand(f)).collect();
     let hand_cx = (!hand.is_empty()).then(|| hand.iter().map(|f| f.rect.cx).sum::<f32>() / hand.len() as f32);

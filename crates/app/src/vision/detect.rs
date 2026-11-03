@@ -536,7 +536,16 @@ impl Found {
         // Con la cornice tutta attorno basta la somiglianza. Con la cornice incerta (carta sfocata,
         // toccata da un'altra, tagliata male; ma anche il riquadro di una lettera o di una scritta)
         // deve somigliare molto, o abbastanza e avere dentro il disegno colorato e non il tavolo.
-        if self.score < min || ink < MIN_INK || border < 0.65 {
+        if self.score < min || ink < MIN_INK {
+            return false;
+        }
+        // Una carta che somiglia moltissimo e dentro non ha il colore del tavolo resta una carta
+        // anche se una scritta trasparente le copre parte della cornice (le scritte prese per carte
+        // non arrivano a 0.7 di somiglianza).
+        if self.score >= 0.85 && self.inside < 0.15 && border >= 0.4 {
+            return true;
+        }
+        if border < 0.65 {
             return false;
         }
         border >= 0.9 || self.score >= 0.85 || (self.score >= 0.6 && self.inside < 0.2 && ink >= 0.06)

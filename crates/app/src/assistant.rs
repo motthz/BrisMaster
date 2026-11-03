@@ -799,7 +799,15 @@ impl Assistant {
             Step::MyMove => sights.next_my_play(&pos, scene),
             Step::OppMove => sights.next_opp_play(&pos, scene),
         };
-        let Some((card, sure)) = event else { return false };
+        let Some((card, sure)) = event else {
+            // La carta dell'avversario non si è vista, ma la presa è già chiusa: in mano ho una
+            // carta nuova. Si chiede all'utente di scriverla.
+            if pos.step() == Step::OppMove && pos.table.is_some() && sights.drew_after(&pos) {
+                self.vision.status =
+                    "Non ho visto la carta giocata dall'avversario: scrivila (per esempio 3c) e continuo da solo".into();
+            }
+            return false;
+        };
         let step = pos.step();
         let view = self.vision.sightings.view(card);
         // Una carta letta senza sicurezza, o annullata dall'utente, non si mette da sola: si chiede.
@@ -884,9 +892,11 @@ impl Assistant {
         }
         // A mazzo finito la briscola di solito sparisce, e se la si rivede è una partita nuova; ma
         // alcuni siti la lasciano disegnata: lo è solo se in mano non c'è più nessuna mia carta.
+        // In una distribuzione nuova in mano non c'è più nessuna delle mie carte: una carta letta
+        // male (il sette per il sei) non basta a ricominciare.
         let new_hand = scene.hand.iter().filter_map(sure).all(|c| !self.pos.hand.contains(c));
-        let deck_over = self.pos.deck_len == 0 && new_hand;
-        fresh && (self.pos.step() == Step::Over || deck_over || other_trump || replayed)
+        let deck_over = self.pos.deck_len == 0;
+        fresh && (self.pos.step() == Step::Over || (new_hand && (deck_over || other_trump || replayed)))
     }
 
     /// Conta le letture in cui lo schermo contraddice la partita inserita (un'altra briscola, una
@@ -1682,6 +1692,12 @@ impl Sightings {
                 self.views[c as usize] = Some((v.img.clone(), v.vis));
             }
         }
+    }
+
+    /// In mano c'è con sicurezza una carta che non ho ancora: ho già pescato dopo la presa in corso.
+    fn drew_after(&self, pos: &Position) -> bool {
+        let allowed = pos.allowed().union(CardSet::FULL.minus(pos.played).minus(pos.hand));
+        (0..40u8).any(|c| allowed.contains(c) && !pos.hand.contains(c) && Some(c) != pos.table && self.in_hand(c) && !self.on_table(c))
     }
 
     fn view(&self, c: Card) -> Option<(Img, [f32; 2])> {

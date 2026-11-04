@@ -889,6 +889,24 @@ impl Assistant {
         if self.vision.sightings.glimpsed(*wrong) {
             return;
         }
+        // Si correggono solo le pescate dopo l'ultima carta giocata (all'inizio, le tre carte in
+        // mano; o la briscola dell'ultima pescata): se cambia una carta pescata prima, sono mosse
+        // che non si sono viste (una presa chiusa in un attimo), non una lettura sbagliata.
+        let recent_draws: Vec<Card> = self
+            .rec
+            .events
+            .iter()
+            .rev()
+            .take_while(|e| !matches!(e, Event::Giocata { .. }))
+            .filter_map(|e| match e {
+                Event::Pescata { carta } => Some(carta.id),
+                _ => None,
+            })
+            .collect();
+        let trump_draw = Some(*wrong) == self.pos.trump_card && self.pos.trump_card_owner == Some(ME);
+        if !recent_draws.contains(wrong) && !trump_draw {
+            return;
+        }
         // La carta vista dev'essere ancora in gioco (non già uscita, né la briscola).
         let out = self.pos.played.contains(*right) || self.pos.table == Some(*right) || self.pos.trump_card == Some(*right);
         if out {
@@ -966,9 +984,15 @@ impl Assistant {
     fn check_mismatch(&mut self, scene: &Scene) {
         let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
         let trump = scene.trump.as_ref().and_then(sure).filter(|&c| self.pos.trump_card.is_some_and(|t| t != c));
-        // (La briscola già giocata può restare disegnata al suo posto: non conta.)
-        let replayed =
-            scene.hand.iter().filter_map(sure).find(|&c| self.pos.played.contains(c) && Some(c) != self.pos.trump_card);
+        // (La briscola già giocata può restare disegnata al suo posto: non conta. E a mazzo finito,
+        // con la mano quasi vuota, le ultime carte giocate stanno nella riga più bassa e sembrano
+        // in mano: non si controlla.)
+        let late = self.pos.deck_len == 0 || self.pos.step() == Step::Over;
+        let replayed = scene
+            .hand
+            .iter()
+            .filter_map(sure)
+            .find(|&c| !late && self.pos.played.contains(c) && Some(c) != self.pos.trump_card);
         self.vision.mismatch = match (trump, replayed) {
             (None, None) => 0,
             _ => self.vision.mismatch + 1,
@@ -1758,8 +1782,10 @@ impl Sightings {
         if !table.is_empty() && self.hand_at_first_play.is_none() {
             self.hand_at_first_play = Some(scene.hand.len());
         }
+        // (In tavola si tengono anche le letture incerte: se si ripetono, si propone la carta da
+        // confermare invece di chiederla da scrivere.)
         for v in table {
-            if let Some((c, m)) = v.best(CardSet::FULL).filter(|b| b.1 >= SIGHT_MARGIN) {
+            if let Some((c, m)) = v.best(CardSet::FULL).filter(|b| b.1 >= 0.3) {
                 self.table[c as usize].bump(f, m);
                 self.views[c as usize] = Some((v.img.clone(), v.vis));
             }

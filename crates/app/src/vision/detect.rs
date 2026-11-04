@@ -592,8 +592,8 @@ impl Try {
 /// le carte quasi simmetriche restano dritte, sempre nello stesso verso.
 fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
     // Il verso si sceglie col confronto veloce; quello completo si fa solo per il verso scelto.
-    let up = reference::quick_tops(&warp(img, r), &[WHOLE])[0];
-    let down = reference::quick_tops(&warp(img, &r.flipped()), &[WHOLE])[0];
+    let up = reference::quick_tops(&warp(img, r), &[(WHOLE, WHOLE)])[0];
+    let down = reference::quick_tops(&warp(img, &r.flipped()), &[(WHOLE, WHOLE)])[0];
     if up.max(down) < 0.25 {
         return None;
     }
@@ -605,7 +605,7 @@ fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
 /// Fra molte posizioni possibili di una carta, la più promettente al confronto veloce (None se
 /// nessuna somiglia a qualcosa).
 fn most_promising(img: &Img, rects: &[RotRect]) -> Option<RotRect> {
-    let tops = par_chunks(rects, |r| reference::quick_tops(&warp(img, r), &[WHOLE])[0]);
+    let tops = par_chunks(rects, |r| reference::quick_tops(&warp(img, r), &[(WHOLE, WHOLE)])[0]);
     rects.iter().zip(tops).filter(|(_, t)| *t >= 0.25).max_by(|a, b| a.1.total_cmp(&b.1)).map(|(r, _)| *r)
 }
 
@@ -753,14 +753,34 @@ fn colored(img: &Img, r: &RotRect) -> f32 {
 /// punti della zona coperti abbastanza di chiaro, e si tengono le posizioni che somigliano di più
 /// a una carta, lontane fra loro almeno mezza carta.
 fn scan(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
+    scan_with(img, paper, r, card_l, card_w, &SIDES)
+}
+
+/// Le parti visibili provate di solito: la carta intera, coperta a destra, coperta a sinistra.
+const SIDES: [([f32; 2], [f32; 2]); 3] = [(WHOLE, WHOLE), (WHOLE, [0.0, 0.6]), (WHOLE, [0.4, 1.0])];
+
+/// Anche coperta sopra o sotto (una scritta che attraversa la mano), e in tutti e due i modi.
+const ALL_SIDES: [([f32; 2], [f32; 2]); 9] = [
+    (WHOLE, WHOLE),
+    (WHOLE, [0.0, 0.6]),
+    (WHOLE, [0.4, 1.0]),
+    ([0.0, 0.45], WHOLE),
+    ([0.55, 1.0], WHOLE),
+    ([0.0, 0.45], [0.0, 0.6]),
+    ([0.0, 0.45], [0.4, 1.0]),
+    ([0.55, 1.0], [0.0, 0.6]),
+    ([0.55, 1.0], [0.4, 1.0]),
+];
+
+fn scan_with(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32, sides: &[([f32; 2], [f32; 2])]) -> Vec<Found> {
     // Lo schermo cambia poco fra una lettura e l'altra: se la zona è identica a una già esaminata
     // (stessi pixel, stessa misura delle carte) si riusa il risultato.
-    let key = region_key(img, r, card_l);
+    let key = region_key(img, r, card_l) ^ (sides.len() as u64);
     static CACHE: std::sync::Mutex<Vec<(u64, Vec<Found>)>> = std::sync::Mutex::new(Vec::new());
     if let Some((_, found)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
         return found.clone();
     }
-    let found = scan_region(img, paper, r, card_l, card_w);
+    let found = scan_region(img, paper, r, card_l, card_w, sides);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.push((key, found.clone()));
     if cache.len() > 24 {
@@ -784,7 +804,7 @@ fn region_key(img: &Img, r: &RotRect, card_l: f32) -> u64 {
     h.finish()
 }
 
-fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
+fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32, sides: &[([f32; 2], [f32; 2])]) -> Vec<Found> {
     // Il riquadro (dritto) della zona.
     let ext_x = r.hw * r.u.0.abs() + r.hh * r.v.0.abs();
     let ext_y = r.hw * r.u.1.abs() + r.hh * r.v.1.abs();
@@ -845,13 +865,12 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
     let rects: Vec<RotRect> = rects.into_iter().map(|(_, r)| r).collect();
     // Primo giro veloce: per ogni posizione la carta si raddrizza una volta sola e si confronta
     // intera e coperta da una parte o dall'altra.
-    const COLS: [[f32; 2]; 3] = [WHOLE, [0.0, 0.6], [0.4, 1.0]];
-    let quick = |rect: &RotRect, cols: &[[f32; 2]]| reference::quick_tops(&warp(img, rect), cols);
-    let tops = par_chunks(&rects, |rect| quick(rect, &COLS));
-    let mut cands: Vec<(f32, RotRect, [f32; 2])> = rects
+    let quick = |rect: &RotRect, v: &[([f32; 2], [f32; 2])]| reference::quick_tops(&warp(img, rect), v);
+    let tops = par_chunks(&rects, |rect| quick(rect, sides));
+    let mut cands: Vec<(f32, RotRect, ([f32; 2], [f32; 2]))> = rects
         .iter()
         .zip(&tops)
-        .flat_map(|(r, t)| COLS.iter().zip(t).map(move |(c, &s)| (s, *r, *c)))
+        .flat_map(|(r, t)| sides.iter().zip(t).map(move |(c, &s)| (s, *r, *c)))
         .filter(|c| c.0 >= 0.35)
         .collect();
     cands.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -881,7 +900,7 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
             continue;
         }
         // Il confronto completo solo per la posizione migliore.
-        let f = Try::with_cols(img, best, WHOLE, cols).finish(img);
+        let f = Try::with_cols(img, best, cols.0, cols.1).finish(img);
         // Cercando dappertutto qualcosa somiglia per caso: si chiede di più.
         if f.accepted(SCAN_ACCEPT) {
             out.push(f);
@@ -1088,29 +1107,52 @@ pub fn analyze(img: &Img) -> Analysis {
             }
         }
     }
-    // Una carta divisa in pezzi affiancati (dal disegno che la attraversa dall'alto in basso, da
-    // un adesivo, da una scritta): due pezzi vicini che insieme hanno la misura di una carta si
-    // riprovano come una carta sola.
+    // Carte divise in più pezzi (dal disegno che le attraversa, da adesivi, da una scritta che passa
+    // sopra la mano, da altre carte che le coprono): i pezzi vicini si raggruppano e nella zona si
+    // cercano carte della misura delle altre, viste anche solo in parte (sopra o sotto, a destra o
+    // a sinistra).
     leftover.retain(|b| !cards.iter().any(|c| c.rect.contains(b.rect.cx, b.rect.cy)));
     let mut joined = vec![false; leftover.len()];
     for i in 0..leftover.len() {
-        for j in i + 1..leftover.len() {
-            let (a, b) = (&leftover[i].rect, &leftover[j].rect);
-            if joined[i] || joined[j] || a.dist(b) > card_w {
-                continue;
+        if joined[i] {
+            continue;
+        }
+        // Il gruppo: i pezzi raggiungibili passando da un pezzo vicino all'altro.
+        let mut group = vec![i];
+        let mut k = 0;
+        while k < group.len() {
+            let g = leftover[group[k]].rect;
+            for j in 0..leftover.len() {
+                if !group.contains(&j) && !joined[j] && leftover[j].rect.dist(&g) < card_l {
+                    group.push(j);
+                }
             }
-            let pts: Vec<(f32, f32)> = (0..4).flat_map(|k| [a.outline(k as f32, 1.0, 0.0), b.outline(k as f32, 1.0, 0.0)]).collect();
-            let Some(u) = min_area_rect(pts) else { continue };
-            if !(0.6..=1.2).contains(&(u.long() / card_l)) || !(0.6..=1.25).contains(&(u.short() / card_w)) {
-                continue;
+            k += 1;
+        }
+        if group.len() < 2 {
+            continue;
+        }
+        let pts: Vec<(f32, f32)> = group
+            .iter()
+            .flat_map(|&j| (0..4).map(move |k| (j, k)))
+            .map(|(j, k)| leftover[j].rect.outline(k as f32, 1.0, 0.0))
+            .collect();
+        let Some(u) = min_area_rect(pts) else { continue };
+        // Abbastanza grande per almeno mezza carta, non più di una fila di tre.
+        if u.long() < 0.5 * card_l || u.area() > 4.0 * card_l * card_w {
+            continue;
+        }
+        let (hw, hh) = if u.hh >= u.hw { (card_w, card_l) } else { (card_l, card_w) };
+        let around = RotRect { hw: u.hw.max(hw / 2.0) + 0.2 * card_w, hh: u.hh.max(hh / 2.0) + 0.2 * card_w, ..u };
+        let found = scan_with(img, &paper, &around, card_l, card_w, &ALL_SIDES);
+        if !found.is_empty() {
+            for &j in &group {
+                joined[j] = true;
             }
-            // Si cerca una carta intera attorno ai due pezzi (una parte può essere coperta).
-            let (hw, hh) = if u.hh >= u.hw { (card_w, card_l) } else { (card_l, card_w) };
-            let around = RotRect { hw: u.hw.max(hw / 2.0) + 0.2 * card_w, hh: u.hh.max(hh / 2.0) + 0.2 * card_w, ..u };
-            let found = as_full(img, &u).or_else(|| scan(img, &paper, &around, card_l, card_w).into_iter().next());
-            if let Some(f) = found {
-                cards.push(f);
-                (joined[i], joined[j]) = (true, true);
+            for f in found {
+                if !cards.iter().any(|c| c.rect.dist(&f.rect) < 0.5 * card_w) {
+                    cards.push(f);
+                }
             }
         }
     }

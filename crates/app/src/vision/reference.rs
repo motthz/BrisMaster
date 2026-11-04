@@ -424,24 +424,25 @@ impl Seen {
 const QX: [f32; 3] = [0.04, 0.08, 0.12];
 const QY: [f32; 2] = [0.03, 0.06];
 
-/// Somiglianza migliore della carta raddrizzata con le carte di riferimento, per ciascuna striscia
-/// visibile `cols` della larghezza, con pochi ritagli: le miniature si calcolano una volta sola.
-pub fn quick_tops(card: &Img, cols_list: &[[f32; 2]]) -> Vec<f32> {
+/// Somiglianza migliore della carta raddrizzata con le carte di riferimento, per ciascuna parte
+/// visibile (fascia `vis` dell'altezza, striscia `cols` della larghezza), con pochi ritagli: le
+/// miniature si calcolano una volta sola.
+pub fn quick_tops(card: &Img, variants: &[([f32; 2], [f32; 2])]) -> Vec<f32> {
     let mut seen = Seen::new(card, WHOLE, WHOLE);
     let n = templates().len();
     // Prima un ritaglio solo: le posizioni che non somigliano a niente si scartano subito.
     let probe = Crop::new(0.08, 0.045, 0.0, 0.0);
-    let hopeful = cols_list.iter().any(|&cols| {
-        seen.cols = cols;
+    let hopeful = variants.iter().any(|&(vis, cols)| {
+        (seen.vis, seen.cols) = (vis, cols);
         (0..n).any(|k| seen.score(probe, k) >= 0.3)
     });
     if !hopeful {
-        return vec![-1.0; cols_list.len()];
+        return vec![-1.0; variants.len()];
     }
-    cols_list
+    variants
         .iter()
-        .map(|&cols| {
-            seen.cols = cols;
+        .map(|&(vis, cols)| {
+            (seen.vis, seen.cols) = (vis, cols);
             let mut top = -1.0f32;
             for &sx in &QX {
                 for &sy in &QY {

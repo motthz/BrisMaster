@@ -126,9 +126,9 @@ fn reference_scores(sim: &[f32; 40]) -> [f32; 40] {
 use briscola_core::cards::{Card, CardSet};
 pub use detect::ScopaScene;
 use memory::Memory;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 /// Punteggi della carta: somiglianza con le carte di riferimento, più quella con le immagini delle
 /// carte già viste su questo sito (che quando c'è decide).
@@ -199,8 +199,14 @@ pub struct Reader<S> {
     last: Arc<Mutex<Option<Img>>>,
 }
 
+/// Ogni quanto si cattura lo schermo: spesso, perché costa poco. Le schermate si analizzano poi
+/// tutte, in ordine, anche se l'analisi è più lenta: un sito che chiude una presa in mezzo secondo
+/// non deve far perdere nessuna carta.
+const CAPTURE_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
 impl<S: Send + 'static> Reader<S> {
-    /// `read` trova e riconosce le carte di un gioco; `every` è l'intervallo fra due letture.
+    /// `read` trova e riconosce le carte di un gioco; `every` è l'intervallo massimo fra due letture
+    /// quando lo schermo non cambia.
     pub fn start(
         mem: Arc<Mutex<Memory>>,
         ctx: eframe::egui::Context,
@@ -209,23 +215,70 @@ impl<S: Send + 'static> Reader<S> {
     ) -> Reader<S> {
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let flag = stop.clone();
         let last = Arc::new(Mutex::new(None));
-        let frame = last.clone();
-        std::thread::spawn(move || {
-            let mut monitor = screen::area().lock().unwrap().monitor;
-            let mut chosen = None;
-            while !flag.load(Ordering::Relaxed) {
-                let t0 = std::time::Instant::now();
-                let area = *screen::area().lock().unwrap();
-                if chosen != Some(area) {
-                    // Area appena scelta: si legge il suo monitor.
-                    monitor = area.monitor;
-                    chosen = Some(area);
+        let queue = Arc::new((Mutex::new(Frames::new(every.max(std::time::Duration::from_millis(600)))), Condvar::new()));
+        // Monitor da catturare (l'analisi passa al successivo se non trova il tavolo) e errori.
+        let monitor = Arc::new(AtomicUsize::new(screen::area().lock().unwrap().monitor));
+        let monitors = Arc::new(AtomicUsize::new(1));
+        let (err_tx, err_rx) = channel::<String>();
+
+        // Cattura: ogni CAPTURE_EVERY, e tiene le schermate in cui qualcosa è cambiato.
+        {
+            let (flag, queue, monitor, monitors) = (stop.clone(), queue.clone(), monitor.clone(), monitors.clone());
+            std::thread::spawn(move || {
+                let mut chosen = None;
+                while !flag.load(Ordering::Relaxed) {
+                    let t0 = std::time::Instant::now();
+                    let area = *screen::area().lock().unwrap_or_else(|e| e.into_inner());
+                    if chosen != Some(area) {
+                        // Area appena scelta: si legge il suo monitor.
+                        monitor.store(area.monitor, Ordering::Relaxed);
+                        chosen = Some(area);
+                    }
+                    match capture::grab(monitor.load(Ordering::Relaxed)) {
+                        Ok((img, count)) => {
+                            monitors.store(count.max(1), Ordering::Relaxed);
+                            let table = shrink(screen::table(&img, &area));
+                            let (lock, cv) = &*queue;
+                            if lock.lock().unwrap_or_else(|e| e.into_inner()).offer(table, std::time::Instant::now()) {
+                                cv.notify_one();
+                            }
+                        }
+                        Err(e) => {
+                            let _ = err_tx.send(e);
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                        }
+                    }
+                    std::thread::sleep(CAPTURE_EVERY.saturating_sub(t0.elapsed()));
                 }
-                let reading = match capture::grab(monitor) {
-                    Ok((img, count)) => {
-                        let table = screen::table(&img, &area);
+                // Sveglia l'analisi perché si fermi anche lei.
+                queue.1.notify_all();
+            });
+        }
+
+        // Analisi: le schermate tenute, una dopo l'altra.
+        let (flag, frame) = (stop.clone(), last.clone());
+        std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                let table = {
+                    let (lock, cv) = &*queue;
+                    let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    loop {
+                        if let Some(t) = q.next() {
+                            break Some(t);
+                        }
+                        if flag.load(Ordering::Relaxed) {
+                            break None;
+                        }
+                        q = cv.wait_timeout(q, std::time::Duration::from_millis(500)).unwrap_or_else(|e| e.into_inner()).0;
+                    }
+                };
+                let reading = match table {
+                    None => match err_rx.try_recv() {
+                        Ok(e) => Reading::Error(e),
+                        Err(_) => continue,
+                    },
+                    Some(table) => {
                         // Un errore nella lettura di una schermata non deve fermare le letture
                         // dopo: si mostra e si continua.
                         let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&table, &mem)));
@@ -242,20 +295,20 @@ impl<S: Send + 'static> Reader<S> {
                             Ok(Some(s)) => Reading::Scene(s),
                             Ok(None) => {
                                 // Senza un'area scelta, prova il monitor successivo.
-                                if area.rect.is_none() {
-                                    monitor = (monitor + 1) % count.max(1);
+                                if screen::area().lock().unwrap_or_else(|e| e.into_inner()).rect.is_none() {
+                                    let n = monitors.load(Ordering::Relaxed).max(1);
+                                    monitor.store((monitor.load(Ordering::Relaxed) + 1) % n, Ordering::Relaxed);
                                 }
                                 Reading::NoTable
                             }
                         }
                     }
-                    Err(e) => Reading::Error(e),
                 };
                 if tx.send(reading).is_err() {
+                    flag.store(true, Ordering::Relaxed);
                     break;
                 }
                 ctx.request_repaint();
-                std::thread::sleep(every.saturating_sub(t0.elapsed()));
             }
         });
         Reader { rx, stop, last }
@@ -265,6 +318,112 @@ impl<S: Send + 'static> Reader<S> {
     pub fn last_frame(&self) -> Option<Img> {
         self.last.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
+}
+
+/// Le schermate in attesa di analisi: si tiene una schermata quando è cambiata rispetto all'ultima
+/// tenuta (o ogni tanto anche se non cambia). Se l'analisi resta indietro, si scartano le schermate
+/// più simili a quella prima, mai l'ultima: uno stato breve (una presa che resta in tavola un
+/// attimo) non si perde.
+pub struct Frames {
+    frames: std::collections::VecDeque<(Img, Vec<u8>)>,
+    last: Option<Vec<u8>>,
+    pushed: Option<std::time::Instant>,
+    every: std::time::Duration,
+}
+
+/// Quante schermate al più restano in attesa.
+const FRAMES: usize = 8;
+
+impl Frames {
+    pub fn new(every: std::time::Duration) -> Frames {
+        Frames { frames: Default::default(), last: None, pushed: None, every }
+    }
+
+    /// Offre una schermata appena catturata; vero se è stata tenuta.
+    pub fn offer(&mut self, img: Img, now: std::time::Instant) -> bool {
+        let sig = signature(&img);
+        let changed = self.last.as_ref().is_none_or(|l| difference(l, &sig) >= 1.5);
+        let stale = self.pushed.is_none_or(|t| now.duration_since(t) >= self.every);
+        if !changed && !stale {
+            return false;
+        }
+        if self.frames.len() >= FRAMES {
+            // Si scarta la schermata (non l'ultima) più simile a quella prima.
+            let drop = (1..self.frames.len() - 1)
+                .min_by(|&a, &b| {
+                    let d = |i: usize| difference(&self.frames[i - 1].1, &self.frames[i].1);
+                    d(a).total_cmp(&d(b))
+                })
+                .unwrap_or(0);
+            self.frames.remove(drop);
+        }
+        self.last = Some(sig.clone());
+        self.pushed = Some(now);
+        self.frames.push_back((img, sig));
+        true
+    }
+
+    /// La prossima schermata da analizzare.
+    pub fn next(&mut self) -> Option<Img> {
+        self.frames.pop_front().map(|f| f.0)
+    }
+}
+
+/// Impronta di una schermata: la luminosità media su una griglia 48 x 32.
+fn signature(img: &Img) -> Vec<u8> {
+    let (gw, gh) = (48usize, 32usize);
+    let mut out = Vec::with_capacity(gw * gh);
+    for j in 0..gh {
+        for i in 0..gw {
+            let (x0, x1) = (i * img.w / gw, ((i + 1) * img.w / gw).max(i * img.w / gw + 1).min(img.w));
+            let (y0, y1) = (j * img.h / gh, ((j + 1) * img.h / gh).max(j * img.h / gh + 1).min(img.h));
+            let (mut sum, mut n) = (0u32, 0u32);
+            // Un punto ogni due per lato basta.
+            for y in (y0..y1).step_by(2) {
+                for x in (x0..x1).step_by(2) {
+                    let p = img.at(x, y);
+                    sum += (p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10;
+                    n += 1;
+                }
+            }
+            out.push((sum / n.max(1)) as u8);
+        }
+    }
+    out
+}
+
+/// Differenza media fra due impronte (0-255).
+fn difference(a: &[u8], b: &[u8]) -> f32 {
+    if a.len() != b.len() {
+        return 255.0;
+    }
+    a.iter().zip(b).map(|(&x, &y)| (x as i32 - y as i32).unsigned_abs()).sum::<u32>() as f32 / a.len().max(1) as f32
+}
+
+/// Le schermate molto grandi (monitor 4K) si rimpiccioliscono: le carte restano grandi abbastanza
+/// e l'analisi è molto più veloce.
+pub fn shrink(img: Img) -> Img {
+    let k = img.w.div_ceil(2000);
+    if k <= 1 {
+        return img;
+    }
+    let (w, h) = (img.w / k, img.h / k);
+    let mut out = Img::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = [0u32; 3];
+            for dy in 0..k {
+                for dx in 0..k {
+                    let p = img.at(x * k + dx, y * k + dy);
+                    for c in 0..3 {
+                        acc[c] += p[c] as u32;
+                    }
+                }
+            }
+            out.px[y * w + x] = acc.map(|a| (a / (k * k) as u32) as u8);
+        }
+    }
+    out
 }
 
 impl<S> Drop for Reader<S> {
@@ -293,6 +452,36 @@ mod tests {
 
     fn best(v: &CardView) -> Card {
         v.best(CardSet::FULL).unwrap().0
+    }
+
+    /// Le schermate catturate spesso e analizzate lentamente: lo stato che dura una cattura sola
+    /// (una presa chiusa subito) resta in coda, anche se l'analisi è indietro di molte catture.
+    #[test]
+    fn brief_states_are_never_dropped() {
+        let t0 = std::time::Instant::now();
+        let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
+        let plain = |v: u8| {
+            let mut i = Img::new(96, 64);
+            i.px.iter_mut().for_each(|p| *p = [v, v, v]);
+            i
+        };
+        let mut f = Frames::new(std::time::Duration::from_millis(600));
+        // Schermo fermo: si tiene solo ogni tanto.
+        let mut kept = 0;
+        for k in 0..10 {
+            kept += f.offer(plain(50), at(k * 100)) as usize;
+        }
+        assert!(kept <= 3, "{kept} schermate uguali tenute");
+        // Uno stato breve fra molti cambiamenti (animazioni), con l'analisi ferma.
+        assert!(f.offer(plain(200), at(1000)));
+        for k in 0..20 {
+            f.offer(plain(60 + (k % 2) as u8 * 2), at(1100 + k * 100));
+        }
+        let mut seen = Vec::new();
+        while let Some(i) = f.next() {
+            seen.push(i.px[0][0]);
+        }
+        assert!(seen.contains(&200), "stato breve perso: {seen:?}");
     }
 
     /// Lo screenshot del sito: l'avversario ha giocato il 2 di bastoni, tu il 7 di spade, in mano

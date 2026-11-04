@@ -806,7 +806,30 @@ impl Assistant {
                 self.set_first(who);
                 return true;
             }
-            Step::Draw(_) => sights.next_draw(&pos),
+            Step::Draw(_) => {
+                // All'ultima pescata la briscola era andata all'avversario (avevo vinto la presa),
+                // ma ce l'ho in mano: la presa l'aveva vinta lui. Si corregge e si va avanti.
+                let trump = pos.trump_card.unwrap_or(0);
+                let mine = sights.in_hand(trump) && sights.recent(&sights.hand[trump as usize]);
+                if pos.deck_len == 0 && pos.trump_card_owner == Some(OPP) && mine && !pos.played.contains(trump) {
+                    self.pos.hand.insert(trump);
+                    self.pos.to_draw = 0;
+                    self.pos.trump_card_owner = Some(ME);
+                    if let Some(t) = self.tricks.last_mut() {
+                        if t.winner == ME {
+                            t.winner = OPP;
+                            self.pos.points[ME as usize] = self.pos.points[ME as usize].saturating_sub(t.points);
+                            self.pos.points[OPP as usize] += t.points;
+                            self.pos.leader = OPP;
+                        }
+                    }
+                    self.vision.status = "Ultima pescata corretta: la briscola l'ho presa io".into();
+                    self.rec.write(&self.pos);
+                    self.changed();
+                    return true;
+                }
+                sights.next_draw(&pos)
+            }
             Step::MyMove => sights.next_my_play(&pos, scene),
             Step::OppMove => sights.next_opp_play(&pos, scene),
         };
@@ -866,12 +889,54 @@ impl Assistant {
         if self.vision.sightings.glimpsed(*wrong) {
             return;
         }
+        // Mentre aspetto l'avversario la mia mano non può cambiare: se cambia una carta pescata prima
+        // dell'ultima giocata, sono mosse che non si sono viste (una presa chiusa in un attimo), non
+        // una lettura sbagliata, e si corregge solo una pescata recente (o la briscola dell'ultima).
+        let recent_draws: Vec<Card> = self
+            .rec
+            .events
+            .iter()
+            .rev()
+            .take_while(|e| !matches!(e, Event::Giocata { .. }))
+            .filter_map(|e| match e {
+                Event::Pescata { carta } => Some(carta.id),
+                _ => None,
+            })
+            .collect();
+        let trump_draw = Some(*wrong) == self.pos.trump_card && self.pos.trump_card_owner == Some(ME);
+        let waiting = self.pos.step() == Step::OppMove;
+        if waiting && !recent_draws.contains(wrong) && !trump_draw {
+            return;
+        }
         // La carta vista dev'essere ancora in gioco (non già uscita, né la briscola).
         let out = self.pos.played.contains(*right) || self.pos.table == Some(*right) || self.pos.trump_card == Some(*right);
         if out {
             return;
         }
         let (wrong, right) = (*wrong, *right);
+        // All'ultima pescata la briscola era andata a me (avevo perso la presa), ma in mano non c'è
+        // e al suo posto c'è un'altra carta: la presa l'avevo vinta io, ho pescato la carta coperta
+        // e la briscola l'ha presa l'avversario. Si corregge mano, presa, punti e chi apre.
+        if Some(wrong) == self.pos.trump_card && self.pos.trump_card_owner == Some(ME) && !self.pos.played.contains(wrong) {
+            self.pos.hand.remove(wrong);
+            self.pos.hand.insert(right);
+            self.pos.trump_card_owner = Some(OPP);
+            if let Some(t) = self.tricks.last_mut() {
+                if t.winner == OPP {
+                    t.winner = ME;
+                    self.pos.points[OPP as usize] = self.pos.points[OPP as usize].saturating_sub(t.points);
+                    self.pos.points[ME as usize] += t.points;
+                    if self.pos.table.is_none() {
+                        self.pos.leader = ME;
+                    }
+                }
+            }
+            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&view.img, view.vis, right);
+            self.vision.status = format!("Ultima pescata corretta: la briscola l'ha presa l'avversario, io {}", cards::name(right));
+            self.rec.write(&self.pos);
+            self.changed();
+            return;
+        }
         if self.correct_draw(wrong, right) {
             self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&view.img, view.vis, right);
             self.vision.status = format!("Mano corretta: {} era {}", cards::name(wrong), cards::name(right));
@@ -920,7 +985,15 @@ impl Assistant {
     fn check_mismatch(&mut self, scene: &Scene) {
         let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
         let trump = scene.trump.as_ref().and_then(sure).filter(|&c| self.pos.trump_card.is_some_and(|t| t != c));
-        let replayed = scene.hand.iter().filter_map(sure).find(|&c| self.pos.played.contains(c));
+        // (La briscola già giocata può restare disegnata al suo posto: non conta. E a mazzo finito,
+        // con la mano quasi vuota, le ultime carte giocate stanno nella riga più bassa e sembrano
+        // in mano: non si controlla.)
+        let late = self.pos.deck_len == 0 || self.pos.step() == Step::Over;
+        let replayed = scene
+            .hand
+            .iter()
+            .filter_map(sure)
+            .find(|&c| !late && self.pos.played.contains(c) && Some(c) != self.pos.trump_card);
         self.vision.mismatch = match (trump, replayed) {
             (None, None) => 0,
             _ => self.vision.mismatch + 1,
@@ -1710,8 +1783,10 @@ impl Sightings {
         if !table.is_empty() && self.hand_at_first_play.is_none() {
             self.hand_at_first_play = Some(scene.hand.len());
         }
+        // (In tavola si tengono anche le letture incerte: se si ripetono, si propone la carta da
+        // confermare invece di chiederla da scrivere.)
         for v in table {
-            if let Some((c, m)) = v.best(CardSet::FULL).filter(|b| b.1 >= SIGHT_MARGIN) {
+            if let Some((c, m)) = v.best(CardSet::FULL).filter(|b| b.1 >= 0.3) {
                 self.table[c as usize].bump(f, m);
                 self.views[c as usize] = Some((v.img.clone(), v.vis));
             }
@@ -1722,6 +1797,11 @@ impl Sightings {
     fn drew_after(&self, pos: &Position) -> bool {
         let allowed = pos.allowed().union(CardSet::FULL.minus(pos.played).minus(pos.hand));
         (0..40u8).any(|c| allowed.contains(c) && !pos.hand.contains(c) && Some(c) != pos.table && self.in_hand(c) && !self.on_table(c))
+    }
+
+    /// Vista nelle ultime letture.
+    fn recent(&self, s: &Sighting) -> bool {
+        self.frame.saturating_sub(s.last) <= 6
     }
 
     fn view(&self, c: Card) -> Option<(Img, [f32; 2])> {
@@ -1762,28 +1842,38 @@ impl Sightings {
         let sure = (0..40u8)
             .filter(|&c| allowed.contains(c) && self.in_hand(c))
             .min_by_key(|&c| self.hand[c as usize].first);
-        if let Some(c) = sure {
-            return Some((c, true));
-        }
         // Devo ancora pescare ma la presa dopo è già cominciata: per l'ordine di gioco la mia carta
         // è la prima comparsa in tavola se apro io, la seconda se apre l'avversario. Se non è fra
         // quelle che so di avere, è proprio la pescata (giocata prima che la vedessi in mano).
-        if pos.tricks > 0 && pos.table.is_none() {
+        if pos.tricks > 0 && pos.table.is_none() && sure.is_none() {
             let mut new: Vec<Card> = (0..40u8)
                 .filter(|&c| !pos.played.contains(c) && Some(c) != pos.trump_card && self.on_table(c))
                 .collect();
             new.sort_by_key(|&c| self.table[c as usize].first);
-            let mine = new.get(if pos.leader == ME { 0 } else { 1 }).copied();
+            // (Se in tavola c'è una carta che so di avere, è quella la mia di questa presa: ne gioco
+            // una sola.)
+            let known = new.iter().any(|&c| pos.hand.contains(c));
+            let mine = new.get(if pos.leader == ME { 0 } else { 1 }).copied().filter(|_| !known);
             if let Some(c) = mine.filter(|&c| allowed.contains(c)) {
                 return Some((c, true));
             }
         }
+        if let Some(c) = sure {
+            return Some((c, true));
+        }
         if let Some(c) = lead.filter(|&c| allowed.contains(c)) {
             return Some((c, self.on_table(c)));
         }
-        // Una carta nuova in mano vista più volte, ma senza sicurezza: si chiede.
+        // Una carta nuova in mano vista molte volte, ma mai con sicurezza (coperta proprio dove
+        // differisce da un'altra): si aspetta, perché quando la gioco si vede in tavola; se resta
+        // incerta per qualche secondo si chiede.
         (0..40u8)
-            .filter(|&c| allowed.contains(c) && self.hand[c as usize].count >= 3)
+            .filter(|&c| {
+                let h = &self.hand[c as usize];
+                // (Se poi è comparsa in tavola, anche lì incerta, aspettare non serve più.)
+                let played = self.glimpsed(c) && self.recent(&self.table[c as usize]);
+                allowed.contains(c) && ((h.count >= 20 && self.recent(h)) || (h.count >= 3 && played))
+            })
             .max_by_key(|&c| (self.hand[c as usize].count, (self.hand[c as usize].margin * 10.0) as i32))
             .map(|c| (c, false))
     }
@@ -1812,7 +1902,7 @@ impl Sightings {
         // Una mia carta vista in tavola più volte ma senza sicurezza: si chiede.
         pos.hand
             .iter()
-            .filter(|&c| self.table[c as usize].count >= 2)
+            .filter(|&c| self.table[c as usize].count >= 2 && self.recent(&self.table[c as usize]))
             .max_by_key(|&c| self.table[c as usize].count)
             .map(|c| (c, false))
     }
@@ -1844,9 +1934,10 @@ impl Sightings {
         if let Some(c) = candidates.clone().filter(|&c| self.on_table(c)).min_by_key(|&c| self.table[c as usize].first) {
             return Some((c, true));
         }
-        // Vista più volte ma senza sicurezza: si chiede.
+        // Vista più volte di recente ma senza sicurezza: si chiede (una lettura sbagliata di tanto
+        // tempo fa non conta).
         candidates
-            .filter(|&c| self.table[c as usize].count >= 2)
+            .filter(|&c| self.table[c as usize].count >= 2 && self.recent(&self.table[c as usize]))
             .max_by_key(|&c| (self.table[c as usize].count, (self.table[c as usize].margin * 10.0) as i32))
             .map(|c| (c, false))
     }
@@ -2533,14 +2624,22 @@ mod tests {
             let mut confirms = 0;
             let mut wrong = Vec::new();
             let mut before: Vec<Card> = Vec::new();
+            // La mano vera della lettura dopo (l'app può essere avanti di un attimo: la briscola
+            // dell'ultima pescata le arriva da sola).
+            let hands: Vec<Vec<Card>> = log
+                .iter()
+                .map(|e| e["hand"].as_array().unwrap().iter().filter_map(|v| by_name(v.as_str()?)).collect())
+                .collect();
             let mut opp_cards: Vec<Card> = Vec::new();
+            let mut recent_cards: Vec<Vec<Card>> = Vec::new();
             let mut typed = 0;
             // Primo punto in cui l'app resta indietro (o avanti) sul mazzo vero per più di 6 letture.
             let (mut off, mut first_off): (u32, Option<String>) = (0, None);
             let mut recent: Vec<String> = Vec::new();
-            for e in &log {
+            for (idx, e) in log.iter().enumerate() {
                 let f = e["frame"].as_str().unwrap();
-                let img = crate::vision::capture::load_png(&dir.join(format!("{f}.png"))).unwrap();
+                let file = [format!("{f}.png"), format!("{f}.jpg")].into_iter().map(|n| dir.join(n)).find(|p| p.exists()).unwrap();
+                let img = crate::vision::capture::load_png(&file).unwrap();
                 let truth_hand: Vec<Card> = e["hand"].as_array().unwrap().iter().filter_map(|v| by_name(v.as_str()?)).collect();
                 let truth_trick: Vec<(Card, bool)> = e["trick"]
                     .as_array()
@@ -2552,6 +2651,13 @@ mod tests {
                 let scene = read_briscola(&img, &a.vision.memory);
                 if let Some(scene) = &scene {
                     a.sync(scene);
+                    // Registrazioni a ogni cambiamento: se lo schermo resta fermo l'app lo rilegge
+                    // ogni 600 ms (una lettura uguale in più ogni 600 ms di attesa, al più 3).
+                    if let (Some(t), Some(next)) = (e["t"].as_u64(), log.get(idx + 1).and_then(|n| n["t"].as_u64())) {
+                        for _ in 0..((next.saturating_sub(t)) / 600).min(3) {
+                            a.sync(scene);
+                        }
+                    }
                 }
                 // Le carte dell'avversario viste davvero finora (per scriverle quando l'app le chiede).
                 for t in &truth_trick {
@@ -2573,14 +2679,37 @@ mod tests {
                     }
                 }
                 // L'utente conferma le carte che l'app chiede, se sono una di quelle sullo schermo.
+                // Le carte viste sullo schermo nelle ultime letture (l'utente se le ricorda).
+                recent_cards.push(truth_hand.iter().copied().chain(truth_trick.iter().map(|t| t.0)).collect::<Vec<Card>>());
+                if recent_cards.len() > 6 {
+                    recent_cards.remove(0);
+                }
                 if let Some(c) = &a.vision.confirm {
-                    let visible = c.card == trump || truth_hand.contains(&c.card) || truth_trick.iter().any(|t| t.0 == c.card);
+                    let visible = c.card == trump || recent_cards.iter().any(|r| r.contains(&c.card));
                     if visible {
                         confirms += 1;
                         a.accept_vision();
                     } else {
+                        // Proposta sbagliata: l'utente scrive la carta giusta.
                         wrong.push(format!("{f}: chiede {}", cards::name(c.card)));
+                        let step = c.step;
+                        let (img, vis) = (c.img.clone(), c.vis);
                         a.vision.confirm = None;
+                        let allowed = a.pos.allowed();
+                        let right = match step {
+                            Step::Trump => Some(trump),
+                            Step::Draw(_) => truth_hand.iter().copied().find(|&h| allowed.contains(h)),
+                            Step::OppMove => truth_trick.iter().find(|t| !t.1 && allowed.contains(t.0)).map(|t| t.0),
+                            Step::MyMove => truth_trick.iter().find(|t| t.1 && allowed.contains(t.0)).map(|t| t.0),
+                            _ => None,
+                        };
+                        if let Some(r) = right {
+                            // Come nell'app: la carta scritta a mano si impara dall'immagine proposta.
+                            if step == a.pos.step() && a.enter(r) {
+                                a.vision.memory.lock().unwrap().remember(&img, vis, r);
+                                typed += 1;
+                            }
+                        }
                     }
                 }
                 let truth_deck: u8 = e["deck"].as_str().unwrap_or("").trim_start_matches("Mazzo: ").parse().unwrap_or(0);
@@ -2626,7 +2755,8 @@ mod tests {
                 // La mano dell'app deve essere (un sottoinsieme di) quella vera.
                 for c in a.pos.hand.iter() {
                     // (la situazione vera si legge un attimo dopo la schermata: vale anche quella prima)
-                    let held = truth_hand.contains(&c) || before.contains(&c) || truth_trick.iter().any(|t| t.0 == c && t.1);
+                    let next = hands.get(idx + 1).is_some_and(|h| h.contains(&c));
+                    let held = truth_hand.contains(&c) || before.contains(&c) || next || truth_trick.iter().any(|t| t.0 == c && t.1);
                     if !held && a.pos.step() != Step::Over {
                         let msg = format!("{f}: l'app crede di avere {}", cards::name(c));
                         if !wrong.contains(&msg) && wrong.len() < 5 {
@@ -2637,7 +2767,8 @@ mod tests {
             }
             n += 1;
             let _ = &mut before;
-            let done = a.pos.tricks == 20 && wrong.is_empty();
+            // (Le proposte sbagliate corrette dall'utente non contano come errori della partita.)
+            let done = a.pos.tricks == 20 && wrong.iter().all(|w| w.contains("chiede"));
             ok += done as usize;
             println!(
                 "{}: {} prese su 20, passo {:?}, {} conferme, {} scritte a mano{}{}",

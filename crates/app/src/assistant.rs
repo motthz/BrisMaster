@@ -806,7 +806,30 @@ impl Assistant {
                 self.set_first(who);
                 return true;
             }
-            Step::Draw(_) => sights.next_draw(&pos),
+            Step::Draw(_) => {
+                // All'ultima pescata la briscola era andata all'avversario (avevo vinto la presa),
+                // ma ce l'ho in mano: la presa l'aveva vinta lui. Si corregge e si va avanti.
+                let trump = pos.trump_card.unwrap_or(0);
+                let mine = sights.in_hand(trump) && sights.recent(&sights.hand[trump as usize]);
+                if pos.deck_len == 0 && pos.trump_card_owner == Some(OPP) && mine && !pos.played.contains(trump) {
+                    self.pos.hand.insert(trump);
+                    self.pos.to_draw = 0;
+                    self.pos.trump_card_owner = Some(ME);
+                    if let Some(t) = self.tricks.last_mut() {
+                        if t.winner == ME {
+                            t.winner = OPP;
+                            self.pos.points[ME as usize] = self.pos.points[ME as usize].saturating_sub(t.points);
+                            self.pos.points[OPP as usize] += t.points;
+                            self.pos.leader = OPP;
+                        }
+                    }
+                    self.vision.status = "Ultima pescata corretta: la briscola l'ho presa io".into();
+                    self.rec.write(&self.pos);
+                    self.changed();
+                    return true;
+                }
+                sights.next_draw(&pos)
+            }
             Step::MyMove => sights.next_my_play(&pos, scene),
             Step::OppMove => sights.next_opp_play(&pos, scene),
         };
@@ -872,6 +895,29 @@ impl Assistant {
             return;
         }
         let (wrong, right) = (*wrong, *right);
+        // All'ultima pescata la briscola era andata a me (avevo perso la presa), ma in mano non c'è
+        // e al suo posto c'è un'altra carta: la presa l'avevo vinta io, ho pescato la carta coperta
+        // e la briscola l'ha presa l'avversario. Si corregge mano, presa, punti e chi apre.
+        if Some(wrong) == self.pos.trump_card && self.pos.trump_card_owner == Some(ME) && !self.pos.played.contains(wrong) {
+            self.pos.hand.remove(wrong);
+            self.pos.hand.insert(right);
+            self.pos.trump_card_owner = Some(OPP);
+            if let Some(t) = self.tricks.last_mut() {
+                if t.winner == OPP {
+                    t.winner = ME;
+                    self.pos.points[OPP as usize] = self.pos.points[OPP as usize].saturating_sub(t.points);
+                    self.pos.points[ME as usize] += t.points;
+                    if self.pos.table.is_none() {
+                        self.pos.leader = ME;
+                    }
+                }
+            }
+            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&view.img, view.vis, right);
+            self.vision.status = format!("Ultima pescata corretta: la briscola l'ha presa l'avversario, io {}", cards::name(right));
+            self.rec.write(&self.pos);
+            self.changed();
+            return;
+        }
         if self.correct_draw(wrong, right) {
             self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&view.img, view.vis, right);
             self.vision.status = format!("Mano corretta: {} era {}", cards::name(wrong), cards::name(right));

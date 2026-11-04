@@ -889,9 +889,9 @@ impl Assistant {
         if self.vision.sightings.glimpsed(*wrong) {
             return;
         }
-        // Si correggono solo le pescate dopo l'ultima carta giocata (all'inizio, le tre carte in
-        // mano; o la briscola dell'ultima pescata): se cambia una carta pescata prima, sono mosse
-        // che non si sono viste (una presa chiusa in un attimo), non una lettura sbagliata.
+        // Mentre aspetto l'avversario la mia mano non può cambiare: se cambia una carta pescata prima
+        // dell'ultima giocata, sono mosse che non si sono viste (una presa chiusa in un attimo), non
+        // una lettura sbagliata, e si corregge solo una pescata recente (o la briscola dell'ultima).
         let recent_draws: Vec<Card> = self
             .rec
             .events
@@ -904,7 +904,8 @@ impl Assistant {
             })
             .collect();
         let trump_draw = Some(*wrong) == self.pos.trump_card && self.pos.trump_card_owner == Some(ME);
-        if !recent_draws.contains(wrong) && !trump_draw {
+        let waiting = self.pos.step() == Step::OppMove;
+        if waiting && !recent_draws.contains(wrong) && !trump_draw {
             return;
         }
         // La carta vista dev'essere ancora in gioco (non già uscita, né la briscola).
@@ -1867,7 +1868,12 @@ impl Sightings {
         // differisce da un'altra): si aspetta, perché quando la gioco si vede in tavola; se resta
         // incerta per qualche secondo si chiede.
         (0..40u8)
-            .filter(|&c| allowed.contains(c) && self.hand[c as usize].count >= 20 && self.recent(&self.hand[c as usize]))
+            .filter(|&c| {
+                let h = &self.hand[c as usize];
+                // (Se poi è comparsa in tavola, anche lì incerta, aspettare non serve più.)
+                let played = self.glimpsed(c) && self.recent(&self.table[c as usize]);
+                allowed.contains(c) && ((h.count >= 20 && self.recent(h)) || (h.count >= 3 && played))
+            })
             .max_by_key(|&c| (self.hand[c as usize].count, (self.hand[c as usize].margin * 10.0) as i32))
             .map(|c| (c, false))
     }

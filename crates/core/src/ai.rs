@@ -246,6 +246,10 @@ struct Node {
     /// Vittorie (pareggio = ½) e punti finali di chi ha giocato la carta.
     wins: f64,
     points: f64,
+    /// Statistiche dell'avversario raccolte nei mondi velati (modalità ombra).
+    ov: f64,
+    oa: f64,
+    orw: f64,
 }
 
 /// Risultato della ricerca per una carta giocabile adesso.
@@ -290,6 +294,37 @@ pub struct IsmctsPlayer {
     /// Dove gioca il modello dell'avversario di `search_model`: nell'albero, nelle simulazioni.
     pub model_tree: bool,
     pub model_rollout: bool,
+    /// Velo: in questa frazione di iterazioni, dopo la mia prima mossa la mia mano viene
+    /// rimescolata con il mazzo, così l'avversario simulato non sfrutta carte che non vede (0).
+    pub veil: f64,
+    /// Modalità ombra del velo: le iterazioni velate aggiornano solo statistiche separate
+    /// dell'avversario, che poi sceglie le sue mosse con quelle anche nei mondi veri.
+    pub shadow: bool,
+}
+
+/// Rimescola la mano di `me` con le carte del mazzo che l'avversario non conosce
+/// (resta ferma la briscola scoperta, e in mano la briscola scoperta già pescata da `me`).
+fn veil_hand(g: &mut Game, me: u8, rng: &mut SmallRng) {
+    if g.deck_len < 2 {
+        return;
+    }
+    let keep = match g.trump_card_owner {
+        Some(o) if o == me && g.hands[me as usize].contains(g.trump_card) => Some(g.trump_card),
+        _ => None,
+    };
+    let mut pool: Vec<Card> = g.hands[me as usize].iter().filter(|&c| Some(c) != keep).collect();
+    let n_hand = pool.len();
+    pool.extend_from_slice(&g.deck[1..g.deck_len as usize]);
+    for i in (1..pool.len()).rev() {
+        let j = rng.gen_range(0..=i);
+        pool.swap(i, j);
+    }
+    let mut h: CardSet = pool[..n_hand].iter().copied().collect();
+    if let Some(t) = keep {
+        h = h.union([t].into_iter().collect());
+    }
+    g.hands[me as usize] = h;
+    g.deck[1..g.deck_len as usize].copy_from_slice(&pool[n_hand..]);
 }
 
 /// Profondità dell'albero fino a cui si usa la rete guida (oltre costerebbe troppo).
@@ -313,6 +348,8 @@ impl IsmctsPlayer {
             reuse: 1,
             model_tree: true,
             model_rollout: true,
+            veil: 0.0,
+            shadow: false,
         }
     }
 
@@ -334,6 +371,8 @@ impl IsmctsPlayer {
             reuse: 1,
             model_tree: true,
             model_rollout: true,
+            veil: 0.0,
+            shadow: false,
         }
     }
 
@@ -399,7 +438,7 @@ impl IsmctsPlayer {
         mut model: Option<(&mut dyn FnMut(&Game, &mut SmallRng) -> Card, f64)>,
     ) -> Vec<RootChild> {
         let mut solver = Solver::default();
-        let mut nodes = vec![Node { card: 255, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0, wins: 0.0, points: 0.0 }];
+        let mut nodes = vec![Node { card: 255, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0, wins: 0.0, points: 0.0, ov: 0.0, oa: 0.0, orw: 0.0 }];
         let mut base = None;
         for it in 0..self.iterations {
             if it % self.reuse.max(1) == 0 {
@@ -408,10 +447,16 @@ impl IsmctsPlayer {
             let mut g = base.unwrap();
             let mut path = vec![0usize];
             let mut cur = 0usize;
+            let mut veiled = !(self.veil > 0.0 && rng.gen_bool(self.veil.min(1.0)));
+            let shadow = self.shadow && !veiled;
             // Selezione ed espansione.
             loop {
                 if g.is_over() {
                     break;
+                }
+                if !veiled && path.len() >= 2 {
+                    veil_hand(&mut g, obs.me, rng);
+                    veiled = true;
                 }
                 let legal = g.legal_moves();
                 let kids: Vec<usize> =
@@ -419,8 +464,14 @@ impl IsmctsPlayer {
                 let tried: CardSet = kids.iter().map(|&k| nodes[k].card).collect();
                 let untried = legal.minus(tried);
                 for &k in &kids {
-                    nodes[k].avail += 1.0;
+                    if shadow {
+                        nodes[k].oa += 1.0;
+                    } else {
+                        nodes[k].avail += 1.0;
+                    }
                 }
+                let opp = g.to_move() != obs.me;
+                let by_o = self.shadow && opp && (shadow || kids.iter().all(|&k| nodes[k].ov > 0.0));
                 let modeled = match model.as_mut() {
                     Some((m, alpha)) if self.model_tree && g.to_move() != obs.me && rng.gen_bool(*alpha) => Some(m(&g, rng)),
                     _ => None,
@@ -431,7 +482,7 @@ impl IsmctsPlayer {
                     let id = match kids.iter().copied().find(|&k| nodes[k].card == c) {
                         Some(k) => k,
                         None => {
-                            nodes.push(Node { card: c, mover, children: vec![], visits: 0.0, avail: 1.0, reward: 0.0, wins: 0.0, points: 0.0 });
+                            nodes.push(Node { card: c, mover, children: vec![], visits: 0.0, avail: 1.0, reward: 0.0, wins: 0.0, points: 0.0, ov: 0.0, oa: 0.0, orw: 0.0 });
                             let id = nodes.len() - 1;
                             nodes[cur].children.push(id);
                             path.push(id);
@@ -465,7 +516,8 @@ impl IsmctsPlayer {
                     };
                     let mover = g.to_move();
                     g.play(c);
-                    nodes.push(Node { card: c, mover, children: vec![], visits: 0.0, avail: 1.0, reward: 0.0, wins: 0.0, points: 0.0 });
+                    let (avail, oa) = if shadow { (0.0, 1.0) } else { (1.0, 0.0) };
+                    nodes.push(Node { card: c, mover, children: vec![], visits: 0.0, avail, reward: 0.0, wins: 0.0, points: 0.0, ov: 0.0, oa, orw: 0.0 });
                     let id = nodes.len() - 1;
                     nodes[cur].children.push(id);
                     path.push(id);
@@ -476,6 +528,15 @@ impl IsmctsPlayer {
                     .max_by(|&&a, &&b| {
                         let ucb = |k: usize| {
                             let n = &nodes[k];
+                            if by_o {
+                                if n.ov == 0.0 {
+                                    return f64::INFINITY;
+                                }
+                                return n.orw / n.ov + self.ucb_c * (n.oa.max(1.0).ln() / n.ov).sqrt();
+                            }
+                            if n.visits == 0.0 {
+                                return f64::INFINITY;
+                            }
                             n.reward / n.visits
                                 + self.ucb_c * (n.avail.ln() / n.visits).sqrt()
                                 + self.prior_weight * guide[n.card as usize] / (1.0 + n.visits)
@@ -486,6 +547,9 @@ impl IsmctsPlayer {
                 g.play(nodes[best].card);
                 path.push(best);
                 cur = best;
+            }
+            if !veiled && !g.is_over() {
+                veil_hand(&mut g, obs.me, rng);
             }
             // Esito per il giocatore 0: probabilità di vittoria e punti finali.
             let (w0, p0) = match self.policy {
@@ -538,6 +602,13 @@ impl IsmctsPlayer {
             for &id in &path {
                 let n = &mut nodes[id];
                 let (w, pts) = if n.mover == 0 { (w0, p0) } else { (1.0 - w0, 120.0 - p0) };
+                if shadow {
+                    if id != 0 && n.mover != obs.me {
+                        n.ov += 1.0;
+                        n.orw += if self.pts_div > 0.0 { w + pts / self.pts_div } else { w };
+                    }
+                    continue;
+                }
                 n.visits += 1.0;
                 n.reward += if self.pts_div > 0.0 { w + pts / self.pts_div } else { w };
                 n.wins += w;

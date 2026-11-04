@@ -665,6 +665,11 @@ fn make_searcher(spec: &str) -> Result<Infer, String> {
                 "pts" => a.search.pts_div = num()?,
                 "eps" => a.search.rollout_eps = num()?,
                 "riuso" => a.search.reuse = num()? as u32,
+                "velo" => a.search.veil = num()?,
+                "ombra" => {
+                    a.search.veil = num()?;
+                    a.search.shadow = true;
+                }
                 "rsolve" => a.search.rollout_solve = if v == "no" { None } else { Some(num()? as u8) },
                 "tb" => rp.trump_base = num()? as i32,
                 "tm" => rp.trump_mult = num()? as i32,

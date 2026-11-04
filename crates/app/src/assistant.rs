@@ -2560,7 +2560,8 @@ mod tests {
             let mut recent: Vec<String> = Vec::new();
             for (idx, e) in log.iter().enumerate() {
                 let f = e["frame"].as_str().unwrap();
-                let img = crate::vision::capture::load_png(&dir.join(format!("{f}.png"))).unwrap();
+                let file = [format!("{f}.png"), format!("{f}.jpg")].into_iter().map(|n| dir.join(n)).find(|p| p.exists()).unwrap();
+                let img = crate::vision::capture::load_png(&file).unwrap();
                 let truth_hand: Vec<Card> = e["hand"].as_array().unwrap().iter().filter_map(|v| by_name(v.as_str()?)).collect();
                 let truth_trick: Vec<(Card, bool)> = e["trick"]
                     .as_array()
@@ -2572,6 +2573,13 @@ mod tests {
                 let scene = read_briscola(&img, &a.vision.memory);
                 if let Some(scene) = &scene {
                     a.sync(scene);
+                    // Registrazioni a ogni cambiamento: se lo schermo resta fermo l'app lo rilegge
+                    // ogni 600 ms (una lettura uguale in più ogni 600 ms di attesa, al più 3).
+                    if let (Some(t), Some(next)) = (e["t"].as_u64(), log.get(idx + 1).and_then(|n| n["t"].as_u64())) {
+                        for _ in 0..((next.saturating_sub(t)) / 600).min(3) {
+                            a.sync(scene);
+                        }
+                    }
                 }
                 // Le carte dell'avversario viste davvero finora (per scriverle quando l'app le chiede).
                 for t in &truth_trick {

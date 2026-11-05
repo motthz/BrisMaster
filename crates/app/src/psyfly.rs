@@ -127,6 +127,28 @@ pub struct Fly {
     boing: f32,
     /// Prossimo colpo nemico da deviare, quando si annoia.
     next_orb: f32,
+    /// Il mouse dall'ultimo fotogramma (punti della finestra) e se il tasto sinistro era premuto.
+    cursor: Option<Pos2>,
+    was_down: bool,
+    /// Da quanto il mouse le sta fermo vicino (grattini).
+    pet: f32,
+    /// Tempo prima della prossima reazione al mouse (per non reagire a ogni movimento).
+    fuss: f32,
+    /// Le gira la testa (da quando le hai dato un colpetto), in secondi.
+    dizzy: f32,
+    /// Scuote la testa ("no, quella!") e annuisce ("sì, quella!"), in secondi.
+    shake: f32,
+    nod: f32,
+    /// La carta della mano su cui sta il mouse (per reagire una volta sola).
+    hover_card: Option<usize>,
+    /// Danza a otto in corso (da 0 a 1).
+    eight: Option<f32>,
+    /// Ultime posizioni, per la scia di immagini fantasma.
+    trail: std::collections::VecDeque<Pos2>,
+    trail_t: f32,
+    /// Il mouse è passato sull'interruttore: saluta.
+    greet: bool,
+    hovered: bool,
     bubble: Option<Bubble>,
     next_chatter: f32,
     parts: Vec<Part>,
@@ -160,6 +182,19 @@ impl Default for Fly {
             alert: 0.0,
             boing: 0.0,
             next_orb: 7.0,
+            cursor: None,
+            was_down: false,
+            pet: 0.0,
+            fuss: 0.0,
+            dizzy: 0.0,
+            shake: 0.0,
+            nod: 0.0,
+            hover_card: None,
+            eight: None,
+            trail: Default::default(),
+            trail_t: 0.0,
+            greet: false,
+            hovered: false,
             bubble: None,
             next_chatter: 3.0,
             parts: Vec::new(),
@@ -183,6 +218,11 @@ const PLAY_TAKE: [&str; 3] = ["Questa... e prendi queste!", "Bzz! Presa!", "Ques
 const PLAYED: [&str; 4] = ["Ottimo!", "Così si fa!", "Bzzz-perfetto!", "Yeee!"];
 const WAITING: [&str; 4] = ["Tocca all'avversario...", "Bzz bzz...", "Che giocherà?", "Ti tengo d'occhio le carte!"];
 const SWAT: [&str; 4] = ["Deviato!", "Bzz-pam!", "Non mi prendi!", "Respinto!"];
+const HELLO: [&str; 3] = ["Ciao!", "Eccomi, bzz!", "Mi hai chiamato?"];
+const POKED: [&str; 4] = ["Ahia!", "Ehi! Mi gira la testa...", "Bzz... quante stelline", "Non si toccano le mosche!"];
+const STARTLED: [&str; 3] = ["Ehi!", "Piano col mouse!", "Bzz! Che spavento!"];
+const PETTED: [&str; 4] = ["Mmm, grattini!", "Bzzzz... che bello", "Ancora, ancora!", "Fusa da mosca: brrr"];
+const NOT_THAT: [&str; 3] = ["No no, quella!", "Non quella!", "Bzz! L'altra!"];
 const LOST: [&str; 3] = ["Dove sono le carte?", "Non vedo il tavolo!", "Bzz? Tutto buio..."];
 
 impl Fly {
@@ -209,7 +249,20 @@ impl Fly {
             ui.ctx().request_repaint();
         }
         let flap = if self.on { ((ui.input(|i| i.time) * 20.0) as i32) % 3 } else { 1 };
-        draw_fly(p, c, 1.6, 1.0, flap, Eyes::Open(vec2(1.0, 0.0)), false, 1.0);
+        let mut pose = Pose::new(1.6);
+        pose.flap = flap;
+        // La mosca dell'interruttore guarda il mouse e sorride quando ci passa sopra.
+        if let Some(m) = ui.input(|i| i.pointer.hover_pos()) {
+            pose.eyes = Eyes::Open((m - c).normalized());
+        }
+        if resp.hovered() {
+            pose.mouth = Mouth::Grin;
+            if self.on && !self.hovered {
+                self.greet = true;
+            }
+        }
+        self.hovered = resp.hovered();
+        draw_fly(p, c, pose);
         let resp = resp.on_hover_text(
             "Psy Fly: una mosca psichica vola sul tavolo del sito e si posa sulla carta che ti consiglio. \
              Lascia passare i clic: le carte le giochi sempre tu.",
@@ -258,10 +311,122 @@ impl Fly {
             };
             let dt = ui.input(|i| i.stable_dt).clamp(0.001, 0.05);
             let painter = ui.painter().clone();
+            // Il mouse lo legge da Windows: la finestra della mosca lascia passare i clic.
+            let mouse = native::cursor().map(|(x, y, down)| (pos2((x - g.x) / ppp, (y - g.y) / ppp), down));
             self.step(dt, screen, &hand, &sight.guide, guide.as_ref());
+            self.interact(dt, &hand, guide.as_ref(), mouse);
             self.paint(&painter, guide.as_ref());
         });
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    }
+
+    /// Reazioni al mouse: lo guarda, si spaventa se arriva di corsa, fa le fusa se ci resta
+    /// vicino, si stordisce se la clicchi, e mentre indica una carta annuisce sopra quella giusta
+    /// e scuote la testa sopra le altre. `mouse` è in punti della finestra, col tasto sinistro.
+    fn interact(&mut self, dt: f32, hand: &[Rect], play: Option<&(Rect, Vec<Rect>)>, mouse: Option<(Pos2, bool)>) {
+        self.fuss = (self.fuss - dt).max(0.0);
+        self.dizzy = (self.dizzy - dt).max(0.0);
+        self.shake = (self.shake - dt).max(0.0);
+        self.nod = (self.nod - dt).max(0.0);
+        if std::mem::take(&mut self.greet) {
+            let s = self.pick(&HELLO);
+            self.say(s, 1.6);
+            self.boing = 0.8;
+            self.spin = Some(0.0);
+        }
+        let Some((m, down)) = mouse else {
+            self.cursor = None;
+            return;
+        };
+        let speed = self.cursor.map_or(0.0, |c| (m - c).length() / dt.max(0.001));
+        let click = down && !self.was_down;
+        self.cursor = Some(m);
+        self.was_down = down;
+        let d = (m - self.pos).length();
+        // Lo sguardo segue il mouse quando è vicino (se non sta indicando una carta).
+        if d < 320.0 && self.mood != Mood::Pointing {
+            let want = (m - self.pos) / 120.0;
+            self.look += (want.clamp(vec2(-1.0, -1.0), vec2(1.0, 1.0)) - self.look) * (dt * 10.0).min(1.0);
+        }
+        // Un colpetto: le gira la testa.
+        if click && d < 14.0 * PX {
+            self.dizzy = 1.8;
+            self.spin = Some(0.0);
+            self.boing = 1.0;
+            let at = self.pos;
+            self.burst(at, 6, Kind::Star, 180.0);
+            let s = self.pick(&POKED);
+            self.say(s, 1.6);
+            self.vel += vec2(self.rng.gen_range(-400.0..400.0), -500.0);
+            self.fuss = 1.0;
+            self.pet = 0.0;
+            if self.mood == Mood::Sleepy {
+                self.mood = Mood::Bored;
+                self.mood_t = 0.0;
+            }
+            return;
+        }
+        // Il mouse che arriva di corsa la spaventa e scatta via (non mentre indica una carta: lì il
+        // mouse corre fra le carte della mano).
+        if d < 110.0 && speed > 1500.0 && self.fuss <= 0.0 && self.mood != Mood::Pointing {
+            let away = (self.pos - m).normalized();
+            self.vel += away * 1100.0;
+            self.alert = 0.6;
+            self.fuss = 2.5;
+            let s = self.pick(&STARTLED);
+            self.say(s, 1.2);
+            if self.mood == Mood::Sleepy {
+                self.mood = Mood::Bored;
+                self.mood_t = 0.0;
+            }
+            return;
+        }
+        // Mouse fermo vicino: grattini.
+        if d < 16.0 * PX && speed < 250.0 {
+            self.pet += dt;
+            if self.pet > 0.7 && self.fuss <= 0.0 {
+                self.fuss = 0.35;
+                let at = self.pos + vec2(self.rng.gen_range(-20.0..20.0), -30.0);
+                let vx = self.rng.gen_range(-25.0..25.0);
+                self.part(at, vec2(vx, -60.0), 1.3, Kind::Heart, PSY_PINK, 1.0);
+                if self.bubble.is_none() {
+                    let s = self.pick(&PETTED);
+                    self.say(s, 1.6);
+                }
+            }
+        } else {
+            self.pet = (self.pet - dt * 2.0).max(0.0);
+        }
+        // Mentre indica: sopra la carta giusta annuisce, sopra un'altra della mano scuote la testa.
+        if let (Mood::Pointing, Some((card, _))) = (self.mood, play) {
+            if click && card.contains(m) {
+                // La stai giocando!
+                let at = self.pos;
+                self.burst(at, 10, Kind::Heart, 200.0);
+                self.say("Sì! Ottima scelta!", 1.4);
+                self.boing = 1.0;
+                return;
+            }
+            let over = hand.iter().position(|r| r.contains(m));
+            if over != self.hover_card {
+                self.hover_card = over;
+                match over {
+                    Some(i) if hand[i].intersects(*card) && (hand[i].center() - card.center()).length() < 30.0 => {
+                        self.nod = 0.8;
+                        self.say("Sì, proprio quella!", 1.3);
+                    }
+                    Some(_) => {
+                        self.shake = 0.8;
+                        self.alert = 0.5;
+                        let s = self.pick(&NOT_THAT);
+                        self.say(s, 1.3);
+                    }
+                    None => {}
+                }
+            }
+        } else {
+            self.hover_card = None;
+        }
     }
 
     fn say(&mut self, text: &str, life: f32) {
@@ -429,6 +594,22 @@ impl Fly {
             Mood::Sad => home + vec2((t * 0.5).sin() * 30.0, 20.0 + (t * 0.9).sin() * 6.0),
         };
 
+        // Danza a otto, ogni tanto, quando si annoia.
+        if let Some(e) = self.eight {
+            let a = e * std::f32::consts::TAU * 2.0;
+            goal += vec2(a.sin() * 90.0, (2.0 * a).sin() * 35.0);
+            let ne = e + dt / 3.0;
+            self.eight = (ne < 1.0 && matches!(self.mood, Mood::Bored | Mood::Party)).then_some(ne);
+        }
+        // Sbadiglio prima di addormentarsi.
+        if self.mood == Mood::Bored && mt > 14.0 && mt - dt <= 14.0 {
+            self.say("Aaaahm... che sonno", 1.8);
+        }
+        // Con la testa che gira barcolla.
+        if self.dizzy > 0.0 {
+            goal += vec2((t * 7.0).sin() * 40.0, (t * 9.0).cos() * 18.0) * self.dizzy.min(1.0);
+        }
+
         // Picchiata sulla carta: scende, la tocca (onda psichica) e risale.
         if self.mood == Mood::Pointing {
             self.next_dive -= dt;
@@ -509,7 +690,12 @@ impl Fly {
         // Giravolte ogni tanto.
         self.next_spin -= dt;
         if self.next_spin <= 0.0 && matches!(self.mood, Mood::Bored | Mood::Party | Mood::Lost) && self.spin.is_none() {
-            self.spin = Some(0.0);
+            if self.mood != Mood::Lost && self.eight.is_none() && self.rng.gen_bool(0.4) {
+                self.eight = Some(0.0);
+                self.say("Bzz-bzz, balletto!", 1.5);
+            } else {
+                self.spin = Some(0.0);
+            }
             self.next_spin = if self.mood == Mood::Party { 1.5 } else { self.rng.gen_range(6.0..12.0) };
         }
         if let Some(s) = self.spin {
@@ -641,6 +827,13 @@ impl Fly {
             }
         }
         self.boing = (self.boing - dt * 1.6).max(0.0);
+        // Scia di immagini fantasma: le ultime posizioni, ogni pochi centesimi di secondo.
+        self.trail_t += dt;
+        if self.trail_t > 0.035 {
+            self.trail_t = 0.0;
+            self.trail.push_front(self.pos);
+            self.trail.truncate(5);
+        }
         self.parts.retain(|p| p.age < p.life && p.pos.y < screen.bottom() + 40.0);
         if self.parts.len() > 400 {
             let extra = self.parts.len() - 400;
@@ -691,6 +884,35 @@ impl Fly {
         // Rimbalzo elastico: si schiaccia e si allunga qualche volta, sempre meno.
         let wobble = (self.boing * 22.0).sin() * 0.28 * self.boing;
         let (sxx, syy) = ((1.0 + stretch) * breathe * (1.0 + wobble), (1.0 - stretch * 0.6) / breathe * (1.0 - wobble));
+        // Annuisce (su e giù) o scuote la testa (si gira di qua e di là).
+        if self.nod > 0.0 {
+            at.y += (self.nod * 25.0).sin() * 5.0 * self.nod;
+        }
+        if self.shake > 0.0 {
+            sx *= (self.shake * 30.0).cos().signum();
+        }
+        // Ombra sul tavolo, più piccola e chiara quando vola alta.
+        let ground = (at.y + 70.0).min(p.clip_rect().bottom() - 10.0);
+        let k = 1.0 - ((ground - at.y - 70.0).abs() / 200.0).min(0.6);
+        for (i, half) in [6.0f32, 8.0, 6.0].iter().enumerate() {
+            let y = ground + (i as f32 - 1.0) * PX * 0.75;
+            p.rect_filled(
+                Rect::from_center_size(pos2(at.x, y), vec2(half * 2.0 * PX * 0.75 * k, PX * 0.75)),
+                0.0,
+                Color32::from_black_alpha((40.0 * k) as u8),
+            );
+        }
+        // Scia di immagini fantasma quando sfreccia.
+        let fast = (self.vel.length() - 450.0) / 700.0;
+        if fast > 0.0 {
+            for (i, q) in self.trail.iter().enumerate().skip(1) {
+                let a = (0.45 - i as f32 * 0.09).max(0.0) * fast.min(1.0);
+                let mut ghost = Pose::new(PX);
+                ghost.face = self.face;
+                ghost.ghost = Some(if i % 2 == 0 { PSY } else { PSY_PINK }.gamma_multiply(a));
+                draw_fly(p, *q, ghost);
+            }
+        }
         // Aura psichica.
         let pulse = 0.5 + 0.5 * (t * 3.0).sin();
         for (i, a) in [(3.0, 0.06), (2.2, 0.08), (1.6, 0.10)].iter().enumerate() {
@@ -706,18 +928,59 @@ impl Fly {
                 px_rect(p, q, PX, PSY_PINK.gamma_multiply(0.8));
             }
         }
-        let flap = if self.mood == Mood::Sleepy && self.mood_t > 2.0 { 1 } else { ((t * 28.0) as i32).rem_euclid(3) };
-        let eyes = if (self.mood == Mood::Sleepy && self.mood_t > 1.0) || self.blink > 0.0 {
+        let asleep = self.mood == Mood::Sleepy && self.mood_t > 2.0;
+        let mut pose = Pose::new(PX * sxx);
+        pose.face = self.face * sx;
+        pose.sy = syy;
+        pose.flap = if asleep { 1 } else { ((t * 28.0) as i32).rem_euclid(3) };
+        pose.eyes = if self.dizzy > 0.0 {
+            Eyes::Dizzy
+        } else if self.pet > 0.7 {
+            Eyes::Love
+        } else if (self.mood == Mood::Sleepy && self.mood_t > 1.0) || self.blink > 0.0 {
             Eyes::Closed
-        } else if matches!(self.mood, Mood::Party) || self.spin.is_some() {
+        } else if matches!(self.mood, Mood::Party) || self.spin.is_some() || self.nod > 0.0 {
             Eyes::Happy
         } else if self.mood == Mood::Sad {
             Eyes::Sad
         } else {
             Eyes::Open(self.look)
         };
-        let happy = matches!(self.mood, Mood::Party | Mood::Pointing) || self.spin.is_some();
-        draw_fly(p, at, PX * sxx, self.face * sx, flap, eyes, happy, syy);
+        let yawning = self.mood == Mood::Bored && (14.0..15.6).contains(&self.mood_t);
+        pose.mouth = if yawning || self.alert > 0.3 {
+            Mouth::Open
+        } else if self.dizzy > 0.0 || self.mood == Mood::Sad || self.shake > 0.0 {
+            Mouth::Wavy
+        } else if matches!(self.mood, Mood::Party | Mood::Pointing) || self.spin.is_some() || self.pet > 0.7 {
+            Mouth::Grin
+        } else {
+            Mouth::Smile
+        };
+        pose.hat = match self.mood {
+            Mood::Party => Hat::Party,
+            Mood::Sleepy if self.mood_t > 1.0 => Hat::Night,
+            _ => Hat::None,
+        };
+        pose.rub = (self.mood == Mood::Thinking).then_some(t * 5.0);
+        draw_fly(p, at, pose);
+        if self.mood == Mood::Sad {
+            // Nuvoletta che le piove in testa.
+            let cloud = at + vec2(0.0, -15.0 * PX + (t * 2.0).sin() * 2.0);
+            sprite(p, cloud, PX * 0.9, &CLOUD, Color32::from_rgb(120, 130, 150));
+            sprite(p, cloud + vec2(0.0, -PX * 0.4), PX * 0.75, &CLOUD, Color32::from_rgb(190, 200, 215));
+            for i in 0..3 {
+                let x = cloud.x + (i as f32 - 1.0) * 3.0 * PX;
+                let y = cloud.y + 3.0 * PX + ((t * 2.5 + i as f32 * 0.37).fract()) * 7.0 * PX;
+                px_rect(p, pos2(x, y), PX * 0.6, Color32::from_rgb(120, 200, 255));
+            }
+        }
+        if self.dizzy > 0.0 {
+            for i in 0..3 {
+                let a = t * 6.0 + i as f32 * std::f32::consts::TAU / 3.0;
+                let q = at + vec2(a.cos() * 7.0 * PX, -9.0 * PX + a.sin() * 2.0 * PX);
+                sprite(p, q, PX * 0.6, &STAR, Color32::from_rgb(255, 230, 90));
+            }
+        }
         if self.mood == Mood::Lost && self.mood_t > 4.0 {
             // Confusa: stelline che le girano attorno alla testa.
             for i in 0..3 {
@@ -782,13 +1045,69 @@ impl Fly {
     }
 }
 
-/// Faccia della mosca.
-#[derive(Clone, Copy)]
+/// Occhi della mosca.
+#[derive(Clone, Copy, PartialEq)]
 enum Eyes {
     Open(Vec2),
     Closed,
     Happy,
     Sad,
+    /// A cuore: le fanno i grattini.
+    Love,
+    /// A spirale: le gira la testa.
+    Dizzy,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mouth {
+    Smile,
+    Grin,
+    /// Aperta: sbadiglio o spavento.
+    Open,
+    Wavy,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Hat {
+    None,
+    Party,
+    Night,
+}
+
+/// Come disegnare la mosca in questo fotogramma.
+#[derive(Clone, Copy)]
+struct Pose {
+    /// Lato di un pixel.
+    s: f32,
+    /// Verso (1 a destra, -1 a sinistra; in mezzo è schiacciata, mentre si gira).
+    face: f32,
+    /// Altezza rispetto alla larghezza (per gli allungamenti e i rimbalzi).
+    sy: f32,
+    /// Fotogramma delle ali (0, 1, 2).
+    flap: i32,
+    eyes: Eyes,
+    mouth: Mouth,
+    hat: Hat,
+    /// Zampette davanti che si sfregano (pensa), con la fase.
+    rub: Option<f32>,
+    /// Sagoma tutta di un colore (le immagini fantasma della scia psichica).
+    ghost: Option<Color32>,
+}
+
+impl Pose {
+    fn new(s: f32) -> Pose {
+        Pose {
+            s,
+            face: 1.0,
+            sy: 1.0,
+            flap: 1,
+            eyes: Eyes::Open(vec2(1.0, 0.0)),
+            mouth: Mouth::Smile,
+            hat: Hat::None,
+            rub: None,
+            ghost: None,
+        }
+    }
 }
 
 /// Un pixel della mosca: quadrato di lato `s` col centro in `c`.
@@ -796,15 +1115,16 @@ fn px_rect(p: &Painter, c: Pos2, s: f32, color: Color32) {
     p.rect_filled(Rect::from_center_size(c, vec2(s, s)), 0.0, color);
 }
 
-/// La mosca in pixel art, col centro in `c`. `s` è il lato di un pixel, `face` il verso (1 a
-/// destra, -1 a sinistra; in mezzo è schiacciata, durante le giravolte), `flap` il fotogramma
-/// delle ali, `sy` quanto è alta rispetto a larga.
-#[allow(clippy::too_many_arguments)]
-fn draw_fly(p: &Painter, c: Pos2, s: f32, face: f32, flap: i32, eyes: Eyes, happy: bool, sy: f32) {
-    let (w, h) = (s * face.abs().max(0.15), s * sy);
-    let dir = if face < 0.0 { -1.0 } else { 1.0 };
+/// La mosca in pixel art, col centro in `c`.
+fn draw_fly(p: &Painter, c: Pos2, pose: Pose) {
+    let (w, h) = (pose.s * pose.face.abs().max(0.15), pose.s * pose.sy);
+    let dir = if pose.face < 0.0 { -1.0 } else { 1.0 };
     let at = |x: f32, y: f32| c + vec2((x - 0.5) * w * dir, y * h);
     let dot = |x: f32, y: f32, color: Color32| {
+        let color = match pose.ghost {
+            Some(g) if color.a() > 0 => g,
+            _ => color,
+        };
         p.rect_filled(Rect::from_center_size(at(x, y), vec2(w + 0.3, h + 0.3)), 0.0, color);
     };
     let blob = |cx: f32, cy: f32, rx: f32, ry: f32, fill: Color32, edge: Color32| {
@@ -821,7 +1141,7 @@ fn draw_fly(p: &Painter, c: Pos2, s: f32, face: f32, flap: i32, eyes: Eyes, happ
         }
     };
     // Ali sul dorso, tre fotogrammi: alzate, a metà, abbassate all'indietro.
-    let (wx, wy, wrx, wry) = match flap {
+    let (wx, wy, wrx, wry) = match pose.flap {
         0 => (-1.0, -9.0, 2.2, 3.6),
         1 => (-2.5, -8.0, 3.0, 2.6),
         _ => (-4.0, -6.5, 3.4, 1.8),
@@ -831,11 +1151,22 @@ fn draw_fly(p: &Painter, c: Pos2, s: f32, face: f32, flap: i32, eyes: Eyes, happ
     let wing_front =
         (Color32::from_rgba_unmultiplied(225, 240, 255, 165), Color32::from_rgba_unmultiplied(100, 130, 225, 235));
     blob(wx - 2.0, wy + 0.5, wrx, wry, wing_back.0, wing_back.1);
-    // Zampette che dondolano.
+    // Zampette: dondolano, o quelle davanti si sfregano mentre pensa.
     for (i, x) in [-3.0f32, -0.5, 2.0].iter().enumerate() {
-        let swing = if (flap + i as i32) % 2 == 0 { 0.0 } else { 1.0 };
-        dot(*x, 6.0, OUTLINE);
-        dot(*x - swing, 7.0, OUTLINE);
+        let swing = if (pose.flap + i as i32) % 2 == 0 { 0.0 } else { 1.0 };
+        match pose.rub {
+            Some(ph) if i == 2 => {
+                let up = if (ph * 2.0) as i32 % 2 == 0 { 0.0 } else { 1.0 };
+                dot(3.0, 5.0 - up, OUTLINE);
+                dot(4.0, 4.0 - up, OUTLINE);
+                dot(4.0, 5.0 - (1.0 - up), OUTLINE);
+                dot(5.0, 4.0 - (1.0 - up), OUTLINE);
+            }
+            _ => {
+                dot(*x, 6.0, OUTLINE);
+                dot(*x - swing, 7.0, OUTLINE);
+            }
+        }
     }
     // Corpo: un ovale con la luce in alto a sinistra, le righe sul dietro e il contorno scuro.
     let (rx, ry, cy) = (6.6, 5.3, 0.5);
@@ -862,10 +1193,10 @@ fn draw_fly(p: &Painter, c: Pos2, s: f32, face: f32, flap: i32, eyes: Eyes, happ
         }
     }
     dot(-4.0, -2.0, Color32::WHITE);
-    // Occhioni sporgenti sul davanti: 3 x 5 di bianco col contorno, pupilla 2 x 2 col riflesso.
-    for ex in [2.0f32, 6.0] {
+    dot(-3.0, -3.0, Color32::from_rgb(235, 215, 255));
+    // Occhioni sporgenti sul davanti: 3 x 5 di bianco col contorno.
+    for (n, ex) in [2.0f32, 6.0].into_iter().enumerate() {
         let (top, bot) = (-6.0, -2.0);
-        // Contorno.
         for y in (top as i32)..=(bot as i32) {
             dot(ex - 2.0, y as f32, OUTLINE);
             dot(ex + 2.0, y as f32, OUTLINE);
@@ -874,13 +1205,16 @@ fn draw_fly(p: &Painter, c: Pos2, s: f32, face: f32, flap: i32, eyes: Eyes, happ
             dot(ex + x as f32, top - 1.0, OUTLINE);
             dot(ex + x as f32, bot + 1.0, OUTLINE);
         }
-        match eyes {
-            Eyes::Open(look) => {
-                for y in (top as i32)..=(bot as i32) {
-                    for x in -1..=1 {
-                        dot(ex + x as f32, y as f32, EYE);
-                    }
+        let fill = |color: Color32| {
+            for y in (top as i32)..=(bot as i32) {
+                for x in -1..=1 {
+                    dot(ex + x as f32, y as f32, color);
                 }
+            }
+        };
+        match pose.eyes {
+            Eyes::Open(look) => {
+                fill(EYE);
                 // Pupilla avanti o indietro, in alto, al centro o in basso, secondo dove guarda.
                 let px0 = if look.x * dir > 0.3 { ex } else { ex - 1.0 };
                 let oy: f32 = if look.y > 0.35 {
@@ -900,60 +1234,134 @@ fn draw_fly(p: &Painter, c: Pos2, s: f32, face: f32, flap: i32, eyes: Eyes, happ
                 dot(px0 + 1.0, py0, EYE);
             }
             Eyes::Closed => {
-                for y in (top as i32)..=(bot as i32) {
-                    for x in -1..=1 {
-                        dot(ex + x as f32, y as f32, BODY);
-                    }
-                }
+                fill(BODY);
                 for x in -1..=1 {
                     dot(ex + x as f32, -3.0, OUTLINE);
                 }
             }
             Eyes::Happy => {
-                for y in (top as i32)..=(bot as i32) {
-                    for x in -1..=1 {
-                        dot(ex + x as f32, y as f32, EYE);
-                    }
-                }
+                fill(EYE);
                 dot(ex - 1.0, -3.0, OUTLINE);
                 dot(ex, -4.0, OUTLINE);
                 dot(ex + 1.0, -3.0, OUTLINE);
             }
             Eyes::Sad => {
-                for y in (top as i32)..=(bot as i32) {
-                    for x in -1..=1 {
-                        dot(ex + x as f32, y as f32, EYE);
-                    }
-                }
+                fill(EYE);
                 dot(ex - 1.0, -4.0, OUTLINE);
                 dot(ex, -3.0, PUPIL);
                 dot(ex + 1.0, -3.0, PUPIL);
                 dot(ex, -2.0, Color32::from_rgb(140, 210, 255));
             }
+            Eyes::Love => {
+                fill(EYE);
+                for (dx, dy) in [(-1.0, -5.0), (1.0, -5.0), (-1.0, -4.0), (0.0, -4.0), (1.0, -4.0), (0.0, -3.0)] {
+                    dot(ex + dx, dy, PSY_PINK);
+                }
+            }
+            Eyes::Dizzy => {
+                fill(EYE);
+                // Una X in un occhio e una spirale nell'altro: più buffo.
+                if n == 0 {
+                    for (dx, dy) in [(-1.0, -5.0), (1.0, -5.0), (0.0, -4.0), (-1.0, -3.0), (1.0, -3.0)] {
+                        dot(ex + dx, dy, PUPIL);
+                    }
+                } else {
+                    for (dx, dy) in
+                        [(-1.0, -5.0), (0.0, -5.0), (1.0, -5.0), (1.0, -4.0), (1.0, -3.0), (0.0, -3.0), (0.0, -4.0)]
+                    {
+                        dot(ex + dx, dy, PUPIL);
+                    }
+                }
+            }
         }
     }
     // Guance e bocca.
-    dot(0.0, 0.0, BLUSH);
-    dot(7.0, 0.0, BLUSH);
-    if happy {
-        dot(3.0, 0.0, OUTLINE);
-        dot(5.0, 0.0, OUTLINE);
-        dot(3.0, 1.0, OUTLINE);
-        dot(4.0, 1.0, BLUSH);
-        dot(5.0, 1.0, OUTLINE);
-        dot(4.0, 2.0, OUTLINE);
-    } else {
-        dot(3.0, 0.0, OUTLINE);
-        dot(4.0, 1.0, OUTLINE);
-        dot(5.0, 0.0, OUTLINE);
+    let blush = if pose.eyes == Eyes::Love { PSY_PINK } else { BLUSH };
+    dot(0.0, 0.0, blush);
+    dot(7.0, 0.0, blush);
+    if pose.eyes == Eyes::Love {
+        dot(-1.0, 0.0, blush);
     }
-    // Ala davanti.
+    match pose.mouth {
+        Mouth::Grin => {
+            dot(3.0, 0.0, OUTLINE);
+            dot(5.0, 0.0, OUTLINE);
+            dot(3.0, 1.0, OUTLINE);
+            dot(4.0, 1.0, BLUSH);
+            dot(5.0, 1.0, OUTLINE);
+            dot(4.0, 2.0, OUTLINE);
+        }
+        Mouth::Open => {
+            for (x, y) in
+                [(3.0, 0.0), (4.0, 0.0), (5.0, 0.0), (3.0, 1.0), (5.0, 1.0), (3.0, 2.0), (4.0, 2.0), (5.0, 2.0)]
+            {
+                dot(x, y, OUTLINE);
+            }
+            dot(4.0, 1.0, Color32::from_rgb(200, 60, 110));
+        }
+        Mouth::Wavy => {
+            dot(2.0, 1.0, OUTLINE);
+            dot(3.0, 0.0, OUTLINE);
+            dot(4.0, 1.0, OUTLINE);
+            dot(5.0, 0.0, OUTLINE);
+        }
+        Mouth::Smile => {
+            dot(3.0, 0.0, OUTLINE);
+            dot(4.0, 1.0, OUTLINE);
+            dot(5.0, 0.0, OUTLINE);
+        }
+    }
+    // Ala davanti, col riflesso che brilla.
     blob(wx, wy, wrx, wry, wing_front.0, wing_front.1);
+    dot(wx - 1.0, wy - (wry - 1.5).max(0.0), Color32::from_rgba_unmultiplied(255, 255, 255, 220));
+    // Cappellini.
+    match pose.hat {
+        Hat::None => {}
+        Hat::Party => {
+            // Cono a righe con il pompon, un po' storto sopra gli occhi.
+            let rows: [(f32, f32, f32); 5] =
+                [(4.0, -8.0, 2.0), (4.0, -9.0, 1.5), (4.5, -10.0, 1.0), (4.5, -11.0, 0.5), (5.0, -12.0, 0.0)];
+            for (k, (cx, y, half)) in rows.into_iter().enumerate() {
+                let mut x = cx - half;
+                while x <= cx + half + 0.01 {
+                    let col = if (k + (x as i32) as usize).is_multiple_of(2) { TAKE } else { PSY_PINK };
+                    dot(x.round(), y, col);
+                    x += 1.0;
+                }
+                dot((cx - half - 1.0).round(), y, OUTLINE);
+                dot((cx + half + 1.0).round(), y, OUTLINE);
+            }
+            dot(5.0, -13.0, Color32::WHITE);
+            dot(6.0, -13.0, Color32::WHITE);
+            dot(5.0, -14.0, Color32::WHITE);
+        }
+        Hat::Night => {
+            // Berretto da notte che ricade all'indietro, col pompon.
+            let blue = Color32::from_rgb(90, 120, 230);
+            for x in 0..=7 {
+                dot(x as f32, -8.0, Color32::WHITE);
+            }
+            for x in 0..=6 {
+                dot(x as f32, -9.0, blue);
+            }
+            for x in -1..=4 {
+                dot(x as f32, -10.0, blue);
+            }
+            for x in -3..=1 {
+                dot(x as f32, -11.0, blue);
+            }
+            dot(-4.0, -10.0, blue);
+            dot(-5.0, -9.0, Color32::WHITE);
+            dot(-6.0, -9.0, Color32::WHITE);
+            dot(-5.0, -8.0, Color32::WHITE);
+        }
+    }
 }
 
 const SPARK: [&str; 3] = [".x.", "xxx", ".x."];
 const STAR: [&str; 5] = ["..x..", "..x..", "xxoxx", "..x..", "..x.."];
 const HEART: [&str; 5] = [".x.x.", "xxxxx", "xxxxx", ".xxx.", "..x.."];
+const CLOUD: [&str; 4] = ["...xxx....", ".xxxxxxx..", "xxxxxxxxxx", ".xxxxxxxx."];
 const ORB: [&str; 5] = [".xxx.", "xooxx", "xoxxx", "xxxxx", ".xxx."];
 const TEAR: [&str; 4] = [".x.", "xxx", "xxx", ".x."];
 const BANG: [&str; 7] = ["xx", "xx", "xx", "xx", "..", "xx", "xx"];
@@ -1162,6 +1570,21 @@ mod native {
         }
         true
     }
+
+    /// Dove sta il mouse sul desktop (pixel veri) e se il tasto sinistro è premuto.
+    pub fn cursor() -> Option<(f32, f32, bool)> {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let mut pt = POINT { x: 0, y: 0 };
+        unsafe {
+            if GetCursorPos(&mut pt) == 0 {
+                return None;
+            }
+            let down = (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0;
+            Some((pt.x as f32, pt.y as f32, down))
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -1169,6 +1592,11 @@ mod native {
     use super::Geom;
     pub fn place(_title: &str, _g: Geom) -> bool {
         true
+    }
+
+    /// Fuori da Windows la mosca non vede il mouse.
+    pub fn cursor() -> Option<(f32, f32, bool)> {
+        None
     }
 }
 
@@ -1230,6 +1658,41 @@ mod tests {
             deflected |= fly.parts.iter().any(|p| p.kind == Kind::Deflected);
         }
         assert!(deflected);
+    }
+
+    /// Il mouse: un clic sulla mosca la stordisce, il mouse fermo vicino le fa le fusa, sopra
+    /// un'altra carta della mano scuote la testa, sopra quella consigliata annuisce.
+    #[test]
+    fn reacts_to_the_mouse() {
+        let (screen, hand, _) = sight(Guide::Thinking);
+        let mut fly = Fly::default();
+        let dt = 1.0 / 60.0;
+        for _ in 0..60 {
+            fly.step(dt, screen, &hand, &Guide::Waiting, None);
+        }
+        let at = fly.pos;
+        fly.interact(dt, &hand, None, Some((at, false)));
+        fly.interact(dt, &hand, None, Some((at, true)));
+        assert!(fly.dizzy > 0.0);
+        let mut fly = Fly::default();
+        for _ in 0..60 {
+            fly.step(dt, screen, &hand, &Guide::Waiting, None);
+        }
+        for _ in 0..90 {
+            let at = fly.pos;
+            fly.interact(dt, &hand, None, Some((at + vec2(10.0, 0.0), false)));
+        }
+        assert!(fly.parts.iter().any(|p| p.kind == Kind::Heart));
+        let mut fly = Fly::default();
+        let play = (hand[1], Vec::new());
+        let guide = Guide::Play { card: [0.0; 4], take: vec![] };
+        for _ in 0..60 {
+            fly.step(dt, screen, &hand, &guide, Some(&play));
+        }
+        fly.interact(dt, &hand, Some(&play), Some((hand[0].center(), false)));
+        assert!(fly.shake > 0.0);
+        fly.interact(dt, &hand, Some(&play), Some((hand[1].center(), false)));
+        assert!(fly.nod > 0.0);
     }
 
     /// Quando la carta indicata sparisce (giocata), la mosca festeggia.

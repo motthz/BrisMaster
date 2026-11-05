@@ -41,6 +41,15 @@ impl RotRect {
         (dx * self.u.0 + dy * self.u.1).abs() <= self.hw && (dx * self.v.0 + dy * self.v.1).abs() <= self.hh
     }
 
+    /// Riquadro dritto che contiene il rettangolo, in frazioni dell'immagine (sinistra, alto,
+    /// destra, basso).
+    pub fn bounds(&self, img: &Img) -> [f32; 4] {
+        let ex = self.u.0.abs() * self.hw + self.v.0.abs() * self.hh;
+        let ey = self.u.1.abs() * self.hw + self.v.1.abs() * self.hh;
+        let (w, h) = (img.w.max(1) as f32, img.h.max(1) as f32);
+        [(self.cx - ex) / w, (self.cy - ey) / h, (self.cx + ex) / w, (self.cy + ey) / h]
+    }
+
     /// Vero se il lato lungo è più vicino all'orizzontale che alla verticale.
     pub fn landscape(&self) -> bool {
         let long_axis = if self.hh >= self.hw { self.v } else { self.u };
@@ -583,6 +592,7 @@ impl Try {
         let inside = table_inside(img, &self.rect, &self.card, self.vis);
         let mut view = CardView::new(self.card, self.vis, sim);
         view.partial |= self.cols != WHOLE;
+        view.at = self.rect.bounds(img);
         Found { rect: self.rect, view, score, inside }
     }
 }

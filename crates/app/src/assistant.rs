@@ -343,6 +343,15 @@ struct Vision {
     trump_img: Option<Img>,
     /// Candidati annullati dall'utente: se ricompaiono si chiede conferma invece di inserirli.
     doubts: Vec<(Step, Card)>,
+    /// Letture stabili di fila in cui lo schermo contraddice la partita inserita.
+    mismatch: u32,
+    /// Letture stabili di fila che mostrano una partita nuova.
+    new_deal: u32,
+    /// Letture di fila con le carte in vista ma senza la briscola.
+    no_trump: u32,
+    /// Le carte viste finora in questa partita, in mano e in tavola: la partita si ricostruisce da
+    /// qui, qualunque sia la velocità del sito e il posto in cui disegna le carte.
+    sightings: Sightings,
     /// Scelta del monitor e dell'area del tavolo, e diagnosi.
     picker: crate::vision::screen::AreaPicker,
 }
@@ -387,11 +396,60 @@ impl Assistant {
     }
 
     fn set_first(&mut self, p: u8) {
+        self.first_entry(p);
+        self.auto_fill();
+    }
+
+    fn first_entry(&mut self, p: u8) {
         self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
         self.pos.set_first(p);
         self.rec.events.push(Event::PrimoDiMano { chi: record::who(p) });
         self.changed();
-        self.auto_fill();
+    }
+
+    /// Sostituisce la carta pescata `wrong` con `right` e riscrive la partita da quella pescata,
+    /// rifacendo tutto quello che è venuto dopo. Falso (e niente cambia) se la partita non torna più,
+    /// per esempio perché la carta sbagliata è già stata giocata.
+    fn correct_draw(&mut self, wrong: Card, right: Card) -> bool {
+        let pescata = |e: Option<&Event>| matches!(e, Some(Event::Pescata { carta }) if carta.id == wrong);
+        let Some(i) = self.history.iter().position(|h| pescata(self.rec.events.get(h.2))) else {
+            return false;
+        };
+        // Le azioni da rifare: una per voce della cronologia (ognuna ha il suo evento).
+        enum Act {
+            Card(Card, bool),
+            First(u8),
+        }
+        let acts: Vec<Act> = self.history[i..]
+            .iter()
+            .map(|h| match &self.rec.events[h.2] {
+                Event::PrimoDiMano { chi } => Act::First(if *chi == record::who(ME) { ME } else { OPP }),
+                Event::Briscola { carta } | Event::Pescata { carta } | Event::Giocata { carta, .. } => Act::Card(carta.id, h.3),
+            })
+            .collect();
+        let saved = (self.pos, self.history.clone(), self.tricks.clone(), self.rec.events.clone());
+        let (p, n, e, _) = self.history[i];
+        self.pos = p;
+        self.tricks.truncate(n);
+        self.rec.events.truncate(e);
+        self.history.truncate(i);
+        let mut ok = true;
+        for (k, a) in acts.into_iter().enumerate() {
+            match a {
+                Act::Card(c, auto) => ok = self.record_entry(if k == 0 { right } else { c }, auto),
+                Act::First(p) => self.first_entry(p),
+            }
+            if !ok {
+                break;
+            }
+        }
+        if !ok {
+            (self.pos, self.history, self.tricks, self.rec.events) = saved;
+            self.rec.write(&self.pos);
+            self.changed();
+        }
+        self.vision.last = None;
+        ok
     }
 
     /// Annulla l'ultima azione dell'utente, insieme a quelle che l'app ha fatto da sola dopo.
@@ -400,7 +458,7 @@ impl Assistant {
         // Se si è annullata una carta inserita dalla lettura dello schermo, era sbagliata.
         if let Some((c, img, len)) = self.vision.last.take() {
             if self.history.len() <= len {
-                self.vision.memory.lock().unwrap().forget(&img);
+                self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).forget(&img);
                 self.vision.doubts.push((self.pos.step(), c));
             }
         }
@@ -618,7 +676,7 @@ impl Assistant {
                     };
                     if self.enter(c) {
                         if let Some((img, vis)) = seen.map(|v| (v.img, v.vis)).or(shown) {
-                            self.vision.memory.lock().unwrap().remember(&img, vis, c);
+                            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&img, vis, c);
                         }
                     } else {
                         self.entry_error = Some(format!("{} non è possibile adesso", cards::name(c)));
@@ -678,19 +736,211 @@ impl Assistant {
         let mut sig: Vec<Option<Card>> =
             [&scene.trump, &scene.opp_slot, &scene.my_slot].iter().map(|v| v.as_ref().and_then(best)).collect();
         sig.extend(scene.hand.iter().map(best));
-        if self.vision.seen.as_ref() != Some(&sig) {
-            self.vision.seen = Some(sig);
-            return;
+        let prev = self.vision.seen.replace(sig.clone());
+        let Some(prev) = prev else { return };
+        if prev == sig {
+            // Una partita nuova si riconosce solo da letture uguali di tutto lo schermo: una
+            // briscola letta male una volta non deve far ricominciare la partita.
+            // E solo se lo dicono più letture di fila: un errore di lettura non deve ricominciare
+            // una partita in corso.
+            if self.new_deal(scene) {
+                self.vision.new_deal += 1;
+                if self.vision.new_deal >= 4 || self.pos.step() == Step::Over {
+                    self.reset();
+                }
+            } else {
+                self.vision.new_deal = 0;
+            }
+            self.check_mismatch(scene);
         }
-        // Più passi in una volta: briscola, chi comincia, le tre carte, la prima giocata...
-        for _ in 0..8 {
-            let before = (self.pos.step(), self.history.len());
-            self.sync_step(scene);
-            if (self.pos.step(), self.history.len()) == before || self.vision.confirm.is_some() {
+        self.vision.sightings.update(scene);
+        if prev == sig {
+            self.check_hand(scene);
+        }
+        // La briscola, da due letture uguali.
+        if self.pos.step() == Step::Trump && prev.first() == sig.first() {
+            self.sync_trump(scene);
+        }
+        // Le carte si vedono ma la briscola no (coperta, attaccata a qualcos'altro): si chiede.
+        if self.pos.step() == Step::Trump && scene.trump.is_none() && !scene.hand.is_empty() {
+            self.vision.no_trump += 1;
+            if self.vision.no_trump >= 8 {
+                self.vision.status = "Non trovo la briscola sullo schermo: scrivila (per esempio 7d) e continuo da solo".into();
+            }
+        } else {
+            self.vision.no_trump = 0;
+        }
+        // Poi gli eventi dedotti da quello che si è visto, nell'ordine in cui il gioco li vuole.
+        for _ in 0..12 {
+            if self.vision.confirm.is_some() || !self.advance(scene) {
                 break;
             }
         }
         self.vision.seen = Some(sig);
+    }
+
+    /// La briscola scoperta (chiede conferma se non è sicura).
+    fn sync_trump(&mut self, scene: &Scene) {
+        let Some(v) = &scene.trump else { return };
+        let Some((card, margin)) = v.best(CardSet::FULL) else { return };
+        if margin >= AUTO_MARGIN && !self.vision.doubts.contains(&(Step::Trump, card)) {
+            let len = self.history.len();
+            if self.enter(card) {
+                self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&v.img, v.vis, card);
+                self.vision.last = Some((card, v.img.clone(), len));
+            }
+        } else if self.vision.confirm.is_none() {
+            self.vision.confirm =
+                Some(Confirm { step: Step::Trump, card, img: v.img.clone(), vis: v.vis, texture: None });
+        }
+    }
+
+    /// Un passo della partita dedotto dagli avvistamenti. Falso se per ora non si può andare avanti.
+    fn advance(&mut self, scene: &Scene) -> bool {
+        let pos = self.pos;
+        let sights = &self.vision.sightings;
+        let event = match pos.step() {
+            Step::Trump | Step::Over => None,
+            Step::First => {
+                let Some(who) = sights.first_player(&pos) else { return false };
+                self.set_first(who);
+                return true;
+            }
+            Step::Draw(_) => {
+                // All'ultima pescata la briscola era andata all'avversario (avevo vinto la presa),
+                // ma ce l'ho in mano: la presa l'aveva vinta lui. Si corregge e si va avanti.
+                let trump = pos.trump_card.unwrap_or(0);
+                let mine = sights.in_hand(trump) && sights.recent(&sights.hand[trump as usize]);
+                if pos.deck_len == 0 && pos.trump_card_owner == Some(OPP) && mine && !pos.played.contains(trump) {
+                    self.pos.hand.insert(trump);
+                    self.pos.to_draw = 0;
+                    self.pos.trump_card_owner = Some(ME);
+                    if let Some(t) = self.tricks.last_mut() {
+                        if t.winner == ME {
+                            t.winner = OPP;
+                            self.pos.points[ME as usize] = self.pos.points[ME as usize].saturating_sub(t.points);
+                            self.pos.points[OPP as usize] += t.points;
+                            self.pos.leader = OPP;
+                        }
+                    }
+                    self.vision.status = "Ultima pescata corretta: la briscola l'ho presa io".into();
+                    self.rec.write(&self.pos);
+                    self.changed();
+                    return true;
+                }
+                sights.next_draw(&pos)
+            }
+            Step::MyMove => sights.next_my_play(&pos, scene),
+            Step::OppMove => sights.next_opp_play(&pos, scene),
+        };
+        let Some((card, sure)) = event else {
+            // La carta dell'avversario non si è vista, ma la presa è già chiusa: in mano ho una
+            // carta nuova. Si chiede all'utente di scriverla.
+            if pos.step() == Step::OppMove && pos.table.is_some() && sights.drew_after(&pos) {
+                self.vision.status =
+                    "Non ho visto la carta giocata dall'avversario: scrivila (per esempio 3c) e continuo da solo".into();
+            }
+            return false;
+        };
+        let step = pos.step();
+        let view = self.vision.sightings.view(card);
+        // Una carta letta senza sicurezza, o annullata dall'utente, non si mette da sola: si chiede.
+        if !sure || self.vision.doubts.contains(&(step, card)) {
+            if let Some((img, vis)) = view {
+                self.vision.confirm = Some(Confirm { step, card, img, vis, texture: None });
+            }
+            return false;
+        }
+        let len = self.history.len();
+        if !self.enter(card) {
+            return false;
+        }
+        if let Some((img, vis)) = view {
+            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&img, vis, card);
+            self.vision.last = Some((card, img, len));
+        }
+        true
+    }
+
+    /// Confronta la mano sullo schermo con quella inserita. Se una carta riconosciuta con sicurezza
+    /// non risulta in mano e al suo posto ne risulta una che sullo schermo non c'è, quella pescata
+    /// era stata inserita male (a mano o dalla lettura): si corregge e la partita si riscrive.
+    fn check_hand(&mut self, scene: &Scene) {
+        let still = matches!(self.pos.step(), Step::MyMove | Step::OppMove);
+        if !still || self.vision.confirm.is_some() || scene.hand.len() != self.pos.hand.len() as usize {
+            return;
+        }
+        // Al mio turno una carta sparita dalla mano e una nuova al suo posto sono una giocata e la
+        // pescata che la segue (il sito ha chiuso la presa in un attimo), non una pescata letta male.
+        let pending = match self.pos.step() {
+            Step::MyMove => self.vision.sightings.next_my_play(&self.pos, scene).is_some_and(|e| e.1),
+            _ => self.vision.sightings.next_opp_play(&self.pos, scene).is_some_and(|e| e.1),
+        };
+        if pending {
+            return;
+        }
+        let seen: Vec<(Card, f32, &CardView)> =
+            scene.hand.iter().filter_map(|v| v.best(CardSet::FULL).map(|(c, m)| (c, m, v))).collect();
+        let extra: Vec<&(Card, f32, &CardView)> =
+            seen.iter().filter(|(c, m, _)| !self.pos.hand.contains(*c) && *m >= AUTO_MARGIN).collect();
+        let missing: Vec<Card> = self.pos.hand.iter().filter(|h| !seen.iter().any(|(c, ..)| c == h)).collect();
+        let ([(right, _, view)], [wrong]) = (extra.as_slice(), missing.as_slice()) else { return };
+        // La carta che manca si è vista in tavola: l'ho giocata, non era una pescata letta male.
+        if self.vision.sightings.glimpsed(*wrong) {
+            return;
+        }
+        // Mentre aspetto l'avversario la mia mano non può cambiare: se cambia una carta pescata prima
+        // dell'ultima giocata, sono mosse che non si sono viste (una presa chiusa in un attimo), non
+        // una lettura sbagliata, e si corregge solo una pescata recente (o la briscola dell'ultima).
+        let recent_draws: Vec<Card> = self
+            .rec
+            .events
+            .iter()
+            .rev()
+            .take_while(|e| !matches!(e, Event::Giocata { .. }))
+            .filter_map(|e| match e {
+                Event::Pescata { carta } => Some(carta.id),
+                _ => None,
+            })
+            .collect();
+        let trump_draw = Some(*wrong) == self.pos.trump_card && self.pos.trump_card_owner == Some(ME);
+        let waiting = self.pos.step() == Step::OppMove;
+        if waiting && !recent_draws.contains(wrong) && !trump_draw {
+            return;
+        }
+        // La carta vista dev'essere ancora in gioco (non già uscita, né la briscola).
+        let out = self.pos.played.contains(*right) || self.pos.table == Some(*right) || self.pos.trump_card == Some(*right);
+        if out {
+            return;
+        }
+        let (wrong, right) = (*wrong, *right);
+        // All'ultima pescata la briscola era andata a me (avevo perso la presa), ma in mano non c'è
+        // e al suo posto c'è un'altra carta: la presa l'avevo vinta io, ho pescato la carta coperta
+        // e la briscola l'ha presa l'avversario. Si corregge mano, presa, punti e chi apre.
+        if Some(wrong) == self.pos.trump_card && self.pos.trump_card_owner == Some(ME) && !self.pos.played.contains(wrong) {
+            self.pos.hand.remove(wrong);
+            self.pos.hand.insert(right);
+            self.pos.trump_card_owner = Some(OPP);
+            if let Some(t) = self.tricks.last_mut() {
+                if t.winner == OPP {
+                    t.winner = ME;
+                    self.pos.points[OPP as usize] = self.pos.points[OPP as usize].saturating_sub(t.points);
+                    self.pos.points[ME as usize] += t.points;
+                    if self.pos.table.is_none() {
+                        self.pos.leader = ME;
+                    }
+                }
+            }
+            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&view.img, view.vis, right);
+            self.vision.status = format!("Ultima pescata corretta: la briscola l'ha presa l'avversario, io {}", cards::name(right));
+            self.rec.write(&self.pos);
+            self.changed();
+            return;
+        }
+        if self.correct_draw(wrong, right) {
+            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&view.img, view.vis, right);
+            self.vision.status = format!("Mano corretta: {} era {}", cards::name(wrong), cards::name(right));
+        }
     }
 
     /// Vero se lo schermo mostra una partita nuova: briscola scoperta, tre carte in mano e tavolo
@@ -702,78 +952,62 @@ impl Assistant {
             return false;
         }
         let fresh = scene.hand.len() == 3 && scene.opp_slot.is_none() && scene.my_slot.is_none();
-        let Some(known) = &self.vision.trump_img else {
-            // Prima lettura della briscola di questa partita (anche se l'utente l'ha scritta a mano).
-            self.vision.trump_img = Some(t.img.clone());
-            return fresh && self.pos.step() == Step::Over;
+        let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
+        // Una carta della mano nuova è già stata giocata in questa partita: è un'altra partita.
+        let replayed = scene.hand.iter().filter_map(sure).any(|c| self.pos.played.contains(c));
+        // Briscola diversa: dalla carta riconosciuta (regge anche se cambia lo sfondo), o, se non
+        // è sicura, dall'immagine.
+        let very_sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= 2.0 * AUTO_MARGIN).map(|b| b.0);
+        let other_trump = match very_sure(t) {
+            Some(c) => Some(c) != self.pos.trump_card,
+            None if sure(t).is_some() => false,
+            None => match &self.vision.trump_img {
+                Some(known) => similarity(known, &t.img, t.vis) < 0.75,
+                None => false,
+            },
         };
-        let other_trump = similarity(known, &t.img, t.vis) < 0.75;
         if !other_trump {
             // Segue i piccoli cambiamenti (il mazzo che si assottiglia sopra la briscola).
             self.vision.trump_img = Some(t.img.clone());
         }
-        fresh && (self.pos.step() == Step::Over || self.pos.deck_len == 0 || other_trump)
+        // A mazzo finito la briscola di solito sparisce, e se la si rivede è una partita nuova; ma
+        // alcuni siti la lasciano disegnata: lo è solo se in mano non c'è più nessuna mia carta.
+        // In una distribuzione nuova in mano non c'è più nessuna delle mie carte: una carta letta
+        // male (il sette per il sei) non basta a ricominciare.
+        let new_hand = scene.hand.iter().filter_map(sure).all(|c| !self.pos.hand.contains(c));
+        let deck_over = self.pos.deck_len == 0;
+        fresh && (self.pos.step() == Step::Over || (new_hand && (deck_over || other_trump || replayed)))
     }
 
-    /// Un passo della partita a partire dalla lettura dello schermo.
-    fn sync_step(&mut self, scene: &Scene) {
-        if self.new_deal(scene) {
-            self.reset();
-        }
-        let step = self.pos.step();
-        if step == Step::Over {
-            return;
-        }
-        if self.vision.confirm.is_some() {
-            return;
-        }
-        let pos = self.pos;
-        let allowed = pos.allowed();
-        let mut known = pos.played.union(pos.hand);
-        if let Some(t) = pos.table {
-            known.insert(t);
-        }
-        // Carta candidata per il passo corrente: (carta, distacco, immagine, vista a metà).
-        let candidate = match step {
-            Step::Trump => scene.trump.as_ref().and_then(|v| v.best(allowed).map(|(c, m)| (c, m, v))),
-            Step::First => {
-                // Chi gioca la prima carta ha cominciato.
-                if scene.opp_slot.is_some() {
-                    self.set_first(OPP);
-                } else if scene.my_slot.is_some() {
-                    self.set_first(ME);
-                }
-                return;
-            }
-            Step::Draw(_) => unmatched_hand(scene, &pos)
-                .into_iter()
-                .filter_map(|v| v.best(allowed.union(pos.played)).map(|(c, m)| (c, m, v)))
-                .filter(|(c, _, _)| allowed.contains(*c))
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()),
-            Step::OppMove => scene
-                .opp_slot
-                .as_ref()
-                .and_then(|v| v.best(allowed.union(known)).map(|(c, m)| (c, m, v)))
-                .filter(|(c, _, _)| allowed.contains(*c)),
-            Step::MyMove => scene
-                .my_slot
-                .as_ref()
-                .and_then(|v| v.best(known).map(|(c, m)| (c, m, v)))
-                .filter(|(c, _, _)| pos.hand.contains(*c)),
-            Step::Over => None,
+    /// Conta le letture in cui lo schermo contraddice la partita inserita (un'altra briscola, una
+    /// carta già giocata di nuovo in mano): se dura qualche secondo lo dice, invece di continuare
+    /// a seguire una partita che non è quella sullo schermo.
+    fn check_mismatch(&mut self, scene: &Scene) {
+        let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
+        let trump = scene.trump.as_ref().and_then(sure).filter(|&c| self.pos.trump_card.is_some_and(|t| t != c));
+        // (La briscola già giocata può restare disegnata al suo posto: non conta. E a mazzo finito,
+        // con la mano quasi vuota, le ultime carte giocate stanno nella riga più bassa e sembrano
+        // in mano: non si controlla.)
+        let late = self.pos.deck_len == 0 || self.pos.step() == Step::Over;
+        let replayed = scene
+            .hand
+            .iter()
+            .filter_map(sure)
+            .find(|&c| !late && self.pos.played.contains(c) && Some(c) != self.pos.trump_card);
+        self.vision.mismatch = match (trump, replayed) {
+            (None, None) => 0,
+            _ => self.vision.mismatch + 1,
         };
-        let Some((card, margin, view)) = candidate else { return };
-        let doubtful = self.vision.doubts.contains(&(step, card));
-        if margin >= AUTO_MARGIN && !doubtful {
-            let img = view.img.clone();
-            let len = self.history.len();
-            if self.enter(card) {
-                self.vision.memory.lock().unwrap().remember(&img, view.vis, card);
-                self.vision.last = Some((card, img, len));
-            }
-        } else {
-            self.vision.confirm =
-                Some(Confirm { step, card, img: view.img.clone(), vis: view.vis, texture: None });
+        // Circa tre secondi di letture stabili.
+        if self.vision.mismatch >= 8 {
+            let why = match (trump, replayed) {
+                (Some(c), _) => format!("sullo schermo la briscola è {}", cards::name(c)),
+                (_, Some(c)) => format!("in mano vedo {}, già giocato", cards::name(c)),
+                _ => String::new(),
+            };
+            self.vision.status = format!(
+                "Lo schermo non corrisponde alla partita inserita ({why}): se è una partita nuova premi \"Nuova partita\""
+            );
         }
     }
 
@@ -800,7 +1034,7 @@ impl Assistant {
     fn accept_vision(&mut self) {
         let Some(c) = self.vision.confirm.take() else { return };
         if c.step == self.pos.step() && self.enter(c.card) {
-            self.vision.memory.lock().unwrap().remember(&c.img, c.vis, c.card);
+            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&c.img, c.vis, c.card);
         }
     }
 
@@ -837,7 +1071,7 @@ impl Assistant {
                 self.set_vision(on, ui.ctx());
             }
             if on {
-                let n = self.vision.memory.lock().unwrap().len();
+                let n = self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).len();
                 ui.label(RichText::new(format!("{n}/40 carte in memoria")).small().weak())
                     .on_hover_text("Le carte già riconosciute si ricordano da sole e la volta dopo si riconoscono al primo colpo");
             }
@@ -1197,24 +1431,51 @@ impl Assistant {
         }
     }
 
-    /// Dove viene salvata la partita.
+    /// Registrazione di questa partita (la accende l'utente) e file da inviare.
     fn recording_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("● Registrazione automatica").color(Color32::LIGHT_RED).strong());
+            let mut on = self.rec.enabled;
+            let text = if on {
+                RichText::new("● Registra questa partita").color(Color32::LIGHT_RED).strong()
+            } else {
+                RichText::new("○ Registra questa partita").weak()
+            };
+            if ui
+                .checkbox(&mut on, text)
+                .on_hover_text("Accesa salva questa partita, anche le carte già inserite; spenta non salva niente. Ogni nuova partita parte spenta.")
+                .changed()
+            {
+                self.rec.set_enabled(on, &self.pos);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Apri cartella partite").clicked() {
                     record::open_dir();
                 }
+                if ui
+                    .button("Prepara file da inviare")
+                    .on_hover_text("Raccoglie tutte le partite registrate in un solo file, da allegare in un messaggio per allenare il motore sulle partite vere")
+                    .clicked()
+                {
+                    self.rec.export_msg = Some(match record::export(&self.rec.dir) {
+                        Ok((path, 0)) => format!("Nessuna partita registrata da inviare (creato comunque {})", path.display()),
+                        Ok((path, n)) => {
+                            record::show_file(&path);
+                            format!("Pronto: {} con {n} partite. Allegalo in un messaggio.", path.display())
+                        }
+                        Err(e) => format!("Impossibile preparare il file: {e}"),
+                    });
+                }
             });
         });
-        ui.label(
-            RichText::new(format!(
-                "Ogni partita viene salvata, dalla prima carta giocata, in {}",
-                self.rec.path().display()
-            ))
-            .small()
-            .weak(),
-        );
+        let note = if self.rec.enabled {
+            format!("Questa partita viene salvata, dalla prima carta giocata, in {}", self.rec.path().display())
+        } else {
+            "Questa partita non viene salvata.".to_string()
+        };
+        ui.label(RichText::new(note).small().weak());
+        if let Some(m) = &self.rec.export_msg {
+            ui.label(RichText::new(m).small().color(GOLD));
+        }
         if let Some(e) = &self.rec.error {
             ui.label(RichText::new(e).color(Color32::LIGHT_RED));
         }
@@ -1338,7 +1599,12 @@ impl Assistant {
 /// Carte della mano sullo schermo tolte quelle che corrispondono alle carte già in mano
 /// (a ciascuna carta nota la vista che le somiglia di più).
 fn unmatched_hand<'a>(scene: &'a Scene, pos: &Position) -> Vec<&'a CardView> {
-    let mut views: Vec<&CardView> = scene.hand.iter().collect();
+    unmatched(scene.hand.iter().collect(), pos)
+}
+
+/// Le carte viste (`views`) che restano togliendo, per ogni carta in mano, quella che le somiglia
+/// di più.
+fn unmatched<'a>(mut views: Vec<&'a CardView>, pos: &Position) -> Vec<&'a CardView> {
     for k in pos.hand.iter() {
         let best = (0..views.len())
             .max_by(|&a, &b| views[a].scores[k as usize].partial_cmp(&views[b].scores[k as usize]).unwrap());
@@ -1456,6 +1722,254 @@ pub fn tracker(ui: &mut egui::Ui, gone: CardSet, mine: CardSet) {
     ui.label(RichText::new("Barrate = uscite, evidenziate = in mano a te").weak().small());
 }
 
+/// Quante volte e quando una carta è stata vista in un posto (in mano o in tavola), e quanto
+/// stacca la seconda carta più probabile nella lettura migliore.
+#[derive(Clone, Copy, Default)]
+struct Sighting {
+    count: u32,
+    first: u64,
+    last: u64,
+    margin: f32,
+}
+
+impl Sighting {
+    fn bump(&mut self, frame: u64, margin: f32) {
+        if self.count == 0 {
+            self.first = frame;
+        }
+        self.count += 1;
+        self.last = frame;
+        self.margin = self.margin.max(margin);
+    }
+
+    /// Vista abbastanza da crederci: due volte con sicurezza, o molte volte sempre uguale.
+    fn sure(&self) -> bool {
+        (self.count >= 2 && self.margin >= AUTO_MARGIN) || (self.count >= 5 && self.margin >= 0.8)
+    }
+}
+
+/// Le carte viste durante la partita. La partita si ricostruisce da qui con le regole del gioco:
+/// una carta che era in mano mia e va in tavola (o sparisce dalla mano) l'ho giocata io; una carta
+/// mai stata in mano mia che compare in tavola l'ha giocata l'avversario; una carta nuova in mano
+/// è una pescata. Così non conta né quanto in fretta il sito chiude le prese, né dove disegna le
+/// carte, né se due letture di fila sono uguali.
+#[derive(Default)]
+struct Sightings {
+    frame: u64,
+    hand: Vec<Sighting>,
+    table: Vec<Sighting>,
+    /// L'ultima immagine (e fascia visibile) di ogni carta, per ricordarla.
+    views: Vec<Option<(Img, [f32; 2])>>,
+    /// Le letture della mano tutte riconosciute con sicurezza: (lettura, carte).
+    full_hands: Vec<(u64, Vec<Card>)>,
+    /// Quante carte avevo in mano quando è comparsa la prima carta in tavola.
+    hand_at_first_play: Option<usize>,
+}
+
+/// Distacco minimo perché una lettura conti come avvistamento.
+const SIGHT_MARGIN: f32 = 0.8;
+
+impl Sightings {
+    fn update(&mut self, scene: &Scene) {
+        if self.hand.is_empty() {
+            self.hand = vec![Sighting::default(); 40];
+            self.table = vec![Sighting::default(); 40];
+            self.views = vec![None; 40];
+        }
+        self.frame += 1;
+        let f = self.frame;
+        let mut full = Vec::new();
+        let mut all_sure = !scene.hand.is_empty();
+        for v in &scene.hand {
+            match v.best(CardSet::FULL) {
+                Some((c, m)) if m >= SIGHT_MARGIN => {
+                    self.hand[c as usize].bump(f, m);
+                    self.views[c as usize] = Some((v.img.clone(), v.vis));
+                    all_sure &= m >= AUTO_MARGIN;
+                    full.push(c);
+                }
+                // Letta senza sicurezza (coperta proprio dove due carte differiscono): conta come
+                // avvistamento incerto, e se si ripete si chiede conferma.
+                Some((c, m)) => {
+                    self.hand[c as usize].bump(f, m);
+                    if self.views[c as usize].is_none() {
+                        self.views[c as usize] = Some((v.img.clone(), v.vis));
+                    }
+                    all_sure = false;
+                }
+                None => all_sure = false,
+            }
+        }
+        if all_sure {
+            self.full_hands.push((f, full));
+            if self.full_hands.len() > 4 {
+                self.full_hands.remove(0);
+            }
+        }
+        let table: Vec<&CardView> = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().collect();
+        if !table.is_empty() && self.hand_at_first_play.is_none() {
+            self.hand_at_first_play = Some(scene.hand.len());
+        }
+        // (In tavola si tengono anche le letture incerte: se si ripetono, si propone la carta da
+        // confermare invece di chiederla da scrivere.)
+        for v in table {
+            if let Some((c, m)) = v.best(CardSet::FULL).filter(|b| b.1 >= 0.3) {
+                self.table[c as usize].bump(f, m);
+                self.views[c as usize] = Some((v.img.clone(), v.vis));
+            }
+        }
+    }
+
+    /// In mano c'è con sicurezza una carta che non ho ancora: ho già pescato dopo la presa in corso.
+    fn drew_after(&self, pos: &Position) -> bool {
+        let allowed = pos.allowed().union(CardSet::FULL.minus(pos.played).minus(pos.hand));
+        (0..40u8).any(|c| allowed.contains(c) && !pos.hand.contains(c) && Some(c) != pos.table && self.in_hand(c) && !self.on_table(c))
+    }
+
+    /// Vista nelle ultime letture.
+    fn recent(&self, s: &Sighting) -> bool {
+        self.frame.saturating_sub(s.last) <= 6
+    }
+
+    fn view(&self, c: Card) -> Option<(Img, [f32; 2])> {
+        self.views.get(c as usize).cloned().flatten()
+    }
+
+    fn in_hand(&self, c: Card) -> bool {
+        self.hand.get(c as usize).is_some_and(|s| s.sure())
+    }
+
+    /// Vista in tavola: due volte con sicurezza, o una volta sola se poi è sparita (il sito ha
+    /// chiuso la presa prima della lettura dopo).
+    fn on_table(&self, c: Card) -> bool {
+        self.table.get(c as usize).is_some_and(|s| s.sure() || (s.count >= 1 && s.margin >= AUTO_MARGIN && s.last < self.frame))
+    }
+
+    /// Vista in tavola almeno una volta, anche senza sicurezza.
+    fn glimpsed(&self, c: Card) -> bool {
+        self.table.get(c as usize).is_some_and(|s| s.count >= 1)
+    }
+
+    /// Chi ha aperto la partita: la prima carta comparsa in tavola (anche letta male) era mia se
+    /// l'avevo vista in mano, o se in quel momento in mano me ne restavano due.
+    fn first_player(&self, pos: &Position) -> Option<u8> {
+        if !(0..40u8).any(|c| Some(c) != pos.trump_card && self.on_table(c)) {
+            return None;
+        }
+        let lead = self.first_table_card(pos)?;
+        Some(if self.in_hand(lead) || self.hand_at_first_play == Some(2) { ME } else { OPP })
+    }
+
+    /// La prossima pescata: la carta vista in mano da più tempo fra quelle non ancora inserite.
+    /// All'inizio, se ho aperto io senza che la mia carta si vedesse prima in mano, è quella.
+    fn next_draw(&self, pos: &Position) -> Option<(Card, bool)> {
+        let allowed = pos.allowed();
+        let opening = pos.tricks == 0 && pos.first == Some(ME) && pos.table.is_none();
+        let lead = if opening { self.first_table_card(pos) } else { None };
+        let sure = (0..40u8)
+            .filter(|&c| allowed.contains(c) && self.in_hand(c))
+            .min_by_key(|&c| self.hand[c as usize].first);
+        // Devo ancora pescare ma la presa dopo è già cominciata: per l'ordine di gioco la mia carta
+        // è la prima comparsa in tavola se apro io, la seconda se apre l'avversario. Se non è fra
+        // quelle che so di avere, è proprio la pescata (giocata prima che la vedessi in mano).
+        if pos.tricks > 0 && pos.table.is_none() && sure.is_none() {
+            let mut new: Vec<Card> = (0..40u8)
+                .filter(|&c| !pos.played.contains(c) && Some(c) != pos.trump_card && self.on_table(c))
+                .collect();
+            new.sort_by_key(|&c| self.table[c as usize].first);
+            // (Se in tavola c'è una carta che so di avere, è quella la mia di questa presa: ne gioco
+            // una sola.)
+            let known = new.iter().any(|&c| pos.hand.contains(c));
+            let mine = new.get(if pos.leader == ME { 0 } else { 1 }).copied().filter(|_| !known);
+            if let Some(c) = mine.filter(|&c| allowed.contains(c)) {
+                return Some((c, true));
+            }
+        }
+        if let Some(c) = sure {
+            return Some((c, true));
+        }
+        if let Some(c) = lead.filter(|&c| allowed.contains(c)) {
+            return Some((c, self.on_table(c)));
+        }
+        // Una carta nuova in mano vista molte volte, ma mai con sicurezza (coperta proprio dove
+        // differisce da un'altra): si aspetta, perché quando la gioco si vede in tavola; se resta
+        // incerta per qualche secondo si chiede.
+        (0..40u8)
+            .filter(|&c| {
+                let h = &self.hand[c as usize];
+                // (Se poi è comparsa in tavola, anche lì incerta, aspettare non serve più.)
+                let played = self.glimpsed(c) && self.recent(&self.table[c as usize]);
+                allowed.contains(c) && ((h.count >= 20 && self.recent(h)) || (h.count >= 3 && played))
+            })
+            .max_by_key(|&c| (self.hand[c as usize].count, (self.hand[c as usize].margin * 10.0) as i32))
+            .map(|c| (c, false))
+    }
+
+    /// La prima carta comparsa in tavola fra quelle non ancora giocate (anche letta male).
+    fn first_table_card(&self, pos: &Position) -> Option<Card> {
+        (0..40u8)
+            .filter(|&c| Some(c) != pos.trump_card && self.glimpsed(c) && !pos.played.contains(c))
+            .min_by_key(|&c| (self.table[c as usize].first, std::cmp::Reverse((self.table[c as usize].margin * 10.0) as i32)))
+    }
+
+    /// La mia prossima giocata: una mia carta vista in tavola, o sparita dalla mano mentre al suo
+    /// posto è arrivata la pescata (o, a mazzo finito, la mano si è accorciata).
+    fn next_my_play(&self, pos: &Position, scene: &Scene) -> Option<(Card, bool)> {
+        if let Some(c) = pos
+            .hand
+            .iter()
+            .filter(|&c| self.on_table(c) && self.table[c as usize].last >= self.hand[c as usize].first)
+            .min_by_key(|&c| self.table[c as usize].first)
+        {
+            return Some((c, true));
+        }
+        if let Some(c) = self.played_from_hand(pos, scene) {
+            return Some((c, true));
+        }
+        // Una mia carta vista in tavola più volte ma senza sicurezza: si chiede.
+        pos.hand
+            .iter()
+            .filter(|&c| self.table[c as usize].count >= 2 && self.recent(&self.table[c as usize]))
+            .max_by_key(|&c| self.table[c as usize].count)
+            .map(|c| (c, false))
+    }
+
+    /// La mia carta sparita dalla mano mentre al suo posto è arrivata la pescata (o, a mazzo
+    /// finito, la mano si è accorciata).
+    fn played_from_hand(&self, pos: &Position, scene: &Scene) -> Option<Card> {
+        // Le ultime due letture sicure della mano dicono la stessa cosa.
+        let [.., (_, a), (_, b)] = self.full_hands.as_slice() else { return None };
+        if a != b || b.len() != scene.hand.len() {
+            return None;
+        }
+        let missing: Vec<Card> = pos.hand.iter().filter(|c| !b.contains(c)).collect();
+        let new = b.iter().filter(|c| !pos.hand.contains(**c)).count();
+        let n = pos.hand.len() as usize;
+        let fits = (b.len() == n && new == 1) || (b.len() + 1 == n && new == 0 && pos.deck_len == 0);
+        match missing.as_slice() {
+            [c] if fits => Some(*c),
+            _ => None,
+        }
+    }
+
+    /// La prossima giocata dell'avversario: una carta mai stata in mano mia comparsa in tavola,
+    /// la prima in ordine di tempo.
+    fn next_opp_play(&self, pos: &Position, scene: &Scene) -> Option<(Card, bool)> {
+        let allowed = pos.allowed();
+        let _ = scene;
+        let candidates = (0..40u8).filter(|&c| allowed.contains(c) && !self.in_hand(c));
+        if let Some(c) = candidates.clone().filter(|&c| self.on_table(c)).min_by_key(|&c| self.table[c as usize].first) {
+            return Some((c, true));
+        }
+        // Vista più volte di recente ma senza sicurezza: si chiede (una lettura sbagliata di tanto
+        // tempo fa non conta).
+        candidates
+            .filter(|&c| self.table[c as usize].count >= 2 && self.recent(&self.table[c as usize]))
+            .max_by_key(|&c| (self.table[c as usize].count, (self.table[c as usize].margin * 10.0) as i32))
+            .map(|c| (c, false))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1548,11 +2062,13 @@ mod tests {
 
     #[test]
     fn records_games() {
-        let dir = std::env::temp_dir().join(format!("brismaster-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("brismaster-test-rec-{}", std::process::id()));
+        let dir = root.join("Partite");
         let mut rng = SmallRng::seed_from_u64(5);
         let mut g = Game::new(&mut rng, ME);
         let mut a = Assistant::default();
         a.rec.dir = dir.clone();
+        assert!(!a.rec.enabled, "la registrazione parte spenta");
         assert!(a.enter(g.trump_card));
         a.set_first(ME);
         for c in g.hands[0].iter() {
@@ -1579,6 +2095,11 @@ mod tests {
                     assert!(a.enter(d));
                 }
             }
+            // A metà partita accendo la registrazione: si salva tutta, anche l'inizio.
+            if a.pos.tricks == 10 && !a.rec.enabled {
+                assert!(!dir.exists() || std::fs::read_dir(&dir).unwrap().next().is_none(), "spenta non salva");
+                a.rec.set_enabled(true, &a.pos);
+            }
         }
         let path = a.rec.path().to_path_buf();
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -1592,12 +2113,52 @@ mod tests {
         // L'ultima presa si inserisce da sola: la tua ultima carta e quella dell'avversario.
         let autos: Vec<_> = a.history.iter().filter(|h| h.3).map(|h| h.0.step()).collect();
         assert!(autos.len() >= 2, "{autos:?} {:?}", a.pos.step());
+        // Il file da inviare raccoglie la partita, accanto alla cartella delle partite.
+        let (bundle, n) = record::export(&dir).unwrap();
+        assert_eq!((n, bundle.parent().unwrap()), (1, root.as_path()));
+        let b: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&bundle).unwrap()).unwrap();
+        assert_eq!(b["partite"][0]["eventi"], v["eventi"]);
+        assert!(b["partite"][0]["file"].as_str().unwrap().starts_with("partita_"));
         // Annullare tutto cancella il file di una partita mai cominciata.
         while !a.history.is_empty() {
             a.undo();
         }
         assert!(!path.exists());
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Spegnere la registrazione cancella il file della partita; le partite salvate in
+    /// automatico dalle versioni precedenti si cancellano una volta sola.
+    #[test]
+    fn recording_is_chosen_by_the_user() {
+        let root = std::env::temp_dir().join(format!("brismaster-test-scelta-{}", std::process::id()));
+        let dir = root.join("Partite");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("partita_2026-11-01_10-00-00.json"), "{}").unwrap();
+        std::fs::write(dir.join("appunti.txt"), "mio").unwrap();
+        std::fs::write(root.join(record::EXPORT_NAME), "{}").unwrap();
+        assert_eq!(record::remove_automatic_once(&dir), 1);
+        assert!(dir.join("appunti.txt").exists() && !root.join(record::EXPORT_NAME).exists());
+        let mut a = Assistant::default();
+        a.rec.dir = dir.clone();
+        let mut rng = SmallRng::seed_from_u64(9);
+        let g = Game::new(&mut rng, ME);
+        assert!(a.enter(g.trump_card));
+        a.set_first(ME);
+        for c in g.hands[0].iter() {
+            assert!(a.enter(c));
+        }
+        assert!(a.enter(g.hands[0].iter().next().unwrap()));
+        a.rec.set_enabled(true, &a.pos);
+        let path = a.rec.path().to_path_buf();
+        assert!(path.exists());
+        a.rec.set_enabled(false, &a.pos);
+        assert!(!path.exists());
+        // La seconda volta non cancella più niente, nemmeno le partite registrate a scelta.
+        a.rec.set_enabled(true, &a.pos);
+        assert_eq!(record::remove_automatic_once(&dir), 0);
+        assert!(a.rec.path().exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Inserimento da tastiera: la carta entra appena si digita il seme, senza Invio.
@@ -1707,6 +2268,131 @@ mod tests {
         assert_eq!(a.pos.tricks, 1);
     }
 
+    /// Una pescata inserita sbagliata (qui scritta a mano): quando lo schermo mostra la mano vera,
+    /// la carta si corregge da sola e la partita prosegue come se fosse stata giusta dall'inizio.
+    #[test]
+    fn corrects_a_wrong_draw_from_the_screen() {
+        let mut a = Assistant::default();
+        let c = |s, r| cards::make(s, r);
+        let mut scene = Scene { trump: Some(seen(c(0, 8), 4.0)), ..Default::default() };
+        show(&mut a, &scene);
+        scene.hand = vec![seen(c(3, 1), 4.0), seen(c(2, 6), 4.0), seen(c(1, 0), 4.0)];
+        show(&mut a, &scene);
+        scene.opp_slot = Some(seen(c(3, 2), 4.0));
+        show(&mut a, &scene);
+        scene.hand.remove(0);
+        scene.my_slot = Some(seen(c(3, 1), 4.0));
+        show(&mut a, &scene);
+        assert!(matches!(a.pos.step(), Step::Draw(_)));
+        // Pesco il 4 di denari ma scrivo il 5.
+        assert!(a.enter(c(0, 4)));
+        assert!(a.pos.hand.contains(c(0, 4)));
+        let tricks = a.pos.tricks;
+        // Il sito toglie le carte dal tavolo e mostra la mano vera.
+        let scene = Scene {
+            trump: Some(seen(c(0, 8), 4.0)),
+            hand: vec![seen(c(2, 6), 4.0), seen(c(1, 0), 4.0), seen(c(0, 3), 4.0)],
+            ..Default::default()
+        };
+        show(&mut a, &scene);
+        assert!(a.pos.hand.contains(c(0, 3)), "corretta");
+        assert!(!a.pos.hand.contains(c(0, 4)));
+        assert_eq!(a.pos.tricks, tricks, "la presa resta");
+        assert!(a.vision.status.contains("Mano corretta"), "{}", a.vision.status);
+        // La carta sbagliata torna fra quelle ancora in gioco.
+        assert!(a.pos.allowed().contains(c(0, 4)) || !a.pos.played.contains(c(0, 4)));
+    }
+
+    /// Screenshot veri di Solitalian: una partita sul tavolo di legno, poi il sito cambia sfondo
+    /// (il mare) e distribuisce una partita nuova. L'app riparte da sola con la briscola e la mano
+    /// nuove, riconosciute dallo schermo.
+    #[test]
+    fn follows_a_new_game_after_a_background_change() {
+        let shot = |name: &str| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join(name);
+            crate::vision::capture::load_png(&path).unwrap()
+        };
+        let mut a = Assistant::default();
+        let mem = a.vision.memory.clone();
+        let wood = read_briscola(&shot("solitalian_briscola.png"), &mem).expect("legno");
+        show(&mut a, &wood);
+        let c = |s, r| cards::make(s, r);
+        assert_eq!(a.pos.trump_card, Some(c(1, 4)));
+        a.set_first(ME);
+        show(&mut a, &wood);
+        assert_eq!(a.pos.hand.len(), 3);
+        assert_eq!(a.pos.step(), Step::MyMove);
+        let sea = read_briscola(&shot("solitalian_mare.jpg"), &mem).expect("mare");
+        // La partita nuova si riconosce dopo qualche lettura uguale (circa un secondo e mezzo).
+        for _ in 0..3 {
+            show(&mut a, &sea);
+        }
+        assert_eq!(a.pos.trump_card, Some(c(3, 1)), "briscola della partita nuova");
+        assert_eq!(a.pos.step(), Step::First, "si aspetta chi comincia");
+        a.set_first(OPP);
+        show(&mut a, &sea);
+        let hand: Vec<Card> = a.pos.hand.iter().collect();
+        let mut want = vec![c(0, 3), c(3, 8), c(2, 0)];
+        want.sort();
+        assert_eq!(hand, want, "mano della partita nuova");
+    }
+
+    /// A metà partita il sito cambia sfondo (stessa partita, stesse carte): l'app non deve
+    /// scambiarlo per una partita nuova e ricominciare.
+    #[test]
+    fn keeps_the_game_when_the_background_changes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/solitalian_briscola.png");
+        let wood = crate::vision::capture::load_png(&path).unwrap();
+        // Lo stesso tavolo con lo sfondo blu al posto del legno (le carte restano com'erano).
+        let mut blue = wood.clone();
+        let cards_at = [(140, 420, 320, 570), (505, 740, 885, 915)];
+        for (i, p) in blue.px.iter_mut().enumerate() {
+            let (x, y) = (i % wood.w, i / wood.w);
+            let on_card = cards_at.iter().any(|&(x0, y0, x1, y1)| (x0..x1).contains(&x) && (y0..y1).contains(&y));
+            let [r, g, b] = *p;
+            if !on_card && r > g && g > b && r < 235 {
+                *p = [b / 3, g / 2, r];
+            }
+        }
+        let mut a = Assistant::default();
+        let mem = a.vision.memory.clone();
+        let scene = read_briscola(&wood, &mem).expect("legno");
+        show(&mut a, &scene);
+        a.set_first(ME);
+        show(&mut a, &scene);
+        assert_eq!(a.pos.step(), Step::MyMove);
+        let before = a.history.len();
+        let other = read_briscola(&blue, &mem).expect("sfondo blu");
+        assert!(other.trump.is_some() && other.hand.len() == 3);
+        show(&mut a, &other);
+        show(&mut a, &other);
+        assert_eq!(a.history.len(), before, "nessuna partita nuova");
+        assert_eq!(a.pos.step(), Step::MyMove);
+    }
+
+    /// A metà partita lo schermo mostra un'altra briscola (un'altra partita, senza la
+    /// distribuzione nuova): dopo qualche secondo l'app lo dice invece di continuare in silenzio.
+    #[test]
+    fn warns_when_the_screen_is_another_game() {
+        let mut a = Assistant::default();
+        let c = |s, r| cards::make(s, r);
+        let hand = vec![seen(c(3, 1), 4.0), seen(c(2, 6), 4.0), seen(c(1, 0), 4.0)];
+        let scene = Scene { trump: Some(seen(c(0, 8), 4.0)), hand: hand.clone(), ..Default::default() };
+        show(&mut a, &scene);
+        a.set_first(ME);
+        let other = Scene {
+            trump: Some(seen(c(2, 2), 4.0)),
+            hand: hand.clone(),
+            opp_slot: Some(seen(c(1, 5), 4.0)),
+            ..Default::default()
+        };
+        for _ in 0..10 {
+            a.sync(&other);
+        }
+        assert_eq!(a.pos.trump_card, Some(c(0, 8)), "la partita inserita resta");
+        assert!(a.vision.status.contains("non corrisponde"), "{}", a.vision.status);
+    }
+
     /// Una partita interrotta a metà: quando compare un'altra briscola con tre carte nuove in mano
     /// e il tavolo vuoto, si riparte da capo senza premere "Nuova partita".
     #[test]
@@ -1726,7 +2412,9 @@ mod tests {
         // Il sito distribuisce di nuovo: briscola diversa.
         let new_hand = vec![seen(c(2, 0), 4.0), seen(c(3, 4), 4.0), seen(c(1, 5), 4.0)];
         let deal = Scene { trump: Some(seen(c(1, 2), 4.0)), hand: new_hand, ..Default::default() };
-        show(&mut a, &deal);
+        for _ in 0..3 {
+            show(&mut a, &deal);
+        }
         assert_eq!(a.pos.trump_card, Some(c(1, 2)));
         assert_eq!(a.pos.step(), Step::First);
     }
@@ -1742,7 +2430,7 @@ mod tests {
         assert_eq!(a.vision.confirm.as_ref().map(|c| c.card), Some(cards::make(0, 7)));
         a.accept_vision();
         assert_eq!(a.pos.trump_card, Some(cards::make(0, 7)));
-        assert_eq!(a.vision.memory.lock().unwrap().len(), 1, "confermata: ora la ricorda");
+        assert_eq!(a.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).len(), 1, "confermata: ora la ricorda");
 
         let mut b = Assistant::default();
         let scene = Scene { trump: Some(seen(cards::make(2, 2), 4.0)), ..Default::default() };
@@ -1750,7 +2438,7 @@ mod tests {
         assert_eq!(b.pos.trump_card, Some(cards::make(2, 2)));
         b.undo();
         assert!(b.pos.trump_card.is_none());
-        assert_eq!(b.vision.memory.lock().unwrap().len(), 0, "annullata: dimenticata");
+        assert_eq!(b.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).len(), 0, "annullata: dimenticata");
         show(&mut b, &scene);
         assert!(b.pos.trump_card.is_none() && b.vision.confirm.is_some(), "ora chiede conferma");
     }
@@ -1781,4 +2469,396 @@ mod tests {
         let r = explain(&obs, &evals);
         assert!(r[0].starts_with("Prendi la presa"), "{r:?}");
     }
+
+    /// Una partita intera giocata su un tavolo finto e seguita solo dallo schermo, come la vedrebbe
+    /// l'app: ogni fotogramma del sito (carta giocata, risposta, presa che resta in tavola, pescata,
+    /// tavolo sgombro) passa dalla lettura vera dello schermo. `linger` tiene la presa in tavola
+    /// anche dopo la pescata (molti siti la lasciano un momento). Restituisce le prese seguite e le
+    /// conferme chieste, o dove si è fermata.
+    fn play_on_screen(
+        seed: u64,
+        style: usize,
+        look: crate::vision::synth::Look,
+        linger: bool,
+        flicker: bool,
+    ) -> Result<(u8, u32), String> {
+        use crate::vision::reference::card_image;
+        use crate::vision::synth::{table, Deal};
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let first = (seed % 2) as u8;
+        let mut g = Game::new(&mut rng, first);
+        let imgs: Vec<Img> = (0..40u8).map(|c| card_image(style, c)).collect();
+        let mut a = Assistant::default();
+        let mut confirms = 0;
+        // La mano sullo schermo, nell'ordine in cui il sito la disegna.
+        let mut hand: Vec<Card> = g.hands[0].iter().collect();
+        let mut frame = 0;
+        let mut look_at = |a: &mut Assistant, hand: &[Card], opp: Option<Card>, mine: Option<Card>, g: &Game, what: &str| -> Result<(), String> {
+            let trump = (g.deck_len > 0).then(|| &imgs[g.trump_card as usize]);
+            let deal = Deal {
+                hand: hand.iter().map(|&c| &imgs[c as usize]).collect(),
+                opp: opp.map(|c| &imgs[c as usize]),
+                mine: mine.map(|c| &imgs[c as usize]),
+                trump,
+                deck: g.deck_len > 1,
+            };
+            let img = table(&deal, &look);
+            frame += 1;
+            if let Ok(d) = std::env::var("SALVA") {
+                img.save_png(std::path::Path::new(&format!("{d}/partita_{seed}_{frame:03}.png"))).unwrap();
+            }
+            let Some(scene) = read_briscola(&img, &a.vision.memory) else { return Ok(()) };
+            show(a, &scene);
+            if flicker {
+                // Mentre lo schermo è fermo, una lettura vede la briscola come un'altra carta, con
+                // sicurezza; poi torna giusta.
+                let mut wrong = scene.clone();
+                if let Some(t) = &mut wrong.trump {
+                    let other = (g.trump_card as usize + 7) % 40;
+                    t.scores.swap(g.trump_card as usize, other);
+                    t.sim.swap(g.trump_card as usize, other);
+                }
+                a.sync(&wrong);
+                show(a, &scene);
+            }
+            // L'utente conferma le carte che l'app chiede (se sono giuste).
+            for _ in 0..3 {
+                let Some(c) = &a.vision.confirm else { break };
+                let right = match c.step {
+                    Step::Trump => Some(g.trump_card),
+                    _ => None,
+                };
+                if right.is_some_and(|r| r != c.card) {
+                    return Err(format!("{what}: chiede conferma di {} invece di {}", cards::name(c.card), cards::name(right.unwrap())));
+                }
+                confirms += 1;
+                a.accept_vision();
+                show(a, &scene);
+            }
+            Ok(())
+        };
+        let check = |a: &Assistant, g: &Game, what: &str| -> Result<(), String> {
+            let (o, real) = (a.pos.observation(), Observation::of(g, 0));
+            if a.pos.step() == Step::Trump || a.pos.step() == Step::First || matches!(a.pos.step(), Step::Draw(_)) && a.pos.tricks == 0 {
+                return Err(format!("{what}: ferma al passo {:?}", a.pos.step()));
+            }
+            // L'ultima carta la gioca l'app da sola: può essere avanti di una presa.
+            if g.deck_len == 0 && g.hands[0].len() <= 1 {
+                return Ok(());
+            }
+            if o.hand != real.hand || o.table != real.table || o.played != real.played || o.leader != real.leader {
+                return Err(format!(
+                    "{what}: passo {:?}, prese {} (vere {}), mano {:?} (vera {:?}), tavolo {:?} (vero {:?})",
+                    a.pos.step(),
+                    a.pos.tricks,
+                    real.played.len() / 2,
+                    o.hand.iter().map(cards::name).collect::<Vec<_>>(),
+                    real.hand.iter().map(cards::name).collect::<Vec<_>>(),
+                    o.table.map(cards::name),
+                    real.table.map(cards::name)
+                ));
+            }
+            Ok(())
+        };
+        // L'inizio: briscola e mano, tavolo vuoto.
+        look_at(&mut a, &hand, None, None, &g, "inizio")?;
+        while !g.is_over() {
+            let n = g.played.len() / 2 + 1;
+            let mut slots: [Option<Card>; 2] = [None, None];
+            let mut drawn = Vec::new();
+            for turn in 0..2 {
+                let p = g.to_move();
+                let m = g.legal_moves().to_vec();
+                let c = m[rng.gen_range(0..m.len())];
+                let before = g.hands[0];
+                g.play(c);
+                slots[p as usize] = Some(c);
+                if p == ME {
+                    hand.retain(|&h| h != c);
+                }
+                drawn = g.hands[0].minus(before).iter().filter(|d| !hand.contains(d)).collect();
+                let what = format!("presa {n}, {} gioca {}", if p == ME { "io" } else { "lui" }, cards::name(c));
+                look_at(&mut a, &hand, slots[1], slots[0], &g, &what)?;
+                if turn == 0 {
+                    check(&a, &g, &what)?;
+                }
+            }
+            // La presa resta in tavola un momento.
+            look_at(&mut a, &hand, slots[1], slots[0], &g, &format!("presa {n} in tavola"))?;
+            hand.extend(drawn);
+            if linger {
+                look_at(&mut a, &hand, slots[1], slots[0], &g, &format!("presa {n}, pescata con la presa in tavola"))?;
+            }
+            look_at(&mut a, &hand, None, None, &g, &format!("presa {n}, pescata"))?;
+            check(&a, &g, &format!("dopo la presa {n}"))?;
+        }
+        Ok((a.pos.tricks, confirms))
+    }
+
+    /// Partite intere seguite dallo schermo, su tavoli diversi: non si fermano mai e finiscono
+    /// con la partita giusta. Sull'ultimo tavolo una lettura su tre vede la briscola sbagliata.
+    #[test]
+    fn follows_whole_games_on_screen() {
+        use crate::vision::synth::{Bg, Look};
+        let d = Look::default();
+        let looks = [d, Look { bg: Bg::Wood, card_h: 150.0, pile: 0.8, ..d }, Look { writing: true, logo: 0.5, ..d }];
+        let mut failed = Vec::new();
+        for (k, look) in looks.iter().enumerate() {
+            for (seed, linger) in [(k as u64 * 2 + 1, false), (k as u64 * 2 + 2, true)] {
+                match play_on_screen(seed, k % 2, *look, linger, k == 2) {
+                    Ok((tricks, confirms)) => {
+                        println!("tavolo {k} partita {seed}: {tricks} prese, {confirms} conferme");
+                        if tricks != 20 {
+                            failed.push(format!("tavolo {k} partita {seed}: {tricks} prese"));
+                        }
+                    }
+                    Err(e) => failed.push(format!("tavolo {k} partita {seed}: {e}")),
+                }
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// Più partite su più tavoli, stampate una per una.
+    /// `cargo test --release -p brismaster banco_partite -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn banco_partite() {
+        use crate::vision::synth::{Bg, Look};
+        let d = Look::default();
+        let looks = [
+            Look { writing: true, logo: 0.8, ..d },
+            Look { bg: Bg::Sea, card_h: 130.0, ..d },
+            Look { bg: Bg::Sky, card_h: 140.0, pile: 0.8, cover: 0.5, writing: true, ..d },
+            Look { bg: Bg::Felt([30, 60, 140]), card_h: 110.0, aspect: Some(0.68), fan: 6.0, ..d },
+            Look { bg: Bg::Wood, card_h: 130.0, blur: true, logo: 0.4, ..d },
+        ];
+        let (mut ok, mut n) = (0, 0);
+        for (k, look) in looks.iter().enumerate() {
+            for seed in [100 + k as u64 * 2, 101 + k as u64 * 2] {
+                n += 1;
+                match play_on_screen(seed, k % 2, *look, seed % 2 == 0, k % 2 == 0) {
+                    Ok((t, c)) => {
+                        ok += (t == 20) as usize;
+                        println!("tavolo {k} partita {seed}: {t} prese, {c} conferme");
+                    }
+                    Err(e) => println!("tavolo {k} partita {seed}: {e}"),
+                }
+            }
+        }
+        println!("== partite finite: {ok}/{n}");
+    }
+
+    /// La briscola letta in modo diverso una lettura sì e una no (sicura ma sbagliata) non fa
+    /// ricominciare la partita, e la partita prosegue.
+    #[test]
+    fn a_flickering_trump_does_not_restart_the_game() {
+        let mut a = Assistant::default();
+        let c = |s, r| cards::make(s, r);
+        let hand = vec![seen(c(3, 1), 4.0), seen(c(2, 6), 4.0), seen(c(1, 0), 4.0)];
+        let mut scene = Scene { trump: Some(seen(c(0, 8), 4.0)), hand: hand.clone(), ..Default::default() };
+        show(&mut a, &scene);
+        a.set_first(OPP);
+        show(&mut a, &scene);
+        assert_eq!(a.pos.step(), Step::OppMove);
+        let wrong = Scene { trump: Some(seen(c(2, 3), 4.0)), ..scene.clone() };
+        for _ in 0..6 {
+            a.sync(&wrong);
+            a.sync(&scene);
+        }
+        assert_eq!(a.pos.trump_card, Some(c(0, 8)), "la partita è ricominciata");
+        assert_eq!(a.pos.first, Some(OPP));
+        // L'avversario gioca mentre la briscola continua a cambiare: la carta entra lo stesso.
+        scene.opp_slot = Some(seen(c(3, 2), 4.0));
+        let wrong = Scene { trump: Some(seen(c(2, 3), 4.0)), ..scene.clone() };
+        for _ in 0..3 {
+            a.sync(&scene);
+            a.sync(&wrong);
+        }
+        assert_eq!(a.pos.table, Some(c(3, 2)));
+        assert_eq!(a.pos.trump_card, Some(c(0, 8)));
+    }
+
+    /// Partite registrate dal tavolo di prova (una schermata ogni 350 ms, con la situazione vera):
+    /// le schermate passano all'app una alla volta, come dal vivo. Stampa dove l'app si ferma o
+    /// sbaglia. `PARTITE=cartella cargo test --release -p brismaster partite_registrate -- --ignored --nocapture`
+    /// (VERBOSO=1 stampa ogni lettura).
+    #[test]
+    #[ignore]
+    fn partite_registrate() {
+        let root = std::path::PathBuf::from(std::env::var("PARTITE").expect("PARTITE=cartella"));
+        let verbose = std::env::var("VERBOSO").is_ok();
+        let by_name = |n: &str| (0..40u8).find(|&c| cards::name(c) == n);
+        let mut dirs: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.join("verita.json").exists()).collect();
+        dirs.sort();
+        let (mut ok, mut n) = (0, 0);
+        for dir in dirs {
+            let log: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(dir.join("verita.json")).unwrap()).unwrap();
+            let mut a = Assistant::default();
+            let mut confirms = 0;
+            let mut wrong = Vec::new();
+            let mut before: Vec<Card> = Vec::new();
+            // La mano vera della lettura dopo (l'app può essere avanti di un attimo: la briscola
+            // dell'ultima pescata le arriva da sola).
+            let hands: Vec<Vec<Card>> = log
+                .iter()
+                .map(|e| e["hand"].as_array().unwrap().iter().filter_map(|v| by_name(v.as_str()?)).collect())
+                .collect();
+            let mut opp_cards: Vec<Card> = Vec::new();
+            let mut recent_cards: Vec<Vec<Card>> = Vec::new();
+            let mut typed = 0;
+            // Primo punto in cui l'app resta indietro (o avanti) sul mazzo vero per più di 6 letture.
+            let (mut off, mut first_off): (u32, Option<String>) = (0, None);
+            let mut recent: Vec<String> = Vec::new();
+            for (idx, e) in log.iter().enumerate() {
+                let f = e["frame"].as_str().unwrap();
+                let file = [format!("{f}.png"), format!("{f}.jpg")].into_iter().map(|n| dir.join(n)).find(|p| p.exists()).unwrap();
+                let img = crate::vision::capture::load_png(&file).unwrap();
+                let truth_hand: Vec<Card> = e["hand"].as_array().unwrap().iter().filter_map(|v| by_name(v.as_str()?)).collect();
+                let truth_trick: Vec<(Card, bool)> = e["trick"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|t| Some((by_name(t["card"].as_str()?)?, t["owner"].as_str()? == "Tu")))
+                    .collect();
+                let trump = by_name(e["trump"].as_str().unwrap()).unwrap();
+                let scene = read_briscola(&img, &a.vision.memory);
+                if let Some(scene) = &scene {
+                    a.sync(scene);
+                    // Registrazioni a ogni cambiamento: se lo schermo resta fermo l'app lo rilegge
+                    // ogni 600 ms (una lettura uguale in più ogni 600 ms di attesa, al più 3).
+                    if let (Some(t), Some(next)) = (e["t"].as_u64(), log.get(idx + 1).and_then(|n| n["t"].as_u64())) {
+                        for _ in 0..((next.saturating_sub(t)) / 600).min(3) {
+                            a.sync(scene);
+                        }
+                    }
+                }
+                // Le carte dell'avversario viste davvero finora (per scriverle quando l'app le chiede).
+                for t in &truth_trick {
+                    if !t.1 && !opp_cards.contains(&t.0) {
+                        opp_cards.push(t.0);
+                    }
+                }
+                if a.vision.status.starts_with("Non trovo la briscola") && a.pos.step() == Step::Trump && a.enter(trump) {
+                    typed += 1;
+                    a.vision.status.clear();
+                }
+                if a.vision.status.starts_with("Non ho visto la carta giocata") && a.pos.step() == Step::OppMove {
+                    let gone = |c: Card| a.pos.played.contains(c) || a.pos.table == Some(c);
+                    if let Some(&c) = opp_cards.iter().find(|&&c| !gone(c)) {
+                        if a.enter(c) {
+                            typed += 1;
+                            a.vision.status.clear();
+                        }
+                    }
+                }
+                // L'utente conferma le carte che l'app chiede, se sono una di quelle sullo schermo.
+                // Le carte viste sullo schermo nelle ultime letture (l'utente se le ricorda).
+                recent_cards.push(truth_hand.iter().copied().chain(truth_trick.iter().map(|t| t.0)).collect::<Vec<Card>>());
+                if recent_cards.len() > 6 {
+                    recent_cards.remove(0);
+                }
+                if let Some(c) = &a.vision.confirm {
+                    let visible = c.card == trump || recent_cards.iter().any(|r| r.contains(&c.card));
+                    if visible {
+                        confirms += 1;
+                        a.accept_vision();
+                    } else {
+                        // Proposta sbagliata: l'utente scrive la carta giusta.
+                        wrong.push(format!("{f}: chiede {}", cards::name(c.card)));
+                        let step = c.step;
+                        let (img, vis) = (c.img.clone(), c.vis);
+                        a.vision.confirm = None;
+                        let allowed = a.pos.allowed();
+                        let right = match step {
+                            Step::Trump => Some(trump),
+                            Step::Draw(_) => truth_hand.iter().copied().find(|&h| allowed.contains(h)),
+                            Step::OppMove => truth_trick.iter().find(|t| !t.1 && allowed.contains(t.0)).map(|t| t.0),
+                            Step::MyMove => truth_trick.iter().find(|t| t.1 && allowed.contains(t.0)).map(|t| t.0),
+                            _ => None,
+                        };
+                        if let Some(r) = right {
+                            // Come nell'app: la carta scritta a mano si impara dall'immagine proposta.
+                            if step == a.pos.step() && a.enter(r) {
+                                a.vision.memory.lock().unwrap().remember(&img, vis, r);
+                                typed += 1;
+                            }
+                        }
+                    }
+                }
+                let truth_deck: u8 = e["deck"].as_str().unwrap_or("").trim_start_matches("Mazzo: ").parse().unwrap_or(0);
+                {
+                    let show = |v: &Option<CardView>| v.as_ref().and_then(|v| v.best(CardSet::FULL)).map(|(c, m)| format!("{}({m:.1})", cards::short(c))).unwrap_or("-".into());
+                    let line = scene.as_ref().map(|s| format!("A {} T {} M [{}]", show(&s.opp_slot), show(&s.my_slot), s.hand.iter().map(|v| show(&Some(v.clone()))).collect::<Vec<_>>().join(" "))).unwrap_or_default();
+                    recent.push(format!("{f} vero mazzo {truth_deck} M [{}] T [{}] | letto {line} | app {:?} mazzo {} mano [{}] tavolo {:?}",
+                        truth_hand.iter().map(|&c| cards::short(c)).collect::<Vec<_>>().join(" "),
+                        truth_trick.iter().map(|&(c, me)| format!("{}{}", cards::short(c), if me { "(tu)" } else { "" })).collect::<Vec<_>>().join(" "),
+                        a.pos.step(), a.pos.deck_len, a.pos.hand.iter().map(cards::short).collect::<Vec<_>>().join(" "), a.pos.table.map(cards::short)));
+                    if recent.len() > 10 { recent.remove(0); }
+                }
+                off = if a.pos.deck_len != truth_deck && a.pos.step() != Step::Trump { off + 1 } else { 0 };
+                if off == 7 && first_off.is_none() {
+                    first_off = Some(recent.join("\n    "));
+                }
+                if verbose {
+                    let show = |v: &Option<CardView>| v.as_ref().and_then(|v| v.best(CardSet::FULL)).map(|(c, m)| format!("{}({m:.1})", cards::short(c))).unwrap_or("-".into());
+                    let line = scene.as_ref().map(|s| {
+                        format!(
+                            "B {} A {} T {} M [{}]",
+                            show(&s.trump),
+                            show(&s.opp_slot),
+                            show(&s.my_slot),
+                            s.hand.iter().map(|v| show(&Some(v.clone()))).collect::<Vec<_>>().join(" ")
+                        )
+                    });
+                    println!(
+                        "{f} vero: {} M [{}] T [{}] | letto: {} | app: {:?} mazzo {} prese {} mano [{}] tavolo {:?}",
+                        e["deck"].as_str().unwrap_or(""),
+                        truth_hand.iter().map(|&c| cards::short(c)).collect::<Vec<_>>().join(" "),
+                        truth_trick.iter().map(|&(c, me)| format!("{}{}", cards::short(c), if me { "(tu)" } else { "" })).collect::<Vec<_>>().join(" "),
+                        line.unwrap_or("niente".into()),
+                        a.pos.step(),
+                        a.pos.deck_len,
+                        a.pos.tricks,
+                        a.pos.hand.iter().map(cards::short).collect::<Vec<_>>().join(" "),
+                        a.pos.table.map(cards::short)
+                    );
+                }
+                let prev_hand = std::mem::replace(&mut before, truth_hand.clone());
+                before.extend(prev_hand);
+                // La mano dell'app deve essere (un sottoinsieme di) quella vera.
+                for c in a.pos.hand.iter() {
+                    // (la situazione vera si legge un attimo dopo la schermata: vale anche quella prima)
+                    let next = hands.get(idx + 1).is_some_and(|h| h.contains(&c));
+                    let held = truth_hand.contains(&c) || before.contains(&c) || next || truth_trick.iter().any(|t| t.0 == c && t.1);
+                    if !held && a.pos.step() != Step::Over {
+                        let msg = format!("{f}: l'app crede di avere {}", cards::name(c));
+                        if !wrong.contains(&msg) && wrong.len() < 5 {
+                            wrong.push(msg);
+                        }
+                    }
+                }
+            }
+            n += 1;
+            let _ = &mut before;
+            // (Le proposte sbagliate corrette dall'utente non contano come errori della partita.)
+            let done = a.pos.tricks == 20 && wrong.iter().all(|w| w.contains("chiede"));
+            ok += done as usize;
+            println!(
+                "{}: {} prese su 20, passo {:?}, {} conferme, {} scritte a mano{}{}",
+                dir.file_name().unwrap().to_string_lossy(),
+                a.pos.tricks,
+                a.pos.step(),
+                confirms,
+                typed,
+                if wrong.is_empty() { String::new() } else { format!(", errori: {}", wrong.join("; ")) },
+                if a.vision.status.is_empty() { String::new() } else { format!(" [{}]", a.vision.status) }
+            );
+            if let Some(t) = first_off {
+                println!("  perde il passo qui:\n    {t}");
+            }
+        }
+        println!("== partite seguite fino in fondo: {ok}/{n}");
+    }
 }
+

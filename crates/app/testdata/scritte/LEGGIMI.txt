@@ -1,0 +1,8 @@
+Scritte e loghi per i test del riconoscimento (vision/synth.rs): si incollano sui tavoli finti
+attorno e sotto le carte, per controllare che non vengano prese per carte.
+
+- popup, chat, punti, badge, tocca, vinto, briscola, nome, numero, stemma, scritta_tavolo,
+  marchio: disegnati apposta con i caratteri DejaVu, Liberation e FreeFont. Il magenta
+  (255, 0, 255) è trasparente.
+- java.png: la notifica di aggiornamento di Java comparsa sopra il tavolo di Solitalian.
+- banner.png: il riquadro pubblicitario di Solitalian (da solitalian_briscola.png).

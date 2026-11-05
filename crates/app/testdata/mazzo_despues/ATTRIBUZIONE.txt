@@ -1,0 +1,9 @@
+Bastoni di un mazzo di carte napoletane, ritagliati e rimpiccioliti da
+"Carte da gioco napoletane bastoni.jpg" di Despues, Wikimedia Commons:
+https://commons.wikimedia.org/wiki/File:Carte_da_gioco_napoletane_bastoni.jpg
+Licenza: Creative Commons Attribution-Share Alike 3.0 Unported
+(https://creativecommons.org/licenses/by-sa/3.0/), le immagini derivate qui
+sono distribuite con la stessa licenza.
+
+Servono solo ai test del riconoscimento: sono un disegno delle carte che
+l'app non conosce (non sono incluse nell'app).

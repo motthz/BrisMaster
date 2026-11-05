@@ -491,6 +491,52 @@ impl Player for PolicyPlayer {
     }
 }
 
+/// Avversario che gioca come una rete di politica letta da file (per esempio quella
+/// allenata sulle partite vere): `reale:FILE[:TEMP]`, mossa estratta con temperatura TEMP
+/// (0 = sempre la più probabile; 1 = come la rete, imprevedibile come una persona).
+struct NetFilePlayer {
+    net: Arc<Net>,
+    temp: f32,
+    file: String,
+}
+
+impl Player for NetFilePlayer {
+    fn name(&self) -> String {
+        format!("Giocatore imitato dalla rete {} (temperatura {})", self.file, self.temp)
+    }
+    fn choose(&mut self, obs: &Observation, rng: &mut SmallRng) -> Card {
+        let mut p = [0f32; 3];
+        let n = self.net.policy(obs, self.temp.max(0.05), &mut p);
+        let i = if self.temp <= 0.0 {
+            (0..n).max_by(|&a, &b| p[a].partial_cmp(&p[b]).unwrap()).unwrap()
+        } else {
+            let tot: f32 = p[..n].iter().sum();
+            let mut x = rand::Rng::gen::<f32>(rng) * tot;
+            let mut k = n - 1;
+            for (j, &q) in p[..n].iter().enumerate() {
+                if x < q {
+                    k = j;
+                    break;
+                }
+                x -= q;
+            }
+            k
+        };
+        obs.hand.iter().nth(i).unwrap()
+    }
+}
+
+fn make_net_file_player(rest: &str) -> Result<Box<dyn Player>, String> {
+    let (file, temp) = match rest.rsplit_once(':') {
+        Some((f, t)) if t.parse::<f32>().is_ok() => (f, t.parse::<f32>().unwrap()),
+        _ => (rest, 1.0),
+    };
+    let bytes = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+    let net = Net::from_bytes(&bytes).map(Arc::new)?;
+    let short = std::path::Path::new(file).file_stem().map_or(file.to_string(), |s| s.to_string_lossy().into_owned());
+    Ok(Box::new(NetFilePlayer { net, temp, file: short }))
+}
+
 /// Le varianti del motore hanno lo stesso nome: si aggiungono i parametri diversi dal normale.
 fn variant_suffix(spec: &str) -> String {
     let Some(rest) = spec.strip_prefix("engine:") else { return String::new() };
@@ -757,6 +803,10 @@ fn make_searcher(spec: &str) -> Result<Infer, String> {
 
 /// Crea un giocatore da SPEC, anche di una versione rilasciata (`vX.Y.Z/SPEC`).
 pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
+    if let Some(rest) = spec.strip_prefix("reale:") {
+        // reale:FILE[:TEMP] prima delle versioni: il percorso del file contiene '/'.
+        return Ok(Box::new(Current(make_net_file_player(rest)?, String::new())));
+    }
     if let Some((ver, rest)) = spec.split_once('/') {
         return match ver {
             "v0.1.0" | "v0.1.1" => v0_1_1::make(rest),

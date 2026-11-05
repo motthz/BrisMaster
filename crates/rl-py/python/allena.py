@@ -26,6 +26,7 @@ import briscola_rl as B
 RL_IN, RL_OUT = B.RL_IN, B.RL_OUT
 NC = 40
 SCALE = torch.tensor(B.SCALE, dtype=torch.float32)
+DEV = torch.device("cpu")
 
 
 class Rete(nn.Module):
@@ -35,9 +36,10 @@ class Rete(nn.Module):
         self.l2 = nn.Linear(hidden, hidden)
         self.l3 = nn.Linear(hidden, hidden // 2)
         self.out = nn.Linear(hidden // 2, RL_OUT)
+        self.register_buffer("scale", SCALE.clone(), persistent=False)
 
     def forward(self, x_u8):
-        x = x_u8.float() * SCALE
+        x = x_u8.float() * self.scale
         h = F.relu(self.l1(x))
         h = F.relu(self.l2(h))
         h = F.relu(self.l3(h))
@@ -49,9 +51,9 @@ def esporta(net, path):
     layers = [net.l1, net.l2, net.l3, net.out]
     b = bytearray(b"BRL1") + struct.pack("<I", len(layers))
     for l in layers:
-        w = l.weight.detach().t().contiguous().numpy().astype("<f4")  # [in][out]
+        w = l.weight.detach().cpu().t().contiguous().numpy().astype("<f4")  # [in][out]
         b += struct.pack("<II", w.shape[0], w.shape[1])
-        b += w.tobytes() + l.bias.detach().numpy().astype("<f4").tobytes()
+        b += w.tobytes() + l.bias.detach().cpu().numpy().astype("<f4").tobytes()
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
         f.write(b)
@@ -94,19 +96,21 @@ def giro(env, net, rivali, args):
             p = np.frombuffer(pb, np.uint8)
             learner = rival_seat != p
             act = np.zeros(n, np.int64)
-            xt, mt = torch.from_numpy(x.copy()), torch.from_numpy(m.copy())
+            xt, mt = torch.from_numpy(x.copy()).to(DEV), torch.from_numpy(m.copy()).to(DEV)
+            idx_t = torch.from_numpy(np.flatnonzero(learner)).to(DEV)
             idx = np.flatnonzero(learner)
-            lg, v = net(xt[idx])
-            a, lp = scegli(lg, mt[idx])
-            act[idx] = a.numpy()
-            LP[t, idx] = lp.numpy()
-            V[t, idx] = v.numpy()
+            lg, v = net(xt[idx_t])
+            a, lp = scegli(lg, mt[idx_t])
+            act[idx] = a.cpu().numpy()
+            LP[t, idx] = lp.cpu().numpy()
+            V[t, idx] = v.cpu().numpy()
             for r in range(len(rivali)):
                 ridx = np.flatnonzero(~learner & (rival_id == r))
                 if len(ridx):
-                    lg, _ = rivali[r](xt[ridx])
-                    a, _ = scegli(lg, mt[ridx])
-                    act[ridx] = a.numpy()
+                    rt = torch.from_numpy(ridx).to(DEV)
+                    lg, _ = rivali[r](xt[rt])
+                    a, _ = scegli(lg, mt[rt])
+                    act[ridx] = a.cpu().numpy()
             X[t], M[t], P[t], A[t], mine[t] = x, m, p, act, learner
             env.step(act.astype(np.uint8).tobytes())
     pts = np.frombuffer(env.points(), np.uint8).reshape(n, 2).astype(np.float32)
@@ -155,15 +159,17 @@ def aggiorna(net, opt, d, args):
         perm = torch.randperm(n)
         for s in range(0, n, args.batch):
             i = perm[s : s + args.batch]
-            lg, v = net(x[i])
-            lg = lg.masked_fill(m[i] == 0, -1e9)
+            xi, mi, ai = x[i].to(DEV), m[i].to(DEV), a[i].to(DEV)
+            advi, lp0i, reti = adv[i].to(DEV), lp0[i].to(DEV), ret[i].to(DEV)
+            lg, v = net(xi)
+            lg = lg.masked_fill(mi == 0, -1e9)
             logp_all = F.log_softmax(lg, 1)
-            lp = logp_all.gather(1, a[i][:, None])[:, 0]
-            ratio = torch.exp(lp - lp0[i])
-            pg = -torch.min(ratio * adv[i], ratio.clamp(1 - args.clip, 1 + args.clip) * adv[i]).mean()
-            vl = F.mse_loss(v, ret[i])
-            prob = logp_all.exp() * (m[i] > 0)
-            ent = -(prob * logp_all.clamp(min=-30) * (m[i] > 0)).sum(1).mean()
+            lp = logp_all.gather(1, ai[:, None])[:, 0]
+            ratio = torch.exp(lp - lp0i)
+            pg = -torch.min(ratio * advi, ratio.clamp(1 - args.clip, 1 + args.clip) * advi).mean()
+            vl = F.mse_loss(v, reti)
+            prob = logp_all.exp() * (mi > 0)
+            ent = -(prob * logp_all.clamp(min=-30) * (mi > 0)).sum(1).mean()
             loss = pg + args.vcoef * vl - args.ent * ent
             opt.zero_grad()
             loss.backward()
@@ -191,15 +197,22 @@ def main():
     ap.add_argument("--snap", type=int, default=25, help="giri tra due istantanee per la lega")
     ap.add_argument("--pool", type=int, default=20)
     ap.add_argument("--seed", type=int, default=20261105)
+    ap.add_argument("--device", default="auto", help="auto | cpu | cuda")
     args = ap.parse_args()
+    global DEV
+    dev = args.device
+    if dev == "auto":
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+    DEV = torch.device(dev)
+    print("dispositivo:", DEV, flush=True)
     torch.set_num_threads(os.cpu_count())
     os.makedirs(os.path.join(args.dir, "storia"), exist_ok=True)
     stato = os.path.join(args.dir, "stato.pt")
-    net = Rete(args.hidden)
+    net = Rete(args.hidden).to(DEV)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
     it, games, pool = 0, 0, []
     if os.path.exists(stato):
-        s = torch.load(stato, weights_only=False)
+        s = torch.load(stato, weights_only=False, map_location=DEV)
         net.load_state_dict(s["net"])
         opt.load_state_dict(s["opt"])
         it, games, pool = s["it"], s["games"], s["pool"]
@@ -213,6 +226,7 @@ def main():
     def carica(sd):
         r = Rete(args.hidden)
         r.load_state_dict(sd)
+        r.to(DEV)
         r.eval()
         return r
 

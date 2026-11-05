@@ -803,6 +803,9 @@ fn make_searcher(spec: &str) -> Result<Infer, String> {
 
 /// Crea un giocatore da SPEC, anche di una versione rilasciata (`vX.Y.Z/SPEC`).
 pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
+    if let Some(rest) = spec.strip_prefix("rl:") {
+        return crate::rl_agent::make(rest); // rete auto-allenata: rl:FILE[:TEMP]
+    }
     if let Some(rest) = spec.strip_prefix("reale:") {
         // reale:FILE[:TEMP] prima delle versioni: il percorso del file contiene '/'.
         return Ok(Box::new(Current(make_net_file_player(rest)?, String::new())));

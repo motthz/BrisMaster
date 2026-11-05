@@ -47,7 +47,7 @@ motori). Si può ripetere il passo 3 con `--rete politica-reale.bin` e riallenar
 1. **Previsione delle giocate vere** sulle partite di controllo, mai viste in allenamento:
    `reali --partite ... --confronta politica-reale.bin` stampa per le due reti la probabilità
    media data alla carta giocata davvero e quante volte meglio del caso.
-2. **Vittorie**: Massima con la nuova rete contro Massima con quella vecchia, contro un
+2. **Vittorie** (nella sim della PR #33: avversario `reale:FILE[:TEMP]`, che gioca come la rete delle partite vere; deduzione con `BRISCOLA_POLICY=FILE` sul giocatore `infer:`): Massima con la nuova rete contro Massima con quella vecchia, contro un
    avversario che gioca come la rete delle partite vere e contro il banco di prova (umani
    simulati e motori), 8.000 partite. Entra nell'app solo se migliora contro gli "umani veri"
    senza peggiorare contro gli altri.

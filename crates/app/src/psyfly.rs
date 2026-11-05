@@ -35,6 +35,9 @@ pub struct Sight {
     pub guide: Guide,
 }
 
+/// Per quanti secondi la carta da giocare resta segnata se la lettura la perde.
+const STICKY: f32 = 2.0;
+
 /// Un pixel della mosca, in punti dell'interfaccia.
 const PX: f32 = 4.0;
 const TITLE: &str = "BrisMaster - Psy Fly";
@@ -156,6 +159,9 @@ pub struct Fly {
     started: bool,
     /// Monitor su cui è stata sistemata la finestra (su Windows, a pixel veri).
     placed: Option<Geom>,
+    /// L'ultima carta da giocare indicata e quando: se la lettura la perde per un attimo (la carta
+    /// coperta dal mouse o da un'animazione del sito) resta segnata.
+    last_play: Option<(Guide, f32)>,
 }
 
 impl Default for Fly {
@@ -201,6 +207,7 @@ impl Default for Fly {
             rng: SmallRng::seed_from_u64(0x5917_f1e5),
             started: false,
             placed: None,
+            last_play: None,
         }
     }
 }
@@ -279,6 +286,8 @@ impl Fly {
             return;
         }
         let Some(g) = sight.monitor else { return };
+        let guide = self.sticky(sight.guide.clone());
+        let sight = Sight { guide, ..sight };
         // La finestra copre il monitor (un pixel in meno in basso: una finestra grande quanto lo
         // schermo Windows la tratterebbe da schermo intero e nasconderebbe la barra).
         let builder = egui::ViewportBuilder::default()
@@ -426,6 +435,25 @@ impl Fly {
             }
         } else {
             self.hover_card = None;
+        }
+    }
+
+    /// La carta da giocare resta indicata per un po' anche se una lettura non la ritrova (tocca
+    /// ancora a te ma la carta non si vede bene), finché la partita non va avanti.
+    fn sticky(&mut self, guide: Guide) -> Guide {
+        match guide {
+            Guide::Play { .. } => {
+                self.last_play = Some((guide.clone(), self.t));
+                guide
+            }
+            Guide::Thinking | Guide::NoTable => match &self.last_play {
+                Some((g, at)) if self.t - at < STICKY => g.clone(),
+                _ => guide,
+            },
+            _ => {
+                self.last_play = None;
+                guide
+            }
         }
     }
 
@@ -607,7 +635,8 @@ impl Fly {
         }
         // Con la testa che gira barcolla.
         if self.dizzy > 0.0 {
-            goal += vec2((t * 7.0).sin() * 40.0, (t * 9.0).cos() * 18.0) * self.dizzy.min(1.0);
+            let wide = if self.mood == Mood::Pointing { 0.4 } else { 1.0 };
+            goal += vec2((t * 7.0).sin() * 40.0, (t * 9.0).cos() * 18.0) * self.dizzy.min(1.0) * wide;
         }
 
         // Picchiata sulla carta: scende, la tocca (onda psichica) e risale.
@@ -855,9 +884,10 @@ impl Fly {
             for (i, r) in take.iter().enumerate() {
                 let from = pos2(card.center().x, card.top());
                 psychic_link(p, from, pos2(r.center().x, r.top()), t, i);
-                highlight(p, *r, t + i as f32 * 0.4, TAKE, pop, self.hop == i + 1);
+                highlight(p, *r, t + i as f32 * 0.4, TAKE, pop, self.hop == i + 1, false);
             }
-            highlight(p, *card, t, PSY, pop, self.hop == 0);
+            // La carta da giocare sempre a piena forza, anche mentre la mosca è sulle prese.
+            highlight(p, *card, t, PSY, pop, true, false);
         }
         // Gli anelli dei tocchi.
         for part in self.parts.iter().filter(|q| q.kind == Kind::Ring) {
@@ -1027,6 +1057,23 @@ impl Fly {
                     sprite(p, part.pos, s, &ORB, part.color.gamma_multiply(a));
                 }
                 Kind::Ring => {}
+            }
+        }
+
+        // Il segno della carta da giocare sopra tutto (mosca, scie, coriandoli), e una freccia che
+        // la indica quando la mosca è lontana o distratta: la carta resta sempre segnata.
+        if let Some((card, take)) = play {
+            let pop = ease_out_back((self.mood_t / 0.35).min(1.0));
+            for (i, r) in take.iter().enumerate() {
+                highlight(p, *r, t + i as f32 * 0.4, TAKE, pop, self.hop == i + 1, true);
+            }
+            highlight(p, *card, t, PSY, pop, true, true);
+            let perch = pos2(card.center().x, card.top() - 9.0 * PX);
+            if self.hop != 0 || self.dizzy > 0.0 || (self.pos - perch).length() > 90.0 {
+                let bob = (t * 6.0).sin().abs() * 10.0;
+                let tip = pos2(card.center().x, card.top() - 14.0 - bob);
+                sprite(p, tip + vec2(0.0, -3.0 * PX), PX * 1.25, &ARROW, OUTLINE);
+                sprite(p, tip + vec2(0.0, -3.0 * PX), PX, &ARROW, PSY_PINK);
             }
         }
 
@@ -1361,6 +1408,7 @@ fn draw_fly(p: &Painter, c: Pos2, pose: Pose) {
 const SPARK: [&str; 3] = [".x.", "xxx", ".x."];
 const STAR: [&str; 5] = ["..x..", "..x..", "xxoxx", "..x..", "..x.."];
 const HEART: [&str; 5] = [".x.x.", "xxxxx", "xxxxx", ".xxx.", "..x.."];
+const ARROW: [&str; 6] = ["..xxx..", "..xxx..", "..xxx..", "xxxxxxx", ".xxxxx.", "..xxx.."];
 const CLOUD: [&str; 4] = ["...xxx....", ".xxxxxxx..", "xxxxxxxxxx", ".xxxxxxxx."];
 const ORB: [&str; 5] = [".xxx.", "xooxx", "xoxxx", "xxxxx", ".xxx."];
 const TEAR: [&str; 4] = [".x.", "xxx", "xxx", ".x."];
@@ -1402,11 +1450,18 @@ fn pixel_ring(p: &Painter, c: Pos2, r: f32, color: Color32, s: f32) {
 }
 
 /// La carta indicata: bagliore che pulsa, bordo a pixel che scorre e angoli a staffa che saltellano.
-fn highlight(p: &Painter, card: Rect, t: f32, color: Color32, pop: f32, active: bool) {
+/// Si disegna in due strati: `over` falso il bagliore e la tinta (sotto la mosca), vero il bordo
+/// e le staffe (sopra la mosca e le particelle: la carta resta segnata qualunque cosa le passi sopra).
+#[allow(clippy::too_many_arguments)]
+fn highlight(p: &Painter, card: Rect, t: f32, color: Color32, pop: f32, active: bool, over: bool) {
     let pulse = 0.5 + 0.5 * (t * 5.0).sin();
     let grow = 6.0 + pulse * 3.0;
-    let r = card.expand(grow * pop);
+    let r = card.expand(grow * pop.max(0.4));
     let strength = if active { 1.0 } else { 0.55 };
+    if over {
+        highlight_border(p, r, t, color, pulse, strength);
+        return;
+    }
     for i in 0..4 {
         let k = i as f32;
         p.rect_stroke(
@@ -1417,6 +1472,10 @@ fn highlight(p: &Painter, card: Rect, t: f32, color: Color32, pop: f32, active: 
         );
     }
     p.rect_filled(card, 6.0, color.gamma_multiply(0.10 * strength + 0.06 * pulse * strength));
+}
+
+/// Il bordo a pixel che scorre e le staffe agli angoli.
+fn highlight_border(p: &Painter, r: Rect, t: f32, color: Color32, pulse: f32, strength: f32) {
     // Formiche a pixel che girano attorno alla carta.
     let s = PX;
     let per = 2.0 * (r.width() + r.height());
@@ -1693,6 +1752,23 @@ mod tests {
         assert!(fly.shake > 0.0);
         fly.interact(dt, &hand, Some(&play), Some((hand[1].center(), false)));
         assert!(fly.nod > 0.0);
+    }
+
+    /// La carta da giocare resta segnata se una lettura la perde per un attimo, e si toglie
+    /// appena la partita va avanti.
+    #[test]
+    fn keeps_the_card_marked() {
+        let mut fly = Fly::default();
+        let play = Guide::Play { card: [1.0, 2.0, 3.0, 4.0], take: vec![] };
+        assert_eq!(fly.sticky(play.clone()), play);
+        fly.t += 1.0;
+        assert_eq!(fly.sticky(Guide::Thinking), play);
+        assert_eq!(fly.sticky(Guide::NoTable), play);
+        fly.t += STICKY;
+        assert_eq!(fly.sticky(Guide::Thinking), Guide::Thinking);
+        assert_eq!(fly.sticky(play.clone()), play);
+        assert_eq!(fly.sticky(Guide::Waiting), Guide::Waiting);
+        assert_eq!(fly.sticky(Guide::Thinking), Guide::Thinking);
     }
 
     /// Quando la carta indicata sparisce (giocata), la mosca festeggia.

@@ -435,6 +435,7 @@ dependencies = [
  "serde_json",
  "settemezzo",
  "ureq",
+ "windows-sys 0.61.2",
  "winresource",
  "xcap",
 ]

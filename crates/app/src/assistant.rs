@@ -1431,21 +1431,33 @@ impl Assistant {
         }
     }
 
-    /// Dove viene salvata la partita.
+    /// Registrazione di questa partita (la accende l'utente) e file da inviare.
     fn recording_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("● Registrazione automatica").color(Color32::LIGHT_RED).strong());
+            let mut on = self.rec.enabled;
+            let text = if on {
+                RichText::new("● Registra questa partita").color(Color32::LIGHT_RED).strong()
+            } else {
+                RichText::new("○ Registra questa partita").weak()
+            };
+            if ui
+                .checkbox(&mut on, text)
+                .on_hover_text("Accesa salva questa partita, anche le carte già inserite; spenta non salva niente. Ogni nuova partita parte spenta.")
+                .changed()
+            {
+                self.rec.set_enabled(on, &self.pos);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Apri cartella partite").clicked() {
                     record::open_dir();
                 }
                 if ui
                     .button("Prepara file da inviare")
-                    .on_hover_text("Raccoglie tutte le partite salvate in un solo file, da allegare in un messaggio per allenare il motore sulle partite vere")
+                    .on_hover_text("Raccoglie tutte le partite registrate in un solo file, da allegare in un messaggio per allenare il motore sulle partite vere")
                     .clicked()
                 {
                     self.rec.export_msg = Some(match record::export(&self.rec.dir) {
-                        Ok((path, 0)) => format!("Nessuna partita salvata da inviare (creato comunque {})", path.display()),
+                        Ok((path, 0)) => format!("Nessuna partita registrata da inviare (creato comunque {})", path.display()),
                         Ok((path, n)) => {
                             record::show_file(&path);
                             format!("Pronto: {} con {n} partite. Allegalo in un messaggio.", path.display())
@@ -1455,17 +1467,15 @@ impl Assistant {
                 }
             });
         });
+        let note = if self.rec.enabled {
+            format!("Questa partita viene salvata, dalla prima carta giocata, in {}", self.rec.path().display())
+        } else {
+            "Questa partita non viene salvata.".to_string()
+        };
+        ui.label(RichText::new(note).small().weak());
         if let Some(m) = &self.rec.export_msg {
             ui.label(RichText::new(m).small().color(GOLD));
         }
-        ui.label(
-            RichText::new(format!(
-                "Ogni partita viene salvata, dalla prima carta giocata, in {}",
-                self.rec.path().display()
-            ))
-            .small()
-            .weak(),
-        );
         if let Some(e) = &self.rec.error {
             ui.label(RichText::new(e).color(Color32::LIGHT_RED));
         }
@@ -2058,6 +2068,7 @@ mod tests {
         let mut g = Game::new(&mut rng, ME);
         let mut a = Assistant::default();
         a.rec.dir = dir.clone();
+        assert!(!a.rec.enabled, "la registrazione parte spenta");
         assert!(a.enter(g.trump_card));
         a.set_first(ME);
         for c in g.hands[0].iter() {
@@ -2084,6 +2095,11 @@ mod tests {
                     assert!(a.enter(d));
                 }
             }
+            // A metà partita accendo la registrazione: si salva tutta, anche l'inizio.
+            if a.pos.tricks == 10 && !a.rec.enabled {
+                assert!(!dir.exists() || std::fs::read_dir(&dir).unwrap().next().is_none(), "spenta non salva");
+                a.rec.set_enabled(true, &a.pos);
+            }
         }
         let path = a.rec.path().to_path_buf();
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -2108,6 +2124,40 @@ mod tests {
             a.undo();
         }
         assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Spegnere la registrazione cancella il file della partita; le partite salvate in
+    /// automatico dalle versioni precedenti si cancellano una volta sola.
+    #[test]
+    fn recording_is_chosen_by_the_user() {
+        let root = std::env::temp_dir().join(format!("brismaster-test-scelta-{}", std::process::id()));
+        let dir = root.join("Partite");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("partita_2026-11-01_10-00-00.json"), "{}").unwrap();
+        std::fs::write(dir.join("appunti.txt"), "mio").unwrap();
+        std::fs::write(root.join(record::EXPORT_NAME), "{}").unwrap();
+        assert_eq!(record::remove_automatic_once(&dir), 1);
+        assert!(dir.join("appunti.txt").exists() && !root.join(record::EXPORT_NAME).exists());
+        let mut a = Assistant::default();
+        a.rec.dir = dir.clone();
+        let mut rng = SmallRng::seed_from_u64(9);
+        let g = Game::new(&mut rng, ME);
+        assert!(a.enter(g.trump_card));
+        a.set_first(ME);
+        for c in g.hands[0].iter() {
+            assert!(a.enter(c));
+        }
+        assert!(a.enter(g.hands[0].iter().next().unwrap()));
+        a.rec.set_enabled(true, &a.pos);
+        let path = a.rec.path().to_path_buf();
+        assert!(path.exists());
+        a.rec.set_enabled(false, &a.pos);
+        assert!(!path.exists());
+        // La seconda volta non cancella più niente, nemmeno le partite registrate a scelta.
+        a.rec.set_enabled(true, &a.pos);
+        assert_eq!(record::remove_automatic_once(&dir), 0);
+        assert!(a.rec.path().exists());
         let _ = std::fs::remove_dir_all(root);
     }
 

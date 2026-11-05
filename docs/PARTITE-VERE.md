@@ -4,17 +4,23 @@ Il motore deduce le carte dell'avversario da come gioca, con una rete di politic
 (`crates/core/nets/politica.bin`) allenata su partite tra motori. Le persone vere giocano in
 modo diverso: con le loro partite la deduzione può imparare come giocano davvero.
 
-## 1. Salvataggio (nell'app, già attivo)
+## 1. Salvataggio (lo decidi tu)
 
-L'assistente di briscola salva da solo ogni partita, dalla prima carta giocata, in
-`Documenti\BrisMaster\Partite\partita_<data>.json` (`crates/app/src/record.rs`): briscola, chi
-comincia, le tue pescate, ogni carta giocata da te e dall'avversario, il consiglio del motore e
-il risultato. Solo carte: nessun nome, nessun dato del sito. Anche le partite lasciate a metà
-servono.
+La registrazione parte **spenta** a ogni partita. Nell'assistente di briscola la casella
+**Registra questa partita** la accende: si salva tutta la partita, anche le carte inserite
+prima di accenderla, in `Documenti\BrisMaster\Partite\partita_<data>.json`
+(`crates/app/src/record.rs`). Spegnendola il file di quella partita si cancella. Si salvano
+briscola, chi comincia, le tue pescate, ogni carta giocata da te e dall'avversario, il
+consiglio del motore e il risultato. Solo carte: nessun nome, nessun dato del sito. Anche le
+partite lasciate a metà servono.
+
+Le partite salvate in automatico dalle versioni precedenti (fino alla 0.5.x) vengono
+cancellate una volta sola al primo avvio della nuova versione (resta il segno
+`Documenti\BrisMaster\.registrazione-a-scelta`); gli altri file della cartella non si toccano.
 
 ## 2. Consegna
 
-Nell'assistente, pulsante **Prepara file da inviare**: raccoglie tutte le partite salvate in
+Nell'assistente, pulsante **Prepara file da inviare**: raccoglie tutte le partite registrate in
 un solo file, `Documenti\BrisMaster\partite-brismaster.json`, e lo mostra in Esplora risorse.
 Si allega in un messaggio del progetto. Si può rinviare ogni volta tutto: le partite già
 ricevute vengono riconosciute e contate una sola volta.
@@ -67,3 +73,17 @@ Risultati (controllo = partite mai viste in allenamento; caso = 0,341 per giocat
 La rete attuale, allenata sui motori, prevede questo avversario peggio del caso; da qualche
 centinaio di partite la rete riallenata lo prevede meglio. Con persone vere il guadagno può
 essere diverso: si misura con il punto 5.
+
+## Partite vere sul web (ricerca del 5 novembre 2026)
+
+Non esiste una raccolta pubblica di partite di briscola tra persone. Quello che c'è:
+
+- progetti di bot (BriscolaBot, briscolab, TextArena/EnvCommons, Briscola_engine_agents,
+  briscolol): partite generate tra programmi, non persone;
+- BriscolaPaperSourceCode (articolo arXiv 2605.17043): circa un milione di partite tra tre bot
+  a regole fisse, utili al più come altri avversari simulati;
+- BriscolaBot riporta 170 partite registrate contro persone, ma non le pubblica;
+- Board Game Arena ha circa 185.000 partite di briscola, ma i registri si vedono solo da
+  iscritti e la raccolta automatica non è permessa dalle sue condizioni d'uso.
+
+Quindi la fonte di partite vere restano le partite registrate con l'app.

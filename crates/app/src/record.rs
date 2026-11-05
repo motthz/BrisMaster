@@ -1,5 +1,6 @@
 //! Registrazione delle partite giocate con l'assistente: un file JSON per partita,
 //! riscritto a ogni carta inserita, così resta anche se la partita non viene finita.
+//! Si salva solo la partita per cui l'utente accende la registrazione (spenta di default).
 
 use crate::assistant::{Position, ME};
 use briscola_core::ai::MoveEval;
@@ -160,11 +161,13 @@ pub struct Recorder {
     pub error: Option<String>,
     /// Esito dell'ultima esportazione (Prepara file da inviare).
     pub export_msg: Option<String>,
+    /// Se questa partita va salvata: la decide l'utente, ogni partita parte spenta.
+    pub enabled: bool,
 }
 
 impl Default for Recorder {
     fn default() -> Self {
-        Recorder { events: Vec::new(), dir: dir(), file: None, error: None, export_msg: None }
+        Recorder { events: Vec::new(), dir: dir(), file: None, error: None, export_msg: None, enabled: false }
     }
 }
 
@@ -193,13 +196,22 @@ impl Recorder {
         serde_json::to_string_pretty(&f).unwrap()
     }
 
-    /// Scrive il file, ma solo da quando è stata giocata almeno una carta.
+    /// Accende o spegne la registrazione di questa partita: accesa la salva tutta, anche
+    /// le carte inserite prima; spenta cancella il suo file.
+    pub fn set_enabled(&mut self, on: bool, pos: &Position) {
+        self.enabled = on;
+        self.write(pos);
+    }
+
+    /// Scrive il file, ma solo se la registrazione è accesa e da quando è stata giocata
+    /// almeno una carta.
     pub fn write(&mut self, pos: &Position) {
-        if !self.events.iter().any(|e| matches!(e, Event::Giocata { .. })) {
-            // Annullate tutte le giocate: niente file per una partita mai cominciata.
-            if let Some((_, p)) = &self.file {
+        if !self.enabled || !self.events.iter().any(|e| matches!(e, Event::Giocata { .. })) {
+            // Registrazione spenta, o annullate tutte le giocate: niente file.
+            if let Some((_, p)) = self.file.take() {
                 let _ = std::fs::remove_file(p);
             }
+            self.error = None;
             return;
         }
         if self.file.is_none() {
@@ -262,4 +274,31 @@ pub fn show_file(path: &std::path::Path) {
     let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
     #[cfg(not(windows))]
     let _ = std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn();
+}
+
+/// Segno che le partite salvate quando la registrazione era sempre accesa sono già state cancellate.
+const CLEANED_MARK: &str = ".registrazione-a-scelta";
+
+/// Una volta sola: cancella le partite salvate quando la registrazione era automatica (fino alla
+/// 0.5.x) e il vecchio file da inviare, perché l'utente vuole tenere solo le partite che sceglie.
+/// Restituisce quante partite ha cancellato.
+pub fn remove_automatic_once(dir: &std::path::Path) -> usize {
+    let base = dir.parent().unwrap_or(dir);
+    let mark = base.join(CLEANED_MARK);
+    if mark.exists() {
+        return 0;
+    }
+    let mut n = 0;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for p in rd.filter_map(|e| e.ok().map(|e| e.path())) {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            if name.starts_with("partita_") && name.ends_with(".json") && std::fs::remove_file(&p).is_ok() {
+                n += 1;
+            }
+        }
+    }
+    let _ = std::fs::remove_file(base.join(EXPORT_NAME));
+    let _ = std::fs::create_dir_all(base);
+    let _ = std::fs::write(&mark, "Partite salvate in automatico cancellate; ora si salva solo quando la registrazione è accesa.\n");
+    n
 }

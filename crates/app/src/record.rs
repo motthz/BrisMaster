@@ -158,11 +158,13 @@ pub struct Recorder {
     /// Ora di inizio e file, fissati alla prima carta giocata.
     file: Option<(String, PathBuf)>,
     pub error: Option<String>,
+    /// Esito dell'ultima esportazione (Prepara file da inviare).
+    pub export_msg: Option<String>,
 }
 
 impl Default for Recorder {
     fn default() -> Self {
-        Recorder { events: Vec::new(), dir: dir(), file: None, error: None }
+        Recorder { events: Vec::new(), dir: dir(), file: None, error: None, export_msg: None }
     }
 }
 
@@ -216,4 +218,48 @@ impl Recorder {
         let res = std::fs::create_dir_all(&self.dir).and_then(|_| std::fs::write(path, self.to_json(pos)));
         self.error = res.err().map(|e| format!("Impossibile salvare la partita: {e}"));
     }
+}
+
+/// Nome del file che raccoglie tutte le partite salvate, da inviare per allenare il motore.
+pub const EXPORT_NAME: &str = "partite-brismaster.json";
+
+/// Raccoglie tutte le partite salvate in `dir` in un solo file (accanto alla cartella delle
+/// partite, in `dir/..`), compatto, da allegare in un messaggio. Restituisce il file e
+/// quante partite contiene. I file illeggibili vengono saltati.
+pub fn export(dir: &std::path::Path) -> std::io::Result<(PathBuf, usize)> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "json")
+                && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("partita_"))
+        })
+        .collect();
+    files.sort();
+    let mut partite = Vec::new();
+    for f in &files {
+        let Ok(text) = std::fs::read_to_string(f) else { continue };
+        let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        if let Some(o) = v.as_object_mut() {
+            let name = f.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            o.insert("file".into(), name.into());
+        }
+        partite.push(v);
+    }
+    let out = dir.parent().unwrap_or(dir).join(EXPORT_NAME);
+    let n = partite.len();
+    let bundle = serde_json::json!({
+        "versione_app": crate::update::CURRENT,
+        "esportato": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        "partite": partite,
+    });
+    std::fs::write(&out, serde_json::to_string(&bundle).unwrap())?;
+    Ok((out, n))
+}
+
+/// Mostra il file in Esplora risorse, già selezionato, pronto da trascinare nel messaggio.
+pub fn show_file(path: &std::path::Path) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+    #[cfg(not(windows))]
+    let _ = std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn();
 }

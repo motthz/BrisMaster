@@ -1439,8 +1439,25 @@ impl Assistant {
                 if ui.button("Apri cartella partite").clicked() {
                     record::open_dir();
                 }
+                if ui
+                    .button("Prepara file da inviare")
+                    .on_hover_text("Raccoglie tutte le partite salvate in un solo file, da allegare in un messaggio per allenare il motore sulle partite vere")
+                    .clicked()
+                {
+                    self.rec.export_msg = Some(match record::export(&self.rec.dir) {
+                        Ok((path, 0)) => format!("Nessuna partita salvata da inviare (creato comunque {})", path.display()),
+                        Ok((path, n)) => {
+                            record::show_file(&path);
+                            format!("Pronto: {} con {n} partite. Allegalo in un messaggio.", path.display())
+                        }
+                        Err(e) => format!("Impossibile preparare il file: {e}"),
+                    });
+                }
             });
         });
+        if let Some(m) = &self.rec.export_msg {
+            ui.label(RichText::new(m).small().color(GOLD));
+        }
         ui.label(
             RichText::new(format!(
                 "Ogni partita viene salvata, dalla prima carta giocata, in {}",
@@ -2035,7 +2052,8 @@ mod tests {
 
     #[test]
     fn records_games() {
-        let dir = std::env::temp_dir().join(format!("brismaster-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("brismaster-test-rec-{}", std::process::id()));
+        let dir = root.join("Partite");
         let mut rng = SmallRng::seed_from_u64(5);
         let mut g = Game::new(&mut rng, ME);
         let mut a = Assistant::default();
@@ -2079,12 +2097,18 @@ mod tests {
         // L'ultima presa si inserisce da sola: la tua ultima carta e quella dell'avversario.
         let autos: Vec<_> = a.history.iter().filter(|h| h.3).map(|h| h.0.step()).collect();
         assert!(autos.len() >= 2, "{autos:?} {:?}", a.pos.step());
+        // Il file da inviare raccoglie la partita, accanto alla cartella delle partite.
+        let (bundle, n) = record::export(&dir).unwrap();
+        assert_eq!((n, bundle.parent().unwrap()), (1, root.as_path()));
+        let b: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&bundle).unwrap()).unwrap();
+        assert_eq!(b["partite"][0]["eventi"], v["eventi"]);
+        assert!(b["partite"][0]["file"].as_str().unwrap().starts_with("partita_"));
         // Annullare tutto cancella il file di una partita mai cominciata.
         while !a.history.is_empty() {
             a.undo();
         }
         assert!(!path.exists());
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Inserimento da tastiera: la carta entra appena si digita il seme, senza Invio.

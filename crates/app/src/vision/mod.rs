@@ -8,6 +8,7 @@ pub mod detect;
 pub mod memory;
 pub mod reference;
 pub mod screen;
+pub mod track;
 #[cfg(test)]
 pub(crate) mod synth;
 
@@ -162,6 +163,23 @@ impl CardView {
     }
 }
 
+/// La carta `c` fra quelle viste sullo schermo (`among` sono le carte che possono essere lì):
+/// quella che le somiglia di più, purché le somigli davvero e non sia solo la meno peggio fra
+/// `among` (un pezzo di tavolo o una scritta presi per carta non devono essere segnati).
+pub fn locate(views: &[CardView], among: CardSet, c: Card) -> Option<&CardView> {
+    views
+        .iter()
+        .filter(|v| v.best(among).is_some_and(|b| b.0 == c))
+        .filter(|v| {
+            let top = v.scores.iter().copied().fold(f32::MIN, f32::max);
+            v.scores[c as usize] >= top - LOCATE_GAP
+        })
+        .max_by(|a, b| a.scores[c as usize].total_cmp(&b.scores[c as usize]))
+}
+
+/// Quanto può staccare la carta più somigliante (fra tutte le 40) quella che si cerca.
+const LOCATE_GAP: f32 = 1.5;
+
 /// Esito di una lettura dello schermo.
 pub enum Reading<S> {
     Scene(S),
@@ -195,13 +213,57 @@ pub fn read_scopa(img: &Img, mem: &Mutex<Memory>) -> Option<ScopaScene> {
     Some(scene)
 }
 
+/// Le carte di una scena: dove stanno nella schermata (frazioni), le tue per prime.
+pub trait Located {
+    /// Le zone da inseguire quando lo schermo si sposta: la tua mano, o tutte le carte se non ce n'è.
+    fn spots(&self) -> Vec<[f32; 4]>;
+}
+
+impl Located for Scene {
+    fn spots(&self) -> Vec<[f32; 4]> {
+        let hand: Vec<[f32; 4]> = self.hand.iter().map(|v| v.at).collect();
+        if !hand.is_empty() {
+            return hand;
+        }
+        self.trump.iter().chain(&self.opp_slot).chain(&self.my_slot).map(|v| v.at).collect()
+    }
+}
+
+impl Located for ScopaScene {
+    fn spots(&self) -> Vec<[f32; 4]> {
+        let hand: Vec<[f32; 4]> = self.hand.iter().map(|v| v.at).collect();
+        if !hand.is_empty() {
+            return hand;
+        }
+        self.table.iter().map(|v| v.at).collect()
+    }
+}
+
+/// Dove è stata presa una schermata: il monitor e l'area letta.
+type Place = (capture::Geom, screen::Area);
+
+/// Dove stanno le carte lette: il posto della schermata analizzata (il monitor dove sono state
+/// viste davvero, non quello che si sta provando) e di quanto si sono spostate da allora.
+#[derive(Default)]
+struct Spot {
+    place: Option<Place>,
+    template: Option<track::Template>,
+    shift: [f32; 2],
+    /// Catture di fila in cui la zona delle carte non si ritrova: le carte non ci sono più (o lo
+    /// schermo è cambiato) e non vanno più segnate finché un'analisi non le ritrova.
+    misses: u32,
+}
+
+/// Dopo quante catture senza ritrovare le carte (un decimo di secondo l'una) non si segnano più.
+const MISSES: u32 = 2;
+
 /// Legge lo schermo in un thread a parte, qualche volta al secondo, finché non viene fermato.
 pub struct Reader<S> {
     pub rx: Receiver<Reading<S>>,
     stop: Arc<AtomicBool>,
     last: Arc<Mutex<Option<Img>>>,
-    /// Il monitor dell'ultima cattura e l'area letta: servono a ritrovare le carte sul desktop.
-    place: Arc<Mutex<Option<(capture::Geom, screen::Area)>>>,
+    /// Dove stanno le carte dell'ultima scena sul desktop.
+    spot: Arc<Mutex<Spot>>,
 }
 
 /// Ogni quanto si cattura lo schermo: spesso, perché costa poco. Le schermate si analizzano poi
@@ -209,7 +271,7 @@ pub struct Reader<S> {
 /// non deve far perdere nessuna carta.
 const CAPTURE_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
 
-impl<S: Send + 'static> Reader<S> {
+impl<S: Located + Send + 'static> Reader<S> {
     /// `read` trova e riconosce le carte di un gioco; `every` è l'intervallo massimo fra due letture
     /// quando lo schermo non cambia.
     pub fn start(
@@ -221,7 +283,7 @@ impl<S: Send + 'static> Reader<S> {
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let last = Arc::new(Mutex::new(None));
-        let queue: Arc<(Mutex<Frames<usize>>, Condvar)> = Arc::new((
+        let queue: Arc<(Mutex<Frames<(usize, Option<Place>)>>, Condvar)> = Arc::new((
             Mutex::new(Frames::new(
                 every.max(std::time::Duration::from_millis(600)),
             )),
@@ -233,7 +295,7 @@ impl<S: Send + 'static> Reader<S> {
         let monitor = Arc::new(AtomicUsize::new(screen::area().lock().unwrap().monitor));
         let monitors = Arc::new(AtomicUsize::new(1));
         let (err_tx, err_rx) = channel::<String>();
-        let place = Arc::new(Mutex::new(None));
+        let spot: Arc<Mutex<Spot>> = Arc::new(Mutex::new(Spot::default()));
 
         // Cattura: ogni CAPTURE_EVERY, e tiene le schermate in cui qualcosa è cambiato.
         {
@@ -244,7 +306,7 @@ impl<S: Send + 'static> Reader<S> {
                 monitors.clone(),
                 card_px.clone(),
             );
-            let place = place.clone();
+            let spot = spot.clone();
             std::thread::spawn(move || {
                 let mut chosen = None;
                 while !flag.load(Ordering::Relaxed) {
@@ -258,16 +320,13 @@ impl<S: Send + 'static> Reader<S> {
                     match capture::grab_geom(monitor.load(Ordering::Relaxed)) {
                         Ok((img, count, geom)) => {
                             monitors.store(count.max(1), Ordering::Relaxed);
-                            *place.lock().unwrap_or_else(|e| e.into_inner()) = Some((geom, area));
                             let table = screen::table(&img, &area);
                             let k = shrink_factor(table.w, card_px.load(Ordering::Relaxed));
                             let table = shrink_by(table, k);
+                            follow(&spot, &table, (geom, area));
                             let (lock, cv) = &*queue;
-                            if lock.lock().unwrap_or_else(|e| e.into_inner()).offer_with(
-                                table,
-                                k,
-                                std::time::Instant::now(),
-                            ) {
+                            let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
+                            if q.offer_with(table, (k, Some((geom, area))), std::time::Instant::now()) {
                                 cv.notify_one();
                             }
                         }
@@ -285,6 +344,7 @@ impl<S: Send + 'static> Reader<S> {
 
         // Analisi: le schermate tenute, una dopo l'altra.
         let (flag, frame) = (stop.clone(), last.clone());
+        let found = spot.clone();
         std::thread::spawn(move || {
             while !flag.load(Ordering::Relaxed) {
                 let table = {
@@ -305,18 +365,13 @@ impl<S: Send + 'static> Reader<S> {
                         Ok(e) => Reading::Error(e),
                         Err(_) => continue,
                     },
-                    Some((table, k)) => {
+                    Some((table, (k, at))) => {
                         // Un errore nella lettura di una schermata non deve fermare le letture
                         // dopo: si mostra e si continua.
-                        let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            read(&table, &mem)
-                        }));
+                        let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&table, &mem)));
                         // La misura delle carte decide quanto rimpicciolire le schermate dopo.
-                        card_px.store(
-                            (detect::last_card_l() * k as f32).round() as u32,
-                            Ordering::Relaxed,
-                        );
-                        *frame.lock().unwrap_or_else(|e| e.into_inner()) = Some(table);
+                        card_px.store((detect::last_card_l() * k as f32).round() as u32, Ordering::Relaxed);
+                        *frame.lock().unwrap_or_else(|e| e.into_inner()) = Some(table.clone());
                         match scene {
                             Err(e) => {
                                 let why = e
@@ -326,7 +381,18 @@ impl<S: Send + 'static> Reader<S> {
                                     .unwrap_or_default();
                                 Reading::Error(format!("errore interno ({why})"))
                             }
-                            Ok(Some(s)) => Reading::Scene(s),
+                            Ok(Some(s)) => {
+                                // Le carte sono su questo monitor: la mosca va qui, e da qui si
+                                // insegue la zona delle carte nelle catture che seguono.
+                                let mut sp = found.lock().unwrap_or_else(|e| e.into_inner());
+                                if at.is_some() {
+                                    sp.place = at;
+                                }
+                                sp.template = track::union(&s.spots()).and_then(|u| track::Template::new(&table, u));
+                                sp.shift = [0.0, 0.0];
+                                sp.misses = 0;
+                                Reading::Scene(s)
+                            }
                             Ok(None) => {
                                 // Senza un'area scelta, prova il monitor successivo.
                                 if screen::area().lock().unwrap_or_else(|e| e.into_inner()).rect.is_none() {
@@ -345,24 +411,61 @@ impl<S: Send + 'static> Reader<S> {
                 ctx.request_repaint();
             }
         });
-        Reader { rx, stop, last, place }
+        Reader { rx, stop, last, spot }
     }
+}
 
-    /// Il monitor che si sta leggendo (None prima della prima cattura).
+impl<S> Reader<S> {
+    /// Il monitor dove sono state viste le carte (None finché non se ne vede nessuna).
     pub fn monitor(&self) -> Option<capture::Geom> {
-        self.place.lock().unwrap_or_else(|e| e.into_inner()).map(|p| p.0)
+        self.spot.lock().unwrap_or_else(|e| e.into_inner()).place.map(|p| p.0)
     }
 
-    /// Dove sta sul desktop, in pixel veri (sinistra, alto, destra, basso), una carta della
-    /// schermata letta (`CardView::at`).
+    /// Vero se le carte dell'ultima scena non si vedono più sullo schermo (sparite, coperte, o lo
+    /// schermo è cambiato del tutto): finché un'analisi non le ritrova non vanno segnate.
+    pub fn lost(&self) -> bool {
+        self.spot.lock().unwrap_or_else(|e| e.into_inner()).misses >= MISSES
+    }
+
+    /// Dove sta adesso sul desktop, in pixel veri (sinistra, alto, destra, basso), una carta
+    /// dell'ultima scena letta (`CardView::at`), contando di quanto si è spostato lo schermo.
     pub fn on_desktop(&self, at: [f32; 4]) -> Option<[f32; 4]> {
-        let (g, area) = (*self.place.lock().unwrap_or_else(|e| e.into_inner()))?;
-        Some(place_on_desktop(at, g, area))
+        let sp = self.spot.lock().unwrap_or_else(|e| e.into_inner());
+        let (g, area) = sp.place?;
+        let [dx, dy] = sp.shift;
+        Some(place_on_desktop([at[0] + dx, at[1] + dy, at[2] + dx, at[3] + dy], g, area))
     }
 
     /// L'ultima schermata letta (già ritagliata sul tavolo), per la diagnosi.
     pub fn last_frame(&self) -> Option<Img> {
         self.last.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Nella cattura appena fatta ritrova la zona delle carte dell'ultima scena, se è dello stesso
+/// monitor e della stessa area: così le carte segnate seguono lo schermo che si sposta.
+fn follow(spot: &Mutex<Spot>, table: &Img, at: Place) {
+    let (template, hint) = {
+        let sp = spot.lock().unwrap_or_else(|e| e.into_inner());
+        if sp.place != Some(at) {
+            return;
+        }
+        match &sp.template {
+            Some(t) => (t.clone(), sp.shift),
+            None => return,
+        }
+    };
+    let found = template.find(table, hint);
+    let mut sp = spot.lock().unwrap_or_else(|e| e.into_inner());
+    // Solo se nel frattempo non è arrivata una scena nuova.
+    if sp.place == Some(at) && sp.template.as_ref().is_some_and(|t| t.same(&template)) {
+        match found {
+            Some(shift) => {
+                sp.shift = shift;
+                sp.misses = 0;
+            }
+            None => sp.misses += 1,
+        }
     }
 }
 
@@ -392,6 +495,7 @@ const FRAMES: usize = 8;
 #[cfg(test)]
 impl Frames {
     /// Offre una schermata appena catturata; vero se è stata tenuta.
+    #[cfg(test)]
     pub fn offer(&mut self, img: Img, now: std::time::Instant) -> bool {
         self.offer_with(img, (), now)
     }

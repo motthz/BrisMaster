@@ -24,6 +24,9 @@ pub enum Guide {
     Won,
     Lost,
     Tie,
+    /// Le carte lette non si vedono più per un attimo (il sito le sta animando, lo schermo è
+    /// cambiato): niente da segnare, la mosca resta dov'è senza cambiare umore.
+    Hidden,
 }
 
 /// Quello che la mosca sa del tavolo.
@@ -33,6 +36,13 @@ pub struct Sight {
     /// Le tue carte sullo schermo (pixel del desktop): ci gironzola sopra.
     pub hand: Vec<[f32; 4]>,
     pub guide: Guide,
+}
+
+impl Sight {
+    /// Niente da indicare: la lettura dello schermo è spenta.
+    pub fn off() -> Sight {
+        Sight { monitor: None, hand: Vec::new(), guide: Guide::NoTable }
+    }
 }
 
 /// Per quanti secondi la carta da giocare resta segnata se la lettura la perde.
@@ -162,6 +172,11 @@ pub struct Fly {
     /// L'ultima carta da giocare indicata e quando: se la lettura la perde per un attimo (la carta
     /// coperta dal mouse o da un'animazione del sito) resta segnata.
     last_play: Option<(Guide, f32)>,
+    /// Il monitor delle carte, per accorgersi che sono passate su un altro.
+    monitor: Option<Geom>,
+    /// Le carte segnate come sono disegnate adesso (scivolano verso la posizione letta).
+    shown: Vec<Rect>,
+    retarget: bool,
 }
 
 impl Default for Fly {
@@ -208,6 +223,9 @@ impl Default for Fly {
             started: false,
             placed: None,
             last_play: None,
+            monitor: None,
+            shown: Vec::new(),
+            retarget: false,
         }
     }
 }
@@ -286,6 +304,15 @@ impl Fly {
             return;
         }
         let Some(g) = sight.monitor else { return };
+        if self.monitor.is_some_and(|m| m != g) {
+            // Le carte sono passate su un altro monitor: la mosca ci rientra volando dal bordo,
+            // invece di comparire di colpo da un'altra parte.
+            self.started = false;
+            self.parts.clear();
+            self.bubble = None;
+            self.shown.clear();
+        }
+        self.monitor = Some(g);
         let guide = self.sticky(sight.guide.clone());
         let sight = Sight { guide, ..sight };
         // La finestra copre il monitor (un pixel in meno in basso: una finestra grande quanto lo
@@ -314,11 +341,18 @@ impl Fly {
             };
             let screen = Rect::from_min_size(Pos2::ZERO, vec2(g.w / ppp, g.h / ppp));
             let hand: Vec<Rect> = sight.hand.iter().map(|&r| to_local(r)).collect();
-            let guide = match &sight.guide {
-                Guide::Play { card, take } => Some((to_local(*card), take.iter().map(|&r| to_local(r)).collect())),
-                _ => None,
-            };
             let dt = ui.input(|i| i.stable_dt).clamp(0.001, 0.05);
+            let guide = match &sight.guide {
+                Guide::Play { card, take } => {
+                    let all: Vec<Rect> = std::iter::once(*card).chain(take.iter().copied()).map(to_local).collect();
+                    let all = self.glide(all, dt);
+                    Some((all[0], all[1..].to_vec()))
+                }
+                _ => {
+                    self.shown.clear();
+                    None
+                }
+            };
             let painter = ui.painter().clone();
             // Il mouse lo legge da Windows: la finestra della mosca lascia passare i clic.
             let mouse = native::cursor().map(|(x, y, down)| (pos2((x - g.x) / ppp, (y - g.y) / ppp), down));
@@ -446,7 +480,7 @@ impl Fly {
                 self.last_play = Some((guide.clone(), self.t));
                 guide
             }
-            Guide::Thinking | Guide::NoTable => match &self.last_play {
+            Guide::Thinking => match &self.last_play {
                 Some((g, at)) if self.t - at < STICKY => g.clone(),
                 _ => guide,
             },
@@ -455,6 +489,24 @@ impl Fly {
                 guide
             }
         }
+    }
+
+    /// Le carte segnate scivolano verso la posizione nuova (lo schermo che si sposta arriva a
+    /// scatti, dieci volte al secondo) invece di saltare; una carta diversa si segna subito.
+    fn glide(&mut self, want: Vec<Rect>, dt: f32) -> Vec<Rect> {
+        let near = self.shown.len() == want.len()
+            && self.shown.iter().zip(&want).all(|(a, b)| (a.center() - b.center()).length() < 700.0);
+        if !near {
+            // Un'altra carta (o la prima): la mosca la annuncia.
+            self.retarget = true;
+            self.shown = want;
+            return self.shown.clone();
+        }
+        let k = (dt * 18.0).min(1.0);
+        for (a, b) in self.shown.iter_mut().zip(&want) {
+            *a = Rect::from_min_max(a.min.lerp(b.min, k), a.max.lerp(b.max, k));
+        }
+        self.shown.clone()
     }
 
     fn say(&mut self, text: &str, life: f32) {
@@ -529,10 +581,15 @@ impl Fly {
             Guide::Play { .. } => Mood::Pointing,
             Guide::Won | Guide::Tie => Mood::Party,
             Guide::Lost => Mood::Sad,
+            Guide::Hidden => self.mood,
         };
-        let new_target = play.map(|p| [p.0.left(), p.0.top(), p.0.right(), p.0.bottom()]);
+        let hidden = *guide == Guide::Hidden;
+        let new_target =
+            if hidden { self.target } else { play.map(|p| [p.0.left(), p.0.top(), p.0.right(), p.0.bottom()]) };
+        // Una carta nuova da segnare, non la stessa carta che scivola con lo schermo.
         let moved = match (self.target, new_target) {
-            (Some(a), Some(b)) => a.iter().zip(b).any(|(x, y)| (x - y).abs() > 30.0),
+            _ if hidden => false,
+            (Some(_), Some(_)) => std::mem::take(&mut self.retarget),
             (a, b) => a.is_some() != b.is_some(),
         };
         if mood != self.mood || moved {
@@ -603,6 +660,8 @@ impl Fly {
                 r.map_or(home, |r| pos2(r.right() - 14.0, r.top() - 6.0 * PX))
             }
             Mood::Thinking => home + vec2((t * 2.2).cos() * 60.0, (t * 2.2).sin() * 22.0),
+            // Indicava una carta che per un attimo non si vede: resta lì sopra ad aspettare.
+            Mood::Pointing if play.is_none() => self.pos,
             Mood::Pointing => {
                 let (card, take) = play.expect("carta da indicare");
                 let stops = 1 + take.len();
@@ -640,7 +699,7 @@ impl Fly {
         }
 
         // Picchiata sulla carta: scende, la tocca (onda psichica) e risale.
-        if self.mood == Mood::Pointing {
+        if self.mood == Mood::Pointing && play.is_some() {
             self.next_dive -= dt;
             if self.dive.is_none() && self.next_dive <= 0.0 && (self.pos - goal).length() < 50.0 {
                 self.dive = Some(0.0);
@@ -1763,12 +1822,39 @@ mod tests {
         assert_eq!(fly.sticky(play.clone()), play);
         fly.t += 1.0;
         assert_eq!(fly.sticky(Guide::Thinking), play);
-        assert_eq!(fly.sticky(Guide::NoTable), play);
         fly.t += STICKY;
+        assert_eq!(fly.sticky(Guide::Thinking), Guide::Thinking);
+        // Carte sparite dallo schermo: niente segno appiccicato.
+        assert_eq!(fly.sticky(play.clone()), play);
+        assert_eq!(fly.sticky(Guide::Hidden), Guide::Hidden);
+        assert_eq!(fly.sticky(Guide::Thinking), Guide::Thinking);
+        assert_eq!(fly.sticky(play.clone()), play);
+        assert_eq!(fly.sticky(Guide::NoTable), Guide::NoTable);
         assert_eq!(fly.sticky(Guide::Thinking), Guide::Thinking);
         assert_eq!(fly.sticky(play.clone()), play);
         assert_eq!(fly.sticky(Guide::Waiting), Guide::Waiting);
         assert_eq!(fly.sticky(Guide::Thinking), Guide::Thinking);
+    }
+
+    /// Se le carte spariscono per un attimo la mosca smette di segnarle ma non cambia umore e non
+    /// festeggia; quando tornano non le riannuncia.
+    #[test]
+    fn hidden_cards_are_not_marked() {
+        let (screen, hand, _) = sight(Guide::Thinking);
+        let mut fly = Fly::default();
+        let play = (hand[0], Vec::new());
+        let guide = Guide::Play { card: [0.0; 4], take: vec![] };
+        for _ in 0..120 {
+            fly.step(1.0 / 60.0, screen, &hand, &guide, Some(&play));
+        }
+        fly.bubble = None;
+        for _ in 0..30 {
+            fly.step(1.0 / 60.0, screen, &hand, &Guide::Hidden, None);
+        }
+        assert_eq!(fly.mood, Mood::Pointing);
+        assert!(fly.spin.is_none() && fly.bubble.is_none());
+        fly.step(1.0 / 60.0, screen, &hand, &guide, Some(&play));
+        assert!(fly.bubble.is_none(), "la stessa carta non si riannuncia");
     }
 
     /// Quando la carta indicata sparisce (giocata), la mosca festeggia.

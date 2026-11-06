@@ -630,10 +630,15 @@ impl Assist {
     /// Cosa deve fare la Psy Fly: la carta da giocare e quelle da prendere, sullo schermo.
     fn fly_sight(&self) -> psyfly::Sight {
         let Some(reader) = &self.vision.reader else {
-            return psyfly::Sight { monitor: None, hand: Vec::new(), guide: psyfly::Guide::NoTable };
+            return psyfly::Sight::off();
         };
         let monitor = reader.monitor();
+        // Le carte lette ma non più sullo schermo (sparite, coperte, schermo cambiato) non si
+        // segnano: la mosca aspetta la prossima lettura invece di indicare un posto vuoto.
         let scene = self.vision.scene.as_ref().filter(|_| !self.vision.lost);
+        if scene.is_some() && reader.lost() {
+            return psyfly::Sight { monitor, hand: Vec::new(), guide: psyfly::Guide::Hidden };
+        }
         let hand: Vec<[f32; 4]> =
             scene.map_or(Vec::new(), |s| s.hand.iter().filter_map(|v| reader.on_desktop(v.at)).collect());
         let guide = match (scene, self.obs) {
@@ -641,7 +646,7 @@ impl Assist {
             (Some(scene), Some(o)) if self.step() == Step::MyMove => {
                 let best = self.analysis.as_ref().and_then(|(ev, _)| ev.first()).map(|e| e.mv);
                 let find = |views: &[CardView], among: CardSet, c: Card| {
-                    views.iter().find(|v| v.best(among).is_some_and(|b| b.0 == c)).and_then(|v| reader.on_desktop(v.at))
+                    crate::vision::locate(views, among, c).and_then(|v| reader.on_desktop(v.at))
                 };
                 match best.and_then(|m| Some((find(&scene.hand, o.hand, m.card)?, m))) {
                     Some((card, m)) => {

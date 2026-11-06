@@ -361,6 +361,7 @@ pub struct Frames<T = ()> {
 /// Quante schermate al più restano in attesa.
 const FRAMES: usize = 8;
 
+#[cfg(test)]
 impl Frames {
     /// Offre una schermata appena catturata; vero se è stata tenuta.
     pub fn offer(&mut self, img: Img, now: std::time::Instant) -> bool {

@@ -918,6 +918,16 @@ impl Assistant {
         };
         let step = pos.step();
         let view = self.vision.sightings.view(card);
+        // Una carta che l'utente ha già detto sbagliata si ripropone solo se ora la si vede con
+        // molta sicurezza: altrimenti non si insiste, si chiede di scrivere la carta giusta.
+        if self.vision.doubts.contains(&(step, card)) && !self.vision.sightings.clearly_seen(step, card) {
+            self.vision.status = match step {
+                Step::Draw(_) => "Non riconosco la carta pescata: scrivila (per esempio 3c) e continuo da solo".into(),
+                Step::OppMove => "Non ho visto la carta giocata dall'avversario: scrivila (per esempio 3c) e continuo da solo".into(),
+                _ => "Non riconosco la carta giocata: scrivila (per esempio 3c) e continuo da solo".into(),
+            };
+            return false;
+        }
         // Una carta letta senza sicurezza, o annullata dall'utente, non si mette da sola: si chiede.
         if !sure || self.vision.doubts.contains(&(step, card)) {
             if let Some((img, vis)) = view {
@@ -1925,6 +1935,16 @@ impl Sightings {
     /// Vista nelle ultime letture.
     fn recent(&self, s: &Sighting) -> bool {
         self.frame.saturating_sub(s.last) <= 6
+    }
+
+    /// Vista di nuovo con molta sicurezza per il passo `step` (dopo che l'utente l'aveva scartata).
+    fn clearly_seen(&self, step: Step, c: Card) -> bool {
+        let s = match step {
+            Step::Draw(_) => self.hand.get(c as usize),
+            Step::OppMove | Step::MyMove => self.table.get(c as usize),
+            _ => None,
+        };
+        s.is_some_and(|s| s.count >= 2 && s.margin >= 2.0 * AUTO_MARGIN)
     }
 
     /// Dimentica gli avvistamenti di `c` che hanno portato a proporla per il passo `step`.
@@ -2965,6 +2985,30 @@ mod tests {
                                     "{f} SCRITTA a mano la carta dell'avversario {}",
                                     cards::short(c)
                                 );
+                            }
+                            a.vision.status.clear();
+                        }
+                    }
+                }
+                // L'app chiede di scrivere la pescata o la mia giocata: l'utente la scrive.
+                if a.vision.status.starts_with("Non riconosco la carta") {
+                    let allowed = a.pos.allowed();
+                    let right = match a.pos.step() {
+                        Step::Draw(_) => hands
+                            .get(idx + 1)
+                            .into_iter()
+                            .chain([&truth_hand])
+                            .flatten()
+                            .copied()
+                            .find(|&h| allowed.contains(h) && !a.pos.hand.contains(h)),
+                        Step::MyMove => truth_trick.iter().find(|t| t.1 && allowed.contains(t.0)).map(|t| t.0),
+                        _ => None,
+                    };
+                    if let Some(c) = right {
+                        if a.enter(c) {
+                            typed += 1;
+                            if verbose {
+                                println!("{f} SCRITTA a mano su richiesta: {}", cards::short(c));
                             }
                             a.vision.status.clear();
                         }

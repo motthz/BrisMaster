@@ -351,7 +351,8 @@ impl<S: Send + 'static> Reader<S> {
 /// più simili a quella prima, mai l'ultima: uno stato breve (una presa che resta in tavola un
 /// attimo) non si perde.
 pub struct Frames<T = ()> {
-    frames: std::collections::VecDeque<(Img, Vec<u8>, T)>,
+    /// Schermata, impronta, dato attaccato e quando è stata catturata.
+    frames: std::collections::VecDeque<(Img, Vec<u8>, T, std::time::Instant)>,
     last: Option<Vec<u8>>,
     pushed: Option<std::time::Instant>,
     every: std::time::Duration,
@@ -385,24 +386,29 @@ impl<T> Frames<T> {
     /// Come `offer`, con un dato attaccato alla schermata.
     pub fn offer_with(&mut self, img: Img, tag: T, now: std::time::Instant) -> bool {
         let sig = signature(&img);
-        let changed = self.last.as_ref().is_none_or(|l| difference(l, &sig) >= 1.5);
+        // Cambiata: nel complesso, o anche solo in un pezzo piccolo (una carta su un monitor 4K
+        // con il gioco in finestra cambia poche celle dell'impronta, ma tanto).
+        let changed = self.last.as_ref().is_none_or(|l| difference(l, &sig) >= 1.5 || changed_cells(l, &sig) >= 2);
         let stale = self.pushed.is_none_or(|t| now.duration_since(t) >= self.every);
         if !changed && !stale {
             return false;
         }
         if self.frames.len() >= FRAMES {
-            // Si scarta la schermata (non l'ultima) più simile a quella prima.
+            // Si scarta una schermata di passaggio (rimasta sullo schermo meno delle altre: un
+            // momento di un'animazione), la più simile a quella prima; mai l'ultima, e mai uno
+            // stato rimasto fermo (la carta giocata in tavola).
+            let lasted = |i: usize| self.frames[i + 1].3.duration_since(self.frames[i].3);
             let drop = (1..self.frames.len() - 1)
                 .min_by(|&a, &b| {
                     let d = |i: usize| difference(&self.frames[i - 1].1, &self.frames[i].1);
-                    d(a).total_cmp(&d(b))
+                    lasted(a).cmp(&lasted(b)).then(d(a).total_cmp(&d(b)))
                 })
                 .unwrap_or(0);
             self.frames.remove(drop);
         }
         self.last = Some(sig.clone());
         self.pushed = Some(now);
-        self.frames.push_back((img, sig, tag));
+        self.frames.push_back((img, sig, tag, now));
         true
     }
 
@@ -410,6 +416,14 @@ impl<T> Frames<T> {
     pub fn next_with(&mut self) -> Option<(Img, T)> {
         self.frames.pop_front().map(|f| (f.0, f.2))
     }
+}
+
+/// Quante celle dell'impronta sono cambiate molto (una carta che compare o sparisce).
+fn changed_cells(a: &[u8], b: &[u8]) -> usize {
+    if a.len() != b.len() {
+        return a.len().max(b.len());
+    }
+    a.iter().zip(b).filter(|(&x, &y)| (x as i32 - y as i32).abs() >= 24).count()
 }
 
 /// Impronta di una schermata: la luminosità media su una griglia 48 x 32.
@@ -551,6 +565,43 @@ mod tests {
             seen.push(i.px[0][0]);
         }
         assert!(seen.contains(&200), "stato breve perso: {seen:?}");
+    }
+
+    /// Su uno schermo grande una carta sola che compare cambia poco nel complesso, ma la schermata
+    /// si tiene lo stesso; e se l'analisi resta indietro si scartano i momenti delle animazioni,
+    /// non gli stati rimasti fermi.
+    #[test]
+    fn small_changes_are_kept() {
+        let t0 = std::time::Instant::now();
+        let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
+        let screen = |card: Option<(usize, usize)>| {
+            let mut i = Img::new(1920, 1080);
+            i.px.iter_mut().for_each(|p| *p = [30, 90, 40]);
+            if let Some((cx, cy)) = card {
+                for y in cy..cy + 110 {
+                    for x in cx..cx + 76 {
+                        i.px[y * 1920 + x] = [245, 245, 240];
+                    }
+                }
+            }
+            i
+        };
+        let mut f = Frames::new(std::time::Duration::from_millis(600));
+        assert!(f.offer(screen(None), at(0)));
+        assert!(f.offer(screen(Some((900, 400))), at(100)), "carta comparsa non tenuta");
+        // Analisi ferma: uno stato fermo (la carta in tavola per mezzo secondo) e poi
+        // un'animazione lunga: lo stato fermo resta.
+        let mut f = Frames::new(std::time::Duration::from_millis(600));
+        f.offer(screen(None), at(0));
+        f.offer(screen(Some((900, 400))), at(100));
+        for k in 0..20u64 {
+            f.offer(screen(Some((100 + k as usize * 60, 700))), at(600 + k * 100));
+        }
+        let mut seen = Vec::new();
+        while let Some(i) = f.next() {
+            seen.push(i.at(910, 410)[0]);
+        }
+        assert!(seen.contains(&245), "stato fermo perso");
     }
 
     /// Lo screenshot del sito: l'avversario ha giocato il 2 di bastoni, tu il 7 di spade, in mano

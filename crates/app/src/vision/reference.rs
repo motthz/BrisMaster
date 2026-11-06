@@ -151,6 +151,67 @@ fn corr(o: &Stats, t: &Stats, (r0, r1): (usize, usize)) -> f32 {
     (num / (vo * vt).sqrt()) as f32
 }
 
+/// Come `corr_rect`, saltando le righe coperte (`skip`).
+fn corr_masked(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize, usize), skip: &[bool; TH]) -> f32 {
+    let rows: Vec<usize> = (r0..r1).filter(|&j| !skip[j]).collect();
+    if rows.len() < 4 || c1 < c0 + 4 {
+        return -1.0;
+    }
+    let n = (rows.len() * (c1 - c0)) as f64;
+    let (mut num, mut vo, mut vt) = (0.0, 0.0, 0.0);
+    for c in 0..3 {
+        let (mut so, mut st, mut d, mut qo, mut qt) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for &j in &rows {
+            for i in c0..c1 {
+                let (a, b) = (o.px[j * TW + i][c] as f64, t.px[j * TW + i][c] as f64);
+                so += a;
+                st += b;
+                d += a * b;
+                qo += a * a;
+                qt += b * b;
+            }
+        }
+        num += d - so * st / n;
+        vo += qo - so * so / n;
+        vt += qt - st * st / n;
+    }
+    if vo < 36.0 * n || vt < 1e-3 {
+        return 0.0;
+    }
+    (num / (vo * vt).sqrt()) as f32
+}
+
+/// Le righe della carta raddrizzata attraversate da qualcosa che la copre (una fascia, una
+/// scritta, un adesivo che passa sopra la carta): lì il bordo bianco non si vede né a sinistra né
+/// a destra. Vuoto se non c'è niente, o se sembrano coperte troppe righe (la carta è inquadrata
+/// male, o non ha il bordo bianco): allora si confronta tutto come sempre.
+fn covered_rows(img: &Img) -> Vec<bool> {
+    let (w, h) = (CARD_W, CARD_H);
+    let light = |x0: f32, x1: f32, y: usize| {
+        let (a, b) = ((x0 * w as f32) as usize, ((x1 * w as f32) as usize).max((x0 * w as f32) as usize + 1));
+        let mut acc = [0u32; 3];
+        for x in a..b.min(w) {
+            let p = img.at(x, y);
+            (0..3).for_each(|c| acc[c] += p[c] as u32);
+        }
+        let n = (b.min(w) - a).max(1) as u32;
+        let p = acc.map(|v| v / n);
+        let (lo, hi) = (*p.iter().min().expect("tre canali"), *p.iter().max().expect("tre canali"));
+        (p[0] * 3 + p[1] * 6 + p[2]) / 10 >= 140 && hi - lo <= 70
+    };
+    let rows: Vec<bool> = (0..h)
+        .map(|y| {
+            let f = y as f32 / h as f32;
+            (0.04..0.96).contains(&f) && !light(0.015, 0.045, y) && !light(0.955, 0.985, y)
+        })
+        .collect();
+    let n = rows.iter().filter(|&&r| r).count();
+    if n == 0 || n as f32 > 0.4 * h as f32 {
+        return Vec::new();
+    }
+    rows
+}
+
 /// Come `corr`, ma solo sulle colonne c0..c1 (la carta coperta di lato da un'altra).
 fn corr_rect(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize, usize)) -> f32 {
     if r1 < r0 + 4 || c1 < c0 + 4 {
@@ -346,6 +407,8 @@ struct Seen {
     cols: [f32; 2],
     /// Somme dei canali sul rettangolo [0, x) x [0, y), (CARD_W + 1) x (CARD_H + 1).
     sat: Vec<[f64; 3]>,
+    /// Le righe della carta coperte da qualcosa che la attraversa (vuoto se nessuna).
+    covered: Vec<bool>,
     cache: HashMap<[i32; 4], Stats>,
 }
 
@@ -363,7 +426,7 @@ impl Seen {
                 }
             }
         }
-        Seen { vis, cols, sat, cache: HashMap::new() }
+        Seen { vis, cols, sat, covered: Vec::new(), cache: HashMap::new() }
     }
 
     /// Somma cumulata in un punto qualsiasi (interpolata; fuori dalla carta si ferma al bordo).
@@ -411,6 +474,18 @@ impl Seen {
 
     fn score(&mut self, crop: Crop, card: usize) -> f32 {
         let rows = crop.rows(self.vis);
+        if !self.covered.is_empty() {
+            // Le righe della miniatura che toccano una riga coperta della carta non contano.
+            let h = CARD_H as f32;
+            let mut skip = [false; TH];
+            for (j, s) in skip.iter_mut().enumerate() {
+                let a = ((crop.y0 + j as f32 / TH as f32 * crop.h) * h).max(0.0) as usize;
+                let b = (((crop.y0 + (j + 1) as f32 / TH as f32 * crop.h) * h).ceil() as usize).min(CARD_H);
+                *s = (a..b).any(|y| self.covered[y]);
+            }
+            let cols = if self.cols == WHOLE { (0, TW) } else { crop.cols(self.cols) };
+            return corr_masked(self.thumb(crop), &templates()[card], rows, cols, &skip);
+        }
         if self.cols == WHOLE {
             corr(self.thumb(crop), &templates()[card], rows)
         } else {
@@ -472,11 +547,21 @@ impl Match {
     /// Una carta di cui si vede la fascia `vis` dell'altezza e la striscia `cols` della larghezza
     /// (tutta, o una parte se è coperta di lato da un'altra carta, come nelle mani a ventaglio).
     pub fn with_cols(card: &Img, vis: [f32; 2], cols: [f32; 2]) -> Match {
-        Match::crops(card, vis, cols, &SX, &SY)
+        Match::crops(card, vis, cols, &SX, &SY, false)
     }
 
-    fn crops(card: &Img, vis: [f32; 2], cols: [f32; 2], xs: &[f32], ys: &[f32]) -> Match {
+    /// Come `with_cols`, senza contare le righe attraversate da qualcosa che copre la carta (una
+    /// fascia che passa sopra una fila di carte). Solo dove la posizione della carta è già certa:
+    /// altrimenti toglie righe utili a distinguere carte simili.
+    pub fn with_cols_uncovered(card: &Img, vis: [f32; 2], cols: [f32; 2]) -> Match {
+        Match::crops(card, vis, cols, &SX, &SY, true)
+    }
+
+    fn crops(card: &Img, vis: [f32; 2], cols: [f32; 2], xs: &[f32], ys: &[f32], uncover: bool) -> Match {
         let mut seen = Seen::new(card, vis, cols);
+        if uncover {
+            seen.covered = covered_rows(card);
+        }
         let (w, h) = (CARD_W as f32, CARD_H as f32);
         let hues = Hues::new(card, (0.1 * w).max(cols[0] * w), 0.06 * h, (0.9 * w).min(cols[1] * w), 0.94 * h);
         let mut best = vec![(-1.0f32, 0.0f32, 0.0f32); NT];

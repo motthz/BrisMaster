@@ -2791,6 +2791,8 @@ mod tests {
         let sim = std::env::var("CATTURA")
             .ok()
             .and_then(|v| v.parse::<u64>().ok());
+        // ZOOM=fattore: il sito ingrandito o rimpicciolito.
+        let zoom = std::env::var("ZOOM").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
         let desk = std::env::var("SCHERMO")
             .ok()
             .and_then(|v| v.parse::<usize>().ok());
@@ -2823,15 +2825,41 @@ mod tests {
                     .map(|n| dir.join(n))
                     .find(|p| p.exists())
                     .unwrap();
-                let img = crate::vision::capture::load_png(&file).unwrap();
+                let mut img = crate::vision::capture::load_png(&file).unwrap();
+                // Il sito ingrandito o rimpicciolito (zoom del browser o di Windows).
+                if (zoom - 1.0).abs() > 0.01 {
+                    let (w, h) = ((img.w as f32 * zoom) as usize, (img.h as f32 * zoom) as usize);
+                    let mut z = Img::new(w, h);
+                    for y in 0..h {
+                        for x in 0..w {
+                            let mut acc = [0u32; 3];
+                            for (dx, dy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+                                let p = img.sample((x as f32 + dx) / zoom - 0.5, (y as f32 + dy) / zoom - 0.5);
+                                (0..3).for_each(|c| acc[c] += p[c] as u32);
+                            }
+                            z.px[y * w + x] = acc.map(|a| (a / 4) as u8);
+                        }
+                    }
+                    img = z;
+                }
                 let Some(w) = desk.filter(|&w| w > img.w) else {
                     return img;
                 };
-                // Il tavolo in una finestra di uno schermo più grande, catturato tutto.
-                let h = (w * 9 / 16).max(img.h + 80);
+                // Il tavolo in una finestra di uno schermo più grande, catturato tutto: sopra la
+                // barra del browser, sotto la barra delle applicazioni.
+                let h = (w * 9 / 16).max(img.h + 100);
                 let mut out = Img::new(w, h);
                 out.px.iter_mut().for_each(|p| *p = [38, 42, 50]);
-                for y in 0..img.h {
+                for y in 0..h {
+                    for x in 0..w {
+                        if (20..60).contains(&y) && (120..120 + img.w).contains(&x) {
+                            out.px[y * w + x] = [222, 225, 230];
+                        } else if y + 40 >= h {
+                            out.px[y * w + x] = [20, 20, 24];
+                        }
+                    }
+                }
+                for y in 0..img.h.min(h - 100) {
                     let row = (y + 60) * w + 120;
                     out.px[row..row + img.w.min(w - 120)]
                         .copy_from_slice(&img.px[y * img.w..y * img.w + img.w.min(w - 120)]);

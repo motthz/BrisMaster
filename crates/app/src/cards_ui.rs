@@ -90,20 +90,19 @@ pub struct Look {
     pub no_points: bool,
 }
 
-/// Il foglio delle 40 carte vere (lo stesso con cui si riconoscono sullo schermo), caricato una
-/// volta come immagine e ingrandito per restare nitido anche sulle carte grandi.
+/// Il foglio delle 40 carte vere (il mazzo napoletano di Wikimedia Commons, uno di quelli con cui si
+/// riconoscono sullo schermo), caricato una volta come immagine.
 fn sheet(ctx: &egui::Context) -> egui::TextureHandle {
     let id = egui::Id::unique("carte_napoletane");
     if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         return t;
     }
-    let im = image::load_from_memory_with_format(crate::vision::reference::SHEET, image::ImageFormat::Png)
+    let im = image::load_from_memory_with_format(crate::vision::reference::DISPLAY_SHEET, image::ImageFormat::Jpeg)
         .expect("foglio delle carte")
         .to_rgba8();
-    let big = image::imageops::resize(&im, im.width() * 2, im.height() * 2, image::imageops::FilterType::CatmullRom);
-    let size = [big.width() as usize, big.height() as usize];
+    let size = [im.width() as usize, im.height() as usize];
     let options = egui::TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
-    let tex = ctx.load_texture("carte_napoletane", egui::ColorImage::from_rgba_unmultiplied(size, big.as_raw()), options);
+    let tex = ctx.load_texture("carte_napoletane", egui::ColorImage::from_rgba_unmultiplied(size, im.as_raw()), options);
     ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
     tex
 }
@@ -111,13 +110,13 @@ fn sheet(ctx: &egui::Context) -> egui::TextureHandle {
 /// Disegna il disegno della carta vera, il più grande possibile dentro `area` (centrato).
 fn paint_art(p: &Painter, area: Rect, c: Card) {
     let (col, row) = crate::vision::reference::sheet_cell(c);
-    // Un pixel e mezzo in meno per lato: i bordi del foglio toccano le carte vicine.
-    let (du, dv) = (1.5 / 540.0, 1.5 / 370.0);
+    // Un pixel in meno per lato: le carte del foglio si toccano.
+    let (du, dv) = (1.0 / 1600.0, 1.0 / 1056.0);
     let uv = Rect::from_min_max(
         pos2(col as f32 / 10.0 + du, row as f32 / 4.0 + dv),
         pos2((col + 1) as f32 / 10.0 - du, (row + 1) as f32 / 4.0 - dv),
     );
-    let ratio = (54.0 - 3.0) / (92.5 - 3.0);
+    let ratio = crate::vision::reference::DISPLAY_RATIO;
     let size = if area.width() / area.height() > ratio {
         vec2(area.height() * ratio, area.height())
     } else {

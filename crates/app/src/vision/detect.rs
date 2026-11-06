@@ -81,9 +81,11 @@ pub struct Blob {
 }
 
 impl Blob {
-    /// Chiara e staccata dal fondo: può essere una carta scoperta (o un pezzo di carta).
+    /// Chiara e staccata dal fondo: può essere una carta scoperta (o un pezzo di carta). Basta
+    /// poco bianco: nell'asso di denari l'anello lascia solo una cornice (come un dorso, che poi
+    /// non somiglia a nessuna carta e si scarta).
     pub fn light(&self) -> bool {
-        self.white > 0.3 && self.bg > 0.3
+        self.white > 0.08 && self.bg > 0.3 && self.rect.long() >= 40.0
     }
 }
 
@@ -134,12 +136,13 @@ impl Paper {
         Paper { lut }
     }
 
-    /// Vero se il colore, bilanciato, è bianco: poco saturo e chiaro.
+    /// Vero se il colore, bilanciato, è bianco: poco saturo (il legno chiaro di un tavolo non lo è
+    /// abbastanza) e chiaro.
     #[inline]
     pub fn is(&self, p: [u8; 3]) -> bool {
         let q = [self.lut[0][p[0] as usize], self.lut[1][p[1] as usize], self.lut[2][p[2] as usize]];
         let (max, min) = (q[0].max(q[1]).max(q[2]) as u32, q[0].min(q[1]).min(q[2]) as u32);
-        max > 190 && (max - min) * 255 < 70 * max
+        max > 190 && (max - min) * 255 < 45 * max
     }
 }
 
@@ -230,9 +233,21 @@ fn canonical(mut r: RotRect) -> RotRect {
 
 /// Zone chiare dopo un'erosione di raggio `r` (i rettangoli vengono poi riallargati di `r`).
 fn blobs_r(img: &Img, paper: &[bool], r: usize) -> Vec<Blob> {
-    let (w, h) = (img.w, img.h);
-    let er = erode(paper, w, h, r);
-    let min_area = ((w * h) as f32 * 0.0006) as usize;
+    blobs_in(img, paper, r, (0, 0, img.w, img.h))
+}
+
+/// Come `blobs_r`, solo dentro il riquadro (x0, y0, x1, y1): per dividere una zona sola non serve
+/// erodere tutto lo schermo.
+fn blobs_in(img: &Img, paper: &[bool], r: usize, (x0, y0, x1, y1): (usize, usize, usize, usize)) -> Vec<Blob> {
+    let (x1, y1) = (x1.min(img.w), y1.min(img.h));
+    if x1 <= x0 || y1 <= y0 {
+        return Vec::new();
+    }
+    let (w, h) = (x1 - x0, y1 - y0);
+    let sub: Vec<bool> = (y0..y1).flat_map(|y| paper[y * img.w + x0..y * img.w + x1].iter().copied()).collect();
+    let er = erode(&sub, w, h, r);
+    // Basta poco: di un asso di denari piccolo resta solo la cornice bianca.
+    let min_area = ((img.w * img.h) as f32 * 0.0002) as usize;
     let mut seen = vec![false; w * h];
     let mut out = Vec::new();
     let mut stack = Vec::new();
@@ -263,7 +278,7 @@ fn blobs_r(img: &Img, paper: &[bool], r: usize) -> Vec<Blob> {
                 }
             }
             if border {
-                edge.push((x as f32, y as f32));
+                edge.push(((x + x0) as f32, (y + y0) as f32));
             }
         }
         if count < min_area {
@@ -376,8 +391,109 @@ pub fn warp(img: &Img, r: &RotRect) -> Img {
     out
 }
 
+/// Quanto la zona raddrizzata sembra carta e non scritta, nella fascia visibile `vis`:
+/// (bordo, inchiostro). Il bordo è la frazione del contorno (a pochi pixel dal lato, dove si vede)
+/// chiara e poco colorata come la carta: una carta ha la cornice bianca tutta attorno, una scritta
+/// o una cifra ha attorno lo sfondo. L'inchiostro è la frazione dell'interno disegnata a colori:
+/// le napoletane hanno sempre figure e semi colorati, le scritte sono quasi sempre di un colore solo.
+pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
+    let (y0, y1) = ((vis[0] * CARD_H as f32) as usize, ((vis[1] * CARD_H as f32) as usize).min(CARD_H));
+    if y1 <= y0 + 8 {
+        return (0.0, 0.0);
+    }
+    let lum = |p: [u8; 3]| (p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10;
+    // Il bianco della carta: i punti più chiari della fascia (con la luce dello schermo, anche calda
+    // o scura). I colori si confrontano con quel bianco.
+    let pts: Vec<[u8; 3]> = (y0..y1)
+        .step_by(2)
+        .flat_map(|y| (0..CARD_W).step_by(2).map(move |x| (x, y)))
+        .map(|(x, y)| card.at(x, y))
+        .collect();
+    let mut ls: Vec<u32> = pts.iter().map(|&p| lum(p)).collect();
+    ls.sort_unstable();
+    let top = ls[ls.len() * 9 / 10];
+    let bright: Vec<&[u8; 3]> = pts.iter().filter(|&&p| lum(p) >= top).collect();
+    let white: [f32; 3] =
+        std::array::from_fn(|c| (bright.iter().map(|p| p[c] as f32).sum::<f32>() / bright.len() as f32).max(1.0));
+    let balanced =
+        |p: [u8; 3]| -> [u8; 3] { std::array::from_fn(|c| (p[c] as f32 / white[c] * 230.0).min(255.0) as u8) };
+    let paper = |p: [u8; 3]| lum(p) as f32 >= 0.8 * top as f32 && hsv(balanced(p)).1 < 70;
+    // Un punto del contorno è carta se lo è a 1..5 pixel dal lato: il rettangolo non è mai preciso
+    // al pixel e su alcuni mazzi il disegno arriva quasi al bordo.
+    let mut rim = Vec::new();
+    let m = (y1 - y0) / 12;
+    for y in y0 + m..y1 - m {
+        rim.push((1..=5).any(|d| paper(card.at(d, y))));
+        rim.push((1..=5).any(|d| paper(card.at(CARD_W - 1 - d, y))));
+    }
+    let (mx0, mx1) = (CARD_W / 12, CARD_W - CARD_W / 12);
+    if vis[0] < 0.01 {
+        rim.extend((mx0..mx1).map(|x| (1..=5).any(|d| paper(card.at(x, d)))));
+    }
+    if vis[1] > 0.99 {
+        rim.extend((mx0..mx1).map(|x| (1..=5).any(|d| paper(card.at(x, CARD_H - 1 - d)))));
+    }
+    let border = rim.iter().filter(|&&p| p).count() as f32 / rim.len() as f32;
+    let mut n = 0;
+    let mut ink = 0;
+    for y in (y0 + m..y1 - m).step_by(2) {
+        for x in (CARD_W / 10..CARD_W - CARD_W / 10).step_by(2) {
+            let (_, sat, v) = hsv(balanced(card.at(x, y)));
+            n += 1;
+            if sat >= 60 && v >= 50 {
+                ink += 1;
+            }
+        }
+    }
+    (border, ink as f32 / n.max(1) as f32)
+}
+
+/// Frazione dell'interno della zona raddrizzata `card` (fascia `vis`) che ha i colori dello sfondo
+/// appena fuori dal rettangolo `r`: dentro una carta c'è il disegno, dentro il rettangolo di una
+/// scritta o di una cifra si vede il tavolo fra una lettera e l'altra.
+pub fn table_inside(img: &Img, r: &RotRect, card: &Img, vis: [f32; 2]) -> f32 {
+    // Colori dello sfondo (in celle di 8 livelli per canale, allargate di una cella), senza quelli
+    // chiari e poco colorati come la carta.
+    let mut bins = vec![false; 32 * 32 * 32];
+    for pad in [4.0, 10.0] {
+        for k in 0..256 {
+            let (x, y) = r.outline(k as f32 / 64.0, 1.0, pad);
+            if x < 0.0 || y < 0.0 || x >= img.w as f32 || y >= img.h as f32 {
+                continue;
+            }
+            let p = img.at(x as usize, y as usize);
+            let (_, sat, v) = hsv(p);
+            if v > 170 && sat < 60 {
+                continue;
+            }
+            let [r0, g0, b0] = p.map(|c| (c / 8) as i32);
+            for dr in -1..=1 {
+                for dg in -1..=1 {
+                    for db in -1..=1 {
+                        let (r1, g1, b1) = (r0 + dr, g0 + dg, b0 + db);
+                        if (0..32).contains(&r1) && (0..32).contains(&g1) && (0..32).contains(&b1) {
+                            bins[(r1 * 32 + g1) as usize * 32 + b1 as usize] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let (y0, y1) = ((vis[0] * CARD_H as f32) as usize, ((vis[1] * CARD_H as f32) as usize).min(CARD_H));
+    let m = (y1.saturating_sub(y0)) / 12;
+    let (mut n, mut same) = (0, 0);
+    for y in (y0 + m..y1.saturating_sub(m)).step_by(2) {
+        for x in (CARD_W / 10..CARD_W - CARD_W / 10).step_by(2) {
+            let p = card.at(x, y).map(|c| (c / 8) as usize);
+            n += 1;
+            same += bins[(p[0] * 32 + p[1]) * 32 + p[2]] as usize;
+        }
+    }
+    same as f32 / n.max(1) as f32
+}
+
 /// Somiglianza minima con una carta di riferimento per credere che sia una carta.
-const ACCEPT: f32 = 0.45;
+const ACCEPT: f32 = 0.40;
 /// Lo stesso per una carta vista in parte: con meno disegno da confrontare serve più somiglianza.
 const ACCEPT_PARTIAL: f32 = 0.50;
 
@@ -401,34 +517,73 @@ pub struct Found {
     pub view: CardView,
     /// Somiglianza con la carta di riferimento più vicina.
     pub score: f32,
+    /// Frazione dell'interno coi colori del tavolo attorno (vedi `table_inside`).
+    pub inside: f32,
 }
 
 impl Found {
     pub fn partial(&self) -> bool {
         self.view.partial
     }
+
+    /// Somiglia abbastanza a una carta (almeno `min`) e ne ha l'aspetto: la cornice chiara tutta
+    /// attorno (le carte arrivano quasi a 1, le scritte prese per carte non oltre 0.87; meno se
+    /// somiglia molto: una carta sfocata, un po' storta o tagliata male) e un po' di colore.
+    /// Scritte, cifre, finestrelle e loghi possono somigliare per caso a una carta, non averne la
+    /// cornice e i colori.
+    fn accepted(&self, min: f32) -> bool {
+        let (border, ink) = traits(&self.view.img, self.view.vis);
+        // Con la cornice tutta attorno basta la somiglianza. Con la cornice incerta (carta sfocata,
+        // toccata da un'altra, tagliata male; ma anche il riquadro di una lettera o di una scritta)
+        // deve somigliare molto, o abbastanza e avere dentro il disegno colorato e non il tavolo.
+        if self.score < min || ink < MIN_INK {
+            return false;
+        }
+        // Una carta che somiglia moltissimo e dentro non ha il colore del tavolo resta una carta
+        // anche se una scritta trasparente le copre parte della cornice (le scritte prese per carte
+        // non arrivano a 0.7 di somiglianza).
+        if self.score >= 0.85 && self.inside < 0.15 && border >= 0.4 {
+            return true;
+        }
+        if border < 0.65 {
+            return false;
+        }
+        border >= 0.9 || self.score >= 0.85 || (self.score >= 0.6 && self.inside < 0.2 && ink >= 0.06)
+    }
 }
+
+/// Frazione minima dell'interno disegnata a colori (gli assi arrivano a 0.07).
+const MIN_INK: f32 = 0.02;
 
 /// Una posizione possibile della carta, confrontata al primo giro con le carte di riferimento.
 struct Try {
     rect: RotRect,
     vis: [f32; 2],
+    cols: [f32; 2],
     card: Img,
     m: reference::Match,
 }
 
 impl Try {
     fn new(img: &Img, rect: RotRect, vis: [f32; 2]) -> Try {
+        Try::with_cols(img, rect, vis, WHOLE)
+    }
+
+    /// Una carta coperta di lato: se ne vede la striscia `cols` della larghezza.
+    fn with_cols(img: &Img, rect: RotRect, vis: [f32; 2], cols: [f32; 2]) -> Try {
         let card = warp(img, &rect);
-        let m = reference::Match::new(&card, vis);
-        Try { rect, vis, card, m }
+        let m = reference::Match::with_cols(&card, vis, cols);
+        Try { rect, vis, cols, card, m }
     }
 
     /// Confronto completo.
-    fn finish(self) -> Found {
+    fn finish(self, img: &Img) -> Found {
         let sim = self.m.refine();
         let score = sim.iter().copied().fold(f32::MIN, f32::max);
-        Found { rect: self.rect, view: CardView::new(self.card, self.vis, sim), score }
+        let inside = table_inside(img, &self.rect, &self.card, self.vis);
+        let mut view = CardView::new(self.card, self.vis, sim);
+        view.partial |= self.cols != WHOLE;
+        Found { rect: self.rect, view, score, inside }
     }
 }
 
@@ -436,21 +591,36 @@ impl Try {
 /// giro (la carta dell'avversario su alcuni siti), che vince solo se somiglia chiaramente di più:
 /// le carte quasi simmetriche restano dritte, sempre nello stesso verso.
 fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
-    let up = Try::new(img, *r, WHOLE);
-    let down = Try::new(img, r.flipped(), WHOLE);
-    let t = if down.m.top() > up.m.top() + 0.03 { down } else { up };
-    let f = t.finish();
-    (f.score >= ACCEPT).then_some(f)
+    // Il verso si sceglie col confronto veloce; quello completo si fa solo per il verso scelto.
+    let up = reference::quick_tops(&warp(img, r), &[WHOLE])[0];
+    let down = reference::quick_tops(&warp(img, &r.flipped()), &[WHOLE])[0];
+    if up.max(down) < 0.25 {
+        return None;
+    }
+    let rect = if down > up + 0.03 { r.flipped() } else { *r };
+    let f = Try::new(img, rect, WHOLE).finish(img);
+    f.accepted(ACCEPT).then_some(f)
 }
 
-/// La zona come pezzo di una carta di misura `card_l` x `card_w`: un lato è largo quanto la carta,
-/// l'altro è la parte che si vede. Si prova la carta intera prolungata da una parte o dall'altra,
+/// Fra molte posizioni possibili di una carta, la più promettente al confronto veloce (None se
+/// nessuna somiglia a qualcosa).
+fn most_promising(img: &Img, rects: &[RotRect]) -> Option<RotRect> {
+    let tops = par_chunks(rects, |r| reference::quick_tops(&warp(img, r), &[WHOLE])[0]);
+    rects.iter().zip(tops).filter(|(_, t)| *t >= 0.25).max_by(|a, b| a.1.total_cmp(&b.1)).map(|(r, _)| *r)
+}
+
+/// La zona come pezzo di una carta con le proporzioni `card_w` / `card_l` delle carte intere: un
+/// lato è largo quanto la carta, l'altro è la parte che si vede. La carta può essere disegnata più
+/// piccola o più grande delle altre (molti siti rimpiccioliscono mazzo e briscola): la sua lunghezza
+/// si ricava dalla larghezza del pezzo. Si prova la carta intera prolungata da una parte o dall'altra,
 /// con la testa da una parte o dall'altra, e si confronta solo la fascia visibile.
 fn as_partial(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Option<Found> {
     let mut tries = Vec::new();
     for (width, axis, seen) in [(2.0 * r.hw, r.v, 2.0 * r.hh), (2.0 * r.hh, r.u, 2.0 * r.hw)] {
+        let scale = width / card_w;
+        let card_l = card_l * scale;
         // Un terzo di carta almeno: meno non basta a dire quale sia.
-        if (width - card_w).abs() > 0.15 * card_w || seen < 0.35 * card_l || seen > 0.95 * card_l {
+        if !(0.6..=1.25).contains(&scale) || seen < 0.35 * card_l || seen > 0.95 * card_l {
             continue;
         }
         let missing = card_l - seen;
@@ -467,7 +637,8 @@ fn as_partial(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Option<Found>
                     ((off + seen / 2.0) / card_l + 0.5).clamp(0.0, 1.0),
                 ];
                 // Dalla parte coperta il pezzo chiaro comprende spesso il bordo bianco di quello che
-                // copre (il mazzo): quella fascia non si confronta.
+                // copre (il mazzo): si prova anche senza quella fascia, e vince il confronto migliore.
+                tries.push(Try::new(img, rect, vis));
                 if side * head > 0.0 {
                     vis[1] -= HIDDEN_EDGE;
                 } else {
@@ -482,8 +653,8 @@ fn as_partial(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Option<Found>
     tries
         .into_iter()
         .take(2)
-        .map(Try::finish)
-        .filter(|f| f.score >= ACCEPT_PARTIAL)
+        .map(|t| t.finish(img))
+        .filter(|f| f.accepted(ACCEPT_PARTIAL))
         .max_by(|a, b| a.score.total_cmp(&b.score))
 }
 
@@ -508,12 +679,12 @@ fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
                 let v = (across.0 * cos - across.1 * sin, across.0 * sin + across.1 * cos);
                 for v in [v, (-v.0, -v.1)] {
                     let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: card_w / 2.0, hh: height.min(card_l) / 2.0 };
-                    tries.push(Try::new(img, rect, WHOLE));
+                    tries.push(rect);
                 }
             }
-            if let Some(t) = tries.into_iter().max_by(|a, b| a.m.top().total_cmp(&b.m.top())) {
-                let f = t.finish();
-                if f.score >= ACCEPT {
+            if let Some(rect) = most_promising(img, &tries) {
+                let f = Try::new(img, rect, WHOLE).finish(img);
+                if f.accepted(ACCEPT) {
                     out.push(f);
                 }
             }
@@ -523,6 +694,214 @@ fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
         }
     }
     out
+}
+
+/// Due carte in piedi una sopra l'altra che si sovrappongono (le carte giocate al centro), in una
+/// zona sola: si cerca una carta di misura `card_l` x `card_w` a ciascuna estremità della zona,
+/// spostata da una parte o dall'altra (le due carte non sono mai proprio in colonna). L'altra si
+/// ritrova dopo, togliendo questa.
+fn stacked(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
+    let (along, across, len, width) =
+        if r.hh >= r.hw { (r.v, r.u, 2.0 * r.hh, 2.0 * r.hw) } else { (r.u, r.v, 2.0 * r.hw, 2.0 * r.hh) };
+    if len < 1.25 * card_l || !(0.8..=1.5).contains(&(width / card_w)) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for end in [-1.0f32, 1.0] {
+        let mut tries = Vec::new();
+        let a = end * (len - card_l) / 2.0;
+        for side in [-1.0f32, 0.0, 1.0] {
+            let b = side * (width - card_w).max(0.0) / 2.0;
+            let (cx, cy) = (r.cx + along.0 * a + across.0 * b, r.cy + along.1 * a + across.1 * b);
+            for v in [along, (-along.0, -along.1)] {
+                let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: card_w / 2.0, hh: card_l / 2.0 };
+                tries.push(rect);
+            }
+        }
+        if let Some(rect) = most_promising(img, &tries) {
+            let f = Try::new(img, rect, WHOLE).finish(img);
+            if f.accepted(ACCEPT) {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
+/// Frazione del rettangolo disegnata a colori vivi (su una griglia di punti).
+fn colored(img: &Img, r: &RotRect) -> f32 {
+    let (mut n, mut k) = (0, 0);
+    for j in 0..20 {
+        for i in 0..20 {
+            let (a, b) = ((i as f32 + 0.5) / 20.0 - 0.5, (j as f32 + 0.5) / 20.0 - 0.5);
+            let x = r.cx + 2.0 * r.hw * a * r.u.0 + 2.0 * r.hh * b * r.v.0;
+            let y = r.cy + 2.0 * r.hw * a * r.u.1 + 2.0 * r.hh * b * r.v.1;
+            if x < 0.0 || y < 0.0 || x >= img.w as f32 || y >= img.h as f32 {
+                continue;
+            }
+            n += 1;
+            let (_, sat, v) = hsv(img.at(x as usize, y as usize));
+            k += (sat >= 80 && v >= 60) as usize;
+        }
+    }
+    k as f32 / n.max(1) as f32
+}
+
+/// Le carte di misura `card_l` x `card_w` dentro una zona chiara che le altre divisioni non
+/// spezzano (carte che si sovrappongono fra loro o a un foglietto, a una scritta chiara, a un
+/// riquadro del sito): si fa scorrere una carta della misura giusta, dritta o un po' girata, sui
+/// punti della zona coperti abbastanza di chiaro, e si tengono le posizioni che somigliano di più
+/// a una carta, lontane fra loro almeno mezza carta.
+fn scan(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
+    // Lo schermo cambia poco fra una lettura e l'altra: se la zona è identica a una già esaminata
+    // (stessi pixel, stessa misura delle carte) si riusa il risultato.
+    let key = region_key(img, r, card_l);
+    static CACHE: std::sync::Mutex<Vec<(u64, Vec<Found>)>> = std::sync::Mutex::new(Vec::new());
+    if let Some((_, found)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
+        return found.clone();
+    }
+    let found = scan_region(img, paper, r, card_l, card_w);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.push((key, found.clone()));
+    if cache.len() > 24 {
+        cache.remove(0);
+    }
+    found
+}
+
+/// Impronta dei pixel nel riquadro della zona (e della misura delle carte).
+fn region_key(img: &Img, r: &RotRect, card_l: f32) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let ext_x = r.hw * r.u.0.abs() + r.hh * r.v.0.abs();
+    let ext_y = r.hw * r.u.1.abs() + r.hh * r.v.1.abs();
+    let (x0, x1) = ((r.cx - ext_x).max(0.0) as usize, ((r.cx + ext_x) as usize).min(img.w));
+    let (y0, y1) = ((r.cy - ext_y).max(0.0) as usize, ((r.cy + ext_y) as usize).min(img.h));
+    (x0, x1, y0, y1, card_l.round() as i32).hash(&mut h);
+    for y in y0..y1 {
+        img.px[y * img.w + x0..y * img.w + x1].hash(&mut h);
+    }
+    h.finish()
+}
+
+fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
+    // Il riquadro (dritto) della zona.
+    let ext_x = r.hw * r.u.0.abs() + r.hh * r.v.0.abs();
+    let ext_y = r.hw * r.u.1.abs() + r.hh * r.v.1.abs();
+    let step = card_w / 3.0;
+    let (nx, ny) = ((2.0 * ext_x / step) as usize + 1, (2.0 * ext_y / step) as usize + 1);
+    // Frazione chiara di un rettangolo (su una griglia di punti), 0 se dentro non c'è disegno
+    // colorato (riquadri e finestrelle con testo scuro: le napoletane hanno sempre colori).
+    let light = |rect: &RotRect| {
+        let (mut n, mut k, mut ink) = (0, 0, 0);
+        for j in 0..8 {
+            for i in 0..6 {
+                let (a, b) = ((i as f32 + 0.5) / 6.0 - 0.5, (j as f32 + 0.5) / 8.0 - 0.5);
+                let x = rect.cx + 2.0 * rect.hw * a * rect.u.0 + 2.0 * rect.hh * b * rect.v.0;
+                let y = rect.cy + 2.0 * rect.hw * a * rect.u.1 + 2.0 * rect.hh * b * rect.v.1;
+                if x < 0.0 || y < 0.0 || x >= img.w as f32 || y >= img.h as f32 {
+                    continue;
+                }
+                n += 1;
+                k += paper[y as usize * img.w + x as usize] as usize;
+                let (_, sat, v) = hsv(img.at(x as usize, y as usize));
+                ink += (sat >= 60 && v >= 50) as usize;
+            }
+        }
+        if n == 0 || ink == 0 {
+            (0.0, 0)
+        } else {
+            (k as f32 / n as f32, ink)
+        }
+    };
+    // I centri provati: una griglia, più quelli di una carta appoggiata a ciascun bordo della
+    // zona (la prima e l'ultima carta di una fila sovrapposta toccano il bordo).
+    let mut xs: Vec<f32> = (0..nx).map(|i| r.cx - ext_x + i as f32 * step).collect();
+    let mut ys: Vec<f32> = (0..ny).map(|j| r.cy - ext_y + j as f32 * step).collect();
+    xs.extend([r.cx - ext_x + card_w / 2.0, r.cx + ext_x - card_w / 2.0]);
+    ys.extend([r.cy - ext_y + card_l / 2.0, r.cy + ext_y - card_l / 2.0]);
+    let mut rects = Vec::new();
+    for &cy in &ys {
+        for &cx in &xs {
+            if !r.contains(cx, cy) {
+                continue;
+            }
+            for deg in [-9.0f32, 0.0, 9.0] {
+                let (sin, cos) = deg.to_radians().sin_cos();
+                // In piedi, con la testa in alto (v va dalla testa ai piedi), girata di `deg`.
+                let v = (-sin, cos);
+                let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: card_w / 2.0, hh: card_l / 2.0 };
+                let (l, ink) = light(&rect);
+                if l >= 0.45 {
+                    rects.push((ink, rect));
+                }
+            }
+        }
+    }
+    // Al più qualche centinaio di prove: in una zona enorme (una carta attaccata a un riquadro del
+    // sito) si provano le posizioni con più disegno colorato.
+    rects.sort_by(|a, b| b.0.cmp(&a.0));
+    rects.truncate(300);
+    let rects: Vec<RotRect> = rects.into_iter().map(|(_, r)| r).collect();
+    // Primo giro veloce: per ogni posizione la carta si raddrizza una volta sola e si confronta
+    // intera e coperta da una parte o dall'altra.
+    const COLS: [[f32; 2]; 3] = [WHOLE, [0.0, 0.6], [0.4, 1.0]];
+    let quick = |rect: &RotRect, cols: &[[f32; 2]]| reference::quick_tops(&warp(img, rect), cols);
+    let tops = par_chunks(&rects, |rect| quick(rect, &COLS));
+    let mut cands: Vec<(f32, RotRect, [f32; 2])> = rects
+        .iter()
+        .zip(&tops)
+        .flat_map(|(r, t)| COLS.iter().zip(t).map(move |(c, &s)| (s, *r, *c)))
+        .filter(|c| c.0 >= 0.35)
+        .collect();
+    cands.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut out: Vec<Found> = Vec::new();
+    let mut tried = 0;
+    for (_, rect, cols) in cands {
+        if out.len() >= 6 || tried >= 12 || out.iter().any(|f| f.rect.dist(&rect) < 0.5 * card_w) {
+            continue;
+        }
+        tried += 1;
+        // Si affina intorno: un po' spostata e girata (la griglia è grossolana).
+        let (sin, cos) = 4f32.to_radians().sin_cos();
+        let turn = |v: (f32, f32), s: f32| (v.0 * cos - s * v.1 * sin, s * v.0 * sin + v.1 * cos);
+        let mut near = vec![rect];
+        for dy in [-0.5f32, 0.0, 0.5] {
+            for dx in [-0.5f32, 0.0, 0.5] {
+                for s in [-1.0f32, 0.0, 1.0] {
+                    let v = if s == 0.0 { rect.v } else { turn(rect.v, s) };
+                    let (cx, cy) = (rect.cx + dx * step, rect.cy + dy * step);
+                    near.push(RotRect { cx, cy, u: (v.1, -v.0), v, ..rect });
+                }
+            }
+        }
+        let scores = par_chunks(&near, |r| quick(r, &[cols])[0]);
+        let best = near.iter().zip(&scores).max_by(|a, b| a.1.total_cmp(b.1)).map(|(r, _)| *r).expect("posizioni");
+        if out.iter().any(|f| f.rect.dist(&best) < 0.5 * card_w) {
+            continue;
+        }
+        // Il confronto completo solo per la posizione migliore.
+        let f = Try::with_cols(img, best, WHOLE, cols).finish(img);
+        // Cercando dappertutto qualcosa somiglia per caso: si chiede di più.
+        if f.accepted(SCAN_ACCEPT) {
+            out.push(f);
+        }
+    }
+    out
+}
+
+/// Somiglianza minima per una carta trovata facendo scorrere la finestra.
+const SCAN_ACCEPT: f32 = 0.7;
+
+/// Applica `f` agli elementi divisi fra pochi thread (gli elementi possono essere tanti).
+fn par_chunks<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let n = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
+    let size = items.len().div_ceil(n).max(1);
+    let f = &f;
+    std::thread::scope(|s| {
+        let handles: Vec<_> = items.chunks(size).map(|c| s.spawn(move || c.iter().map(f).collect::<Vec<R>>())).collect();
+        handles.into_iter().flat_map(|h| h.join().expect("lettura di una carta")).collect()
+    })
 }
 
 /// Toglie dalla maschera il rettangolo (allargato di due pixel).
@@ -589,18 +968,29 @@ pub fn analyze(img: &Img) -> Analysis {
     let mut leftover = Vec::new();
     let mut was_split = false;
     for b in rest {
-        // Le carte hanno i disegni: le zone quasi tutte bianche sono riquadri del sito.
-        let merged = b.white < 0.85 && known_l.is_none_or(|l| (1.35..4.5).contains(&(b.rect.area() / (l * l * RATIO))));
+        // Le carte hanno i disegni: le zone quasi tutte bianche sono riquadri del sito. Una zona
+        // può essere anche molto più grande di una carta: carte che toccano un foglietto, un
+        // riquadro o una scritta chiara del sito.
+        // (Una zona molto bianca è un riquadro, a meno che dentro ci siano disegni colorati: una
+        // carta attaccata a un foglietto.)
+        let merged = (b.white < 0.85 || colored(img, &b.rect) >= 0.03)
+            && known_l.is_none_or(|l| (1.35..20.0).contains(&(b.rect.area() / (l * l * RATIO))));
         let piece = |q: &Blob| match known_l {
             Some(l) => (0.8..=1.2).contains(&(q.rect.long() / l)),
             None => q.rect.long() >= 0.5 * b.rect.long() && q.rect.area() < 0.85 * b.rect.area(),
         };
         let mut split = Vec::new();
+        // Il riquadro della zona (con un po' di margine): si erode solo lì.
+        let ext_x = b.rect.hw * b.rect.u.0.abs() + b.rect.hh * b.rect.v.0.abs() + 4.0;
+        let ext_y = b.rect.hw * b.rect.u.1.abs() + b.rect.hh * b.rect.v.1.abs() + 4.0;
+        let bbox = (
+            (b.rect.cx - ext_x).max(0.0) as usize,
+            (b.rect.cy - ext_y).max(0.0) as usize,
+            (b.rect.cx + ext_x) as usize + 1,
+            (b.rect.cy + ext_y) as usize + 1,
+        );
         for r in [3, 5, 8, 12].into_iter().filter(|_| merged) {
-            if !levels.iter().any(|(k, _)| *k == r) {
-                levels.push((r, blobs_r(img, &paper, r)));
-            }
-            let level = &levels.iter().find(|(k, _)| *k == r).unwrap().1;
+            let level = blobs_in(img, &paper, r, bbox);
             split = level
                 .iter()
                 .filter(|q| b.rect.contains(q.rect.cx, q.rect.cy) && card_shaped(&q.rect) && piece(q))
@@ -610,9 +1000,34 @@ pub fn analyze(img: &Img) -> Analysis {
                 break;
             }
         }
-        if split.is_empty() && merged {
+        if merged {
             if let (Some(l), Some(w)) = (known_l, known_w) {
-                split = ends(img, &b.rect, l, w);
+                if split.is_empty() {
+                    split = ends(img, &b.rect, l, w);
+                }
+                // Un pezzo che somiglia poco è spesso una carta ritagliata male (con un pezzo
+                // dell'altra o di quello che c'è sotto): si prova la carta della misura giusta.
+                let worst = |v: &[Found]| v.iter().map(|f| f.score).fold(f32::MAX, f32::min);
+                if split.is_empty() || worst(&split) < 0.85 {
+                    let s = stacked(img, &b.rect, l, w);
+                    if !s.is_empty() && (split.is_empty() || worst(&s) > worst(&split)) {
+                        split = s;
+                    }
+                }
+                // Carte sovrapposte fra loro o a qualcos'altro di chiaro: si cercano dove stanno.
+                // Se i pezzi trovati non bastano a coprire la zona, ci sono altre carte (coperte in parte
+                // da queste): si cercano anche quelle.
+                let covered: f32 = split.iter().map(|f| f.rect.area()).sum();
+                if b.rect.area() > 1.35 * covered {
+                    for f in scan(img, &paper, &b.rect, l, w) {
+                        match split.iter_mut().find(|k| k.rect.dist(&f.rect) < 0.5 * w) {
+                            // La stessa carta vista meglio.
+                            Some(k) if f.score > k.score => *k = f,
+                            Some(_) => {}
+                            None => split.push(f),
+                        }
+                    }
+                }
             }
         }
         if split.is_empty() {
@@ -653,7 +1068,8 @@ pub fn analyze(img: &Img) -> Analysis {
     }
     let thin = &levels.iter().find(|(k, _)| *k == 3).unwrap().1;
     for q in thin.iter().filter(|q| q.light()) {
-        let known = base.iter().filter(|b| b.light()).any(|b| b.rect.contains(q.rect.cx, q.rect.cy))
+        // Già esaminato se sta in una zona chiara come una carta (non nella cornice di un dorso).
+        let known = base.iter().filter(|b| b.light() && b.white > 0.3).any(|b| b.rect.contains(q.rect.cx, q.rect.cy))
             || cards.iter().any(|c| c.rect.contains(q.rect.cx, q.rect.cy));
         if !known {
             leftover.push(*q);
@@ -672,9 +1088,60 @@ pub fn analyze(img: &Img) -> Analysis {
             }
         }
     }
-    // Carte coperte in parte.
+    // Una carta divisa in pezzi affiancati (dal disegno che la attraversa dall'alto in basso, da
+    // un adesivo, da una scritta): due pezzi vicini che insieme hanno la misura di una carta si
+    // riprovano come una carta sola.
     leftover.retain(|b| !cards.iter().any(|c| c.rect.contains(b.rect.cx, b.rect.cy)));
+    let mut joined = vec![false; leftover.len()];
+    for i in 0..leftover.len() {
+        for j in i + 1..leftover.len() {
+            let (a, b) = (&leftover[i].rect, &leftover[j].rect);
+            if joined[i] || joined[j] || a.dist(b) > card_w {
+                continue;
+            }
+            let pts: Vec<(f32, f32)> = (0..4).flat_map(|k| [a.outline(k as f32, 1.0, 0.0), b.outline(k as f32, 1.0, 0.0)]).collect();
+            let Some(u) = min_area_rect(pts) else { continue };
+            if !(0.6..=1.2).contains(&(u.long() / card_l)) || !(0.6..=1.25).contains(&(u.short() / card_w)) {
+                continue;
+            }
+            // Si cerca una carta intera attorno ai due pezzi (una parte può essere coperta).
+            let (hw, hh) = if u.hh >= u.hw { (card_w, card_l) } else { (card_l, card_w) };
+            let around = RotRect { hw: u.hw.max(hw / 2.0) + 0.2 * card_w, hh: u.hh.max(hh / 2.0) + 0.2 * card_w, ..u };
+            let found = as_full(img, &u).or_else(|| scan(img, &paper, &around, card_l, card_w).into_iter().next());
+            if let Some(f) = found {
+                cards.push(f);
+                (joined[i], joined[j]) = (true, true);
+            }
+        }
+    }
+    let leftover: Vec<Blob> = leftover.into_iter().zip(joined).filter(|(_, j)| !j).map(|(b, _)| b).collect();
+    // Carte coperte in parte.
     cards.extend(par_map(&leftover, |b| as_partial(img, &b.rect, card_l, card_w)).into_iter().flatten());
+    // Una carta divisa da una scritta che la attraversa: dentro la sagoma della carta vista in parte
+    // c'è anche l'altro pezzo, e si confronta la carta da un pezzo all'altro.
+    for c in cards.iter_mut().filter(|c| c.partial()) {
+        let r = c.rect;
+        let mut span = c.view.vis;
+        for b in base.iter().filter(|b| b.light() && r.contains(b.rect.cx, b.rect.cy)) {
+            // Estensione del pezzo lungo l'asse della carta, in frazioni dell'altezza.
+            let t = (b.rect.cx - r.cx) * r.v.0 + (b.rect.cy - r.cy) * r.v.1;
+            let half = (b.rect.u.0 * r.v.0 + b.rect.u.1 * r.v.1).abs() * b.rect.hw
+                + (b.rect.v.0 * r.v.0 + b.rect.v.1 * r.v.1).abs() * b.rect.hh;
+            let (lo, hi) = ((t - half) / (2.0 * r.hh) + 0.5, (t + half) / (2.0 * r.hh) + 0.5);
+            if hi < span[0] - 0.02 || lo > span[1] + 0.02 {
+                span = [span[0].min(lo).max(0.0), span[1].max(hi).min(1.0)];
+            }
+        }
+        if span != c.view.vis && span[1] - span[0] >= 0.8 {
+            // Il verso scelto guardando un pezzo solo può essere sbagliato: si riprovano tutti e due.
+            let tries = [Try::new(img, r, span), Try::new(img, r.flipped(), [1.0 - span[1], 1.0 - span[0]])];
+            let t = tries.into_iter().max_by(|a, b| a.m.top().total_cmp(&b.m.top())).expect("due versi");
+            let f = t.finish(img);
+            if f.accepted(ACCEPT) {
+                *c = f;
+            }
+        }
+    }
     // La stessa carta trovata due volte (per esempio divisa da una scritta): si tiene la migliore.
     cards.sort_by(|a, b| b.score.total_cmp(&a.score));
     let mut kept: Vec<Found> = Vec::new();
@@ -684,7 +1151,8 @@ pub fn analyze(img: &Img) -> Analysis {
         }
     }
     // Restano le carte sullo stesso tavolo della maggior parte, e quelle vicine (il sito può avere
-    // una fascia di un altro colore sotto la mano): non quelle disegnate altrove sullo schermo.
+    // una fascia di un altro colore sotto la mano, attorno alla briscola c'è soprattutto il mazzo):
+    // non quelle disegnate altrove sullo schermo.
     let colors: Vec<Option<[u8; 3]>> = kept.iter().map(|c| table_color(img, &paper, &c.rect)).collect();
     let agree = |a: [u8; 3]| colors.iter().flatten().filter(|&&b| same_table(a, b)).count();
     let table = colors.iter().flatten().copied().max_by_key(|&a| agree(a));
@@ -695,8 +1163,21 @@ pub fn analyze(img: &Img) -> Analysis {
             _ => true,
         })
         .collect();
-    let near = |c: &Found| kept.iter().zip(&main).any(|(k, &m)| m && k.rect.dist(&c.rect) < 3.0 * card_l);
-    let keep: Vec<bool> = kept.iter().zip(&main).map(|(c, &m)| m || near(c)).collect();
+    // Vicine anche passando da una carta all'altra: le carte giocate sopra un logo stampato sul
+    // tavolo hanno attorno un altro colore, ma stanno vicino alle altre.
+    let mut keep = main.clone();
+    loop {
+        let more: Vec<usize> = (0..kept.len())
+            .filter(|&i| !keep[i])
+            .filter(|&i| (0..kept.len()).any(|j| keep[j] && kept[j].rect.dist(&kept[i].rect) < 4.5 * card_l))
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        for i in more {
+            keep[i] = true;
+        }
+    }
     let cards = kept.iter().zip(keep).filter(|(_, k)| *k).map(|(c, _)| c.clone()).collect();
     Analysis { cards, card_l, table, blobs: base }
 }
@@ -712,8 +1193,11 @@ pub fn scene(img: &Img) -> Scene {
     let card_l = a.card_l;
     let mut scene = Scene::default();
     let upright = |f: &&Found| !f.rect.landscape();
-    let bottom =
-        a.cards.iter().filter(upright).filter(|f| !f.partial()).map(|f| f.rect.cy).fold(f32::MIN, f32::max);
+    // La riga più in basso di carte in piedi della misura delle altre, anche viste solo in parte
+    // (una scritta che attraversa la mano, carte sovrapposte): un pezzo di carta più piccolo (la
+    // briscola sotto il mazzo) non conta.
+    let full_size = |f: &&Found| (0.85..1.2).contains(&(f.rect.long() / card_l));
+    let bottom = a.cards.iter().filter(upright).filter(full_size).map(|f| f.rect.cy).fold(f32::MIN, f32::max);
     if bottom == f32::MIN {
         // Nessuna carta in piedi: al più la briscola.
         if let Some(t) = best(a.cards.iter()) {
@@ -722,13 +1206,52 @@ pub fn scene(img: &Img) -> Scene {
         return scene;
     }
     // La mano: la riga più in basso.
-    let in_hand = |f: &Found| !f.rect.landscape() && f.rect.cy >= bottom - 0.35 * card_l;
+    // Solo carte in piedi grandi quanto le altre: un pezzo di carta vicino (la briscola sotto il
+    // mazzo) non è in mano. Una carta della mano vista in parte (il disegno che la attraversa da
+    // un lato all'altro divide il bianco in due) sì, se la sua sagoma intera ha la misura giusta.
+    // La mano può stare su più righe (a griglia, in colonna): comprende le righe di carte subito
+    // sopra la più bassa, attaccate l'una all'altra; le carte giocate stanno più staccate.
+    // (Fra una riga e l'altra della mano c'è un piccolo spazio, mai una sovrapposizione; e in mano
+    // non ci sono più di tre carte.)
+    let mut rows: Vec<f32> = a.cards.iter().filter(upright).filter(full_size).map(|f| f.rect.cy).collect();
+    rows.sort_by(|x, y| y.total_cmp(x));
+    let mut top = bottom;
+    let in_rows = |top: f32| a.cards.iter().filter(upright).filter(full_size).filter(|f| f.rect.cy >= top - 0.35 * card_l).count();
+    for cy in rows {
+        if cy >= top - 0.35 * card_l {
+            continue;
+        }
+        let gap = top - cy - card_l;
+        if (-0.05 * card_l..=0.2 * card_l).contains(&gap) && in_rows(cy) <= 3 {
+            top = cy;
+        } else {
+            break;
+        }
+    }
+    let in_hand = |f: &Found| {
+        !f.rect.landscape() && (0.85..1.2).contains(&(f.rect.long() / card_l)) && f.rect.cy >= top - 0.35 * card_l
+    };
     let mut hand: Vec<&Found> = a.cards.iter().filter(|f| in_hand(f)).collect();
-    hand.sort_by(|x, y| x.rect.cx.total_cmp(&y.rect.cx));
+    // Per righe, da sinistra a destra.
+    hand.sort_by(|x, y| {
+        let row = |f: &Found| ((f.rect.cy - top) / (0.7 * card_l)).round() as i32;
+        row(x).cmp(&row(y)).then(x.rect.cx.total_cmp(&y.rect.cx))
+    });
     // La briscola: di traverso, o coperta in parte vicino alla mano (sotto il mazzo).
     let others: Vec<&Found> = a.cards.iter().filter(|f| !in_hand(f)).collect();
+    let hand_cx = (!hand.is_empty()).then(|| hand.iter().map(|f| f.rect.cx).sum::<f32>() / hand.len() as f32);
+    let central = |f: &Found| hand_cx.is_none_or(|x| (f.rect.cx - x).abs() < 2.5 * card_l);
+    // Altrimenti, su alcuni siti la briscola è dritta (appoggiata sopra il mazzo) e in disparte:
+    // l'unica carta scoperta fuori dalla zona delle carte giocate, a metà altezza fra le carte
+    // dell'avversario e la mano.
+    let aside: Vec<&Found> = others
+        .iter()
+        .copied()
+        .filter(|f| !central(f) && f.rect.long() > 0.7 * card_l && f.rect.cy < bottom - 0.6 * card_l)
+        .collect();
     let trump = best(others.iter().copied().filter(|f| f.rect.landscape()))
-        .or_else(|| best(others.iter().copied().filter(|f| f.partial() && f.rect.cy > bottom - 0.9 * card_l)));
+        .or_else(|| best(others.iter().copied().filter(|f| f.partial() && f.rect.cy > bottom - 0.9 * card_l)))
+        .or_else(|| (aside.len() == 1).then(|| aside[0]));
     if let Some(t) = trump {
         scene.trump = Some(t.view.clone());
     }
@@ -740,9 +1263,12 @@ pub fn scene(img: &Img) -> Scene {
         .map(|b| b.rect.cy)
         .fold(f32::MAX, f32::min);
     let mid = if backs_y < f32::MAX { (backs_y + bottom) / 2.0 } else { bottom - 2.1 * card_l };
+    // In tavola: carte in piedi non troppo più piccole di quelle in mano (un pezzo di carta non lo è)
+    // e più o meno sopra la mano: le carte giocate vanno al centro del tavolo, non in un punto
+    // qualsiasi dello sfondo.
     let mut table: Vec<&Found> = others
         .into_iter()
-        .filter(|f| upright(f) && !trump.is_some_and(|t| std::ptr::eq(t, *f)))
+        .filter(|f| upright(f) && f.rect.long() > 0.7 * card_l && central(f) && !trump.is_some_and(|t| std::ptr::eq(t, *f)))
         .collect();
     table.sort_by(|x, y| x.rect.cy.total_cmp(&y.rect.cy));
     match table.as_slice() {

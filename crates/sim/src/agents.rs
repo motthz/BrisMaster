@@ -559,6 +559,9 @@ fn policy(cfg: &mut EngineConfig) -> &mut RolloutParams {
 }
 
 pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
+    if let Some(rest) = spec.strip_prefix("reale:") {
+        return make_net_file_player(rest);
+    }
     let num = |s: &str, what: &str| s.parse::<f64>().map_err(|_| format!("{what} non valido in '{spec}'"));
     Ok(match spec {
         "random" => Box::new(RandomPlayer),
@@ -810,7 +813,7 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
         // reale:FILE[:TEMP] prima delle versioni: il percorso del file contiene '/'.
         return Ok(Box::new(Current(make_net_file_player(rest)?, String::new())));
     }
-    if let Some((ver, rest)) = spec.split_once('/') {
+    if let Some((ver, rest)) = spec.split_once('/').filter(|_| !spec.contains("reale:")) {
         return match ver {
             "v0.1.0" | "v0.1.1" => v0_1_1::make(rest),
             "v0.2.0" | "v0.2.1" => v0_2_0::make(rest),

@@ -8,6 +8,8 @@ pub mod detect;
 pub mod memory;
 pub mod reference;
 pub mod screen;
+#[cfg(test)]
+pub(crate) mod synth;
 
 /// Immagine RGB.
 #[derive(Clone, Debug)]
@@ -103,18 +105,35 @@ pub const CARD_H: usize = 160;
 pub const WHOLE: [f32; 2] = [0.0, 1.0];
 /// Punti per unità di somiglianza: un distacco di 0.175 basta per inserire la carta senza conferma.
 const SCALE: f32 = 8.0;
+/// Una carta quasi identica a quella di riferimento (stesso disegno del sito) con la seconda
+/// lontana è sicura anche se il distacco è moderato (il cinque e il quattro di coppe, quando del
+/// cinque si vede solo metà).
+const EXACT: f32 = 0.95;
+const EXACT_GAP: f32 = 0.88;
+const EXACT_BONUS: f32 = 1.0;
+
+/// Punteggi delle 40 carte dalla somiglianza con le carte di riferimento.
+fn reference_scores(sim: &[f32; 40]) -> [f32; 40] {
+    let mut s = sim.map(|v| v * SCALE);
+    let mut order: Vec<usize> = (0..40).collect();
+    order.sort_by(|&a, &b| sim[b].total_cmp(&sim[a]));
+    if sim[order[0]] >= EXACT && sim[order[1]] <= EXACT_GAP {
+        s[order[0]] += EXACT_BONUS;
+    }
+    s
+}
 
 use briscola_core::cards::{Card, CardSet};
 pub use detect::ScopaScene;
 use memory::Memory;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 /// Punteggi della carta: somiglianza con le carte di riferimento, più quella con le immagini delle
 /// carte già viste su questo sito (che quando c'è decide).
 pub fn recognize(view: &mut CardView, mem: &Memory) {
-    let mut s = view.sim.map(|v| v * SCALE);
+    let mut s = reference_scores(&view.sim);
     for (c, sim) in mem.similarity(&view.img, view.vis).iter().enumerate() {
         if let Some(v) = *sim {
             if v >= memory::SAME {
@@ -127,7 +146,7 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
 
 impl CardView {
     pub fn new(img: Img, vis: [f32; 2], sim: [f32; 40]) -> CardView {
-        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: sim.map(|v| v * SCALE) }
+        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim) }
     }
 
     /// La carta più probabile fra `among`, e quanto stacca la seconda.
@@ -156,7 +175,7 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
     if !found {
         return None;
     }
-    let mem = mem.lock().unwrap();
+    let mem = mem.lock().unwrap_or_else(|e| e.into_inner());
     for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
         recognize(v, &mem);
     }
@@ -166,7 +185,7 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
 /// Lettura per la scopa: mano e carte in tavola, riconosciute (None se il tavolo non si vede).
 pub fn read_scopa(img: &Img, mem: &Mutex<Memory>) -> Option<ScopaScene> {
     let mut scene = detect::scopa(img)?;
-    let mem = mem.lock().unwrap();
+    let mem = mem.lock().unwrap_or_else(|e| e.into_inner());
     for v in scene.hand.iter_mut().chain(&mut scene.table) {
         recognize(v, &mem);
     }
@@ -180,8 +199,14 @@ pub struct Reader<S> {
     last: Arc<Mutex<Option<Img>>>,
 }
 
+/// Ogni quanto si cattura lo schermo: spesso, perché costa poco. Le schermate si analizzano poi
+/// tutte, in ordine, anche se l'analisi è più lenta: un sito che chiude una presa in mezzo secondo
+/// non deve far perdere nessuna carta.
+const CAPTURE_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
 impl<S: Send + 'static> Reader<S> {
-    /// `read` trova e riconosce le carte di un gioco; `every` è l'intervallo fra due letture.
+    /// `read` trova e riconosce le carte di un gioco; `every` è l'intervallo massimo fra due letture
+    /// quando lo schermo non cambia.
     pub fn start(
         mem: Arc<Mutex<Memory>>,
         ctx: eframe::egui::Context,
@@ -190,43 +215,100 @@ impl<S: Send + 'static> Reader<S> {
     ) -> Reader<S> {
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let flag = stop.clone();
         let last = Arc::new(Mutex::new(None));
-        let frame = last.clone();
-        std::thread::spawn(move || {
-            let mut monitor = screen::area().lock().unwrap().monitor;
-            let mut chosen = None;
-            while !flag.load(Ordering::Relaxed) {
-                let t0 = std::time::Instant::now();
-                let area = *screen::area().lock().unwrap();
-                if chosen != Some(area) {
-                    // Area appena scelta: si legge il suo monitor.
-                    monitor = area.monitor;
-                    chosen = Some(area);
+        let queue = Arc::new((Mutex::new(Frames::new(every.max(std::time::Duration::from_millis(600)))), Condvar::new()));
+        // Monitor da catturare (l'analisi passa al successivo se non trova il tavolo) e errori.
+        let monitor = Arc::new(AtomicUsize::new(screen::area().lock().unwrap().monitor));
+        let monitors = Arc::new(AtomicUsize::new(1));
+        let (err_tx, err_rx) = channel::<String>();
+
+        // Cattura: ogni CAPTURE_EVERY, e tiene le schermate in cui qualcosa è cambiato.
+        {
+            let (flag, queue, monitor, monitors) = (stop.clone(), queue.clone(), monitor.clone(), monitors.clone());
+            std::thread::spawn(move || {
+                let mut chosen = None;
+                while !flag.load(Ordering::Relaxed) {
+                    let t0 = std::time::Instant::now();
+                    let area = *screen::area().lock().unwrap_or_else(|e| e.into_inner());
+                    if chosen != Some(area) {
+                        // Area appena scelta: si legge il suo monitor.
+                        monitor.store(area.monitor, Ordering::Relaxed);
+                        chosen = Some(area);
+                    }
+                    match capture::grab(monitor.load(Ordering::Relaxed)) {
+                        Ok((img, count)) => {
+                            monitors.store(count.max(1), Ordering::Relaxed);
+                            let table = shrink(screen::table(&img, &area));
+                            let (lock, cv) = &*queue;
+                            if lock.lock().unwrap_or_else(|e| e.into_inner()).offer(table, std::time::Instant::now()) {
+                                cv.notify_one();
+                            }
+                        }
+                        Err(e) => {
+                            let _ = err_tx.send(e);
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                        }
+                    }
+                    std::thread::sleep(CAPTURE_EVERY.saturating_sub(t0.elapsed()));
                 }
-                let reading = match capture::grab(monitor) {
-                    Ok((img, count)) => {
-                        let table = screen::table(&img, &area);
-                        let scene = read(&table, &mem);
-                        *frame.lock().unwrap() = Some(table);
+                // Sveglia l'analisi perché si fermi anche lei.
+                queue.1.notify_all();
+            });
+        }
+
+        // Analisi: le schermate tenute, una dopo l'altra.
+        let (flag, frame) = (stop.clone(), last.clone());
+        std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                let table = {
+                    let (lock, cv) = &*queue;
+                    let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    loop {
+                        if let Some(t) = q.next() {
+                            break Some(t);
+                        }
+                        if flag.load(Ordering::Relaxed) {
+                            break None;
+                        }
+                        q = cv.wait_timeout(q, std::time::Duration::from_millis(500)).unwrap_or_else(|e| e.into_inner()).0;
+                    }
+                };
+                let reading = match table {
+                    None => match err_rx.try_recv() {
+                        Ok(e) => Reading::Error(e),
+                        Err(_) => continue,
+                    },
+                    Some(table) => {
+                        // Un errore nella lettura di una schermata non deve fermare le letture
+                        // dopo: si mostra e si continua.
+                        let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&table, &mem)));
+                        *frame.lock().unwrap_or_else(|e| e.into_inner()) = Some(table);
                         match scene {
-                            Some(s) => Reading::Scene(s),
-                            None => {
+                            Err(e) => {
+                                let why = e
+                                    .downcast_ref::<&str>()
+                                    .map(|s| s.to_string())
+                                    .or_else(|| e.downcast_ref::<String>().cloned())
+                                    .unwrap_or_default();
+                                Reading::Error(format!("errore interno ({why})"))
+                            }
+                            Ok(Some(s)) => Reading::Scene(s),
+                            Ok(None) => {
                                 // Senza un'area scelta, prova il monitor successivo.
-                                if area.rect.is_none() {
-                                    monitor = (monitor + 1) % count.max(1);
+                                if screen::area().lock().unwrap_or_else(|e| e.into_inner()).rect.is_none() {
+                                    let n = monitors.load(Ordering::Relaxed).max(1);
+                                    monitor.store((monitor.load(Ordering::Relaxed) + 1) % n, Ordering::Relaxed);
                                 }
                                 Reading::NoTable
                             }
                         }
                     }
-                    Err(e) => Reading::Error(e),
                 };
                 if tx.send(reading).is_err() {
+                    flag.store(true, Ordering::Relaxed);
                     break;
                 }
                 ctx.request_repaint();
-                std::thread::sleep(every.saturating_sub(t0.elapsed()));
             }
         });
         Reader { rx, stop, last }
@@ -234,8 +316,114 @@ impl<S: Send + 'static> Reader<S> {
 
     /// L'ultima schermata letta (già ritagliata sul tavolo), per la diagnosi.
     pub fn last_frame(&self) -> Option<Img> {
-        self.last.lock().unwrap().clone()
+        self.last.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
+}
+
+/// Le schermate in attesa di analisi: si tiene una schermata quando è cambiata rispetto all'ultima
+/// tenuta (o ogni tanto anche se non cambia). Se l'analisi resta indietro, si scartano le schermate
+/// più simili a quella prima, mai l'ultima: uno stato breve (una presa che resta in tavola un
+/// attimo) non si perde.
+pub struct Frames {
+    frames: std::collections::VecDeque<(Img, Vec<u8>)>,
+    last: Option<Vec<u8>>,
+    pushed: Option<std::time::Instant>,
+    every: std::time::Duration,
+}
+
+/// Quante schermate al più restano in attesa.
+const FRAMES: usize = 8;
+
+impl Frames {
+    pub fn new(every: std::time::Duration) -> Frames {
+        Frames { frames: Default::default(), last: None, pushed: None, every }
+    }
+
+    /// Offre una schermata appena catturata; vero se è stata tenuta.
+    pub fn offer(&mut self, img: Img, now: std::time::Instant) -> bool {
+        let sig = signature(&img);
+        let changed = self.last.as_ref().is_none_or(|l| difference(l, &sig) >= 1.5);
+        let stale = self.pushed.is_none_or(|t| now.duration_since(t) >= self.every);
+        if !changed && !stale {
+            return false;
+        }
+        if self.frames.len() >= FRAMES {
+            // Si scarta la schermata (non l'ultima) più simile a quella prima.
+            let drop = (1..self.frames.len() - 1)
+                .min_by(|&a, &b| {
+                    let d = |i: usize| difference(&self.frames[i - 1].1, &self.frames[i].1);
+                    d(a).total_cmp(&d(b))
+                })
+                .unwrap_or(0);
+            self.frames.remove(drop);
+        }
+        self.last = Some(sig.clone());
+        self.pushed = Some(now);
+        self.frames.push_back((img, sig));
+        true
+    }
+
+    /// La prossima schermata da analizzare.
+    pub fn next(&mut self) -> Option<Img> {
+        self.frames.pop_front().map(|f| f.0)
+    }
+}
+
+/// Impronta di una schermata: la luminosità media su una griglia 48 x 32.
+fn signature(img: &Img) -> Vec<u8> {
+    let (gw, gh) = (48usize, 32usize);
+    let mut out = Vec::with_capacity(gw * gh);
+    for j in 0..gh {
+        for i in 0..gw {
+            let (x0, x1) = (i * img.w / gw, ((i + 1) * img.w / gw).max(i * img.w / gw + 1).min(img.w));
+            let (y0, y1) = (j * img.h / gh, ((j + 1) * img.h / gh).max(j * img.h / gh + 1).min(img.h));
+            let (mut sum, mut n) = (0u32, 0u32);
+            // Un punto ogni due per lato basta.
+            for y in (y0..y1).step_by(2) {
+                for x in (x0..x1).step_by(2) {
+                    let p = img.at(x, y);
+                    sum += (p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10;
+                    n += 1;
+                }
+            }
+            out.push((sum / n.max(1)) as u8);
+        }
+    }
+    out
+}
+
+/// Differenza media fra due impronte (0-255).
+fn difference(a: &[u8], b: &[u8]) -> f32 {
+    if a.len() != b.len() {
+        return 255.0;
+    }
+    a.iter().zip(b).map(|(&x, &y)| (x as i32 - y as i32).unsigned_abs()).sum::<u32>() as f32 / a.len().max(1) as f32
+}
+
+/// Le schermate molto grandi (monitor 4K) si rimpiccioliscono: le carte restano grandi abbastanza
+/// e l'analisi è molto più veloce.
+pub fn shrink(img: Img) -> Img {
+    let k = img.w.div_ceil(2000);
+    if k <= 1 {
+        return img;
+    }
+    let (w, h) = (img.w / k, img.h / k);
+    let mut out = Img::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = [0u32; 3];
+            for dy in 0..k {
+                for dx in 0..k {
+                    let p = img.at(x * k + dx, y * k + dy);
+                    for c in 0..3 {
+                        acc[c] += p[c] as u32;
+                    }
+                }
+            }
+            out.px[y * w + x] = acc.map(|a| (a / (k * k) as u32) as u8);
+        }
+    }
+    out
 }
 
 impl<S> Drop for Reader<S> {
@@ -264,6 +452,36 @@ mod tests {
 
     fn best(v: &CardView) -> Card {
         v.best(CardSet::FULL).unwrap().0
+    }
+
+    /// Le schermate catturate spesso e analizzate lentamente: lo stato che dura una cattura sola
+    /// (una presa chiusa subito) resta in coda, anche se l'analisi è indietro di molte catture.
+    #[test]
+    fn brief_states_are_never_dropped() {
+        let t0 = std::time::Instant::now();
+        let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
+        let plain = |v: u8| {
+            let mut i = Img::new(96, 64);
+            i.px.iter_mut().for_each(|p| *p = [v, v, v]);
+            i
+        };
+        let mut f = Frames::new(std::time::Duration::from_millis(600));
+        // Schermo fermo: si tiene solo ogni tanto.
+        let mut kept = 0;
+        for k in 0..10 {
+            kept += f.offer(plain(50), at(k * 100)) as usize;
+        }
+        assert!(kept <= 3, "{kept} schermate uguali tenute");
+        // Uno stato breve fra molti cambiamenti (animazioni), con l'analisi ferma.
+        assert!(f.offer(plain(200), at(1000)));
+        for k in 0..20 {
+            f.offer(plain(60 + (k % 2) as u8 * 2), at(1100 + k * 100));
+        }
+        let mut seen = Vec::new();
+        while let Some(i) = f.next() {
+            seen.push(i.px[0][0]);
+        }
+        assert!(seen.contains(&200), "stato breve perso: {seen:?}");
     }
 
     /// Lo screenshot del sito: l'avversario ha giocato il 2 di bastoni, tu il 7 di spade, in mano
@@ -345,6 +563,27 @@ mod tests {
         check(&read(&img));
     }
 
+    /// Screenshot vero di un altro sito (Solitalian), con il tavolo di legno chiaro e un altro disegno
+    /// delle carte: in mano due di spade, due di bastoni e sette di denari; la briscola, più piccola
+    /// e coperta per metà dal mazzo, è il cinque di coppe. Tutto si inserisce senza conferma.
+    #[test]
+    fn reads_solitalian() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/solitalian_briscola.png");
+        let s = read(&capture::load_png(&path).unwrap());
+        let name = |v: &CardView| {
+            let (c, margin) = v.best(CardSet::FULL).unwrap();
+            assert!(margin >= 1.4, "{} distacco {margin}", cards::name(c));
+            cards::name(c)
+        };
+        let hand: Vec<String> = s.hand.iter().map(name).collect();
+        let want = [cards::make(2, 1), cards::make(3, 1), cards::make(0, 6)].map(cards::name);
+        assert_eq!(hand, want.to_vec());
+        let t = s.trump.as_ref().expect("briscola");
+        assert!(t.partial);
+        assert_eq!(name(t), cards::name(cards::make(1, 4)));
+        assert!(s.opp_slot.is_none() && s.my_slot.is_none(), "niente carte in tavola");
+    }
+
     /// Una carta vista intera (in mano) si riconosce con sicurezza anche quando torna sotto il mazzo,
     /// vista solo in parte: la memoria confronta la fascia che si vede.
     #[test]
@@ -362,11 +601,14 @@ mod tests {
             }
         }
         let mem = Mutex::new(Memory::in_memory());
+        if let Ok(d) = std::env::var("SALVA") {
+            img.save_png(std::path::Path::new(&format!("{d}/asso_sotto.png"))).unwrap();
+        }
         let first = read_briscola(&img, &mem).expect("carte");
         let asso = cards::make(1, 0);
         let t = first.trump.as_ref().expect("briscola");
         // La partita la inserisce dalla mano, e la ricorda.
-        mem.lock().unwrap().remember(&first.hand[1].img, first.hand[1].vis, asso);
+        mem.lock().unwrap_or_else(|e| e.into_inner()).remember(&first.hand[1].img, first.hand[1].vis, asso);
         let again = read_briscola(&img, &mem).expect("carte");
         let t2 = again.trump.as_ref().expect("briscola");
         let (c, margin) = t2.best(CardSet::FULL).unwrap();
@@ -521,6 +763,47 @@ mod bench {
         (ok, auto)
     }
 
+    /// Cosa trova la lettura in una schermata qualsiasi:
+    /// `IMG=schermata.png cargo test --release -p brismaster diagnosi_immagine -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn diagnosi_immagine() {
+        let img = capture::load_png(std::path::Path::new(&std::env::var("IMG").unwrap())).unwrap();
+        let t0 = std::time::Instant::now();
+        let a = detect::analyze(&img);
+        println!("analisi in {:?}", t0.elapsed());
+        if let Ok(out) = std::env::var("DIAG") {
+            screen::diagnose(&img).save_png(std::path::Path::new(&out)).unwrap();
+        }
+        println!("card_l {:.0}", a.card_l);
+        for f in &a.cards {
+            let (c, m) = f.view.best(cards::CardSet::FULL).unwrap();
+            println!(
+                "card ({:.0},{:.0}) {:.0}x{:.0} land {} vis {:.2?} score {:.3} {} {:.2}",
+                f.rect.cx,
+                f.rect.cy,
+                2.0 * f.rect.hw,
+                2.0 * f.rect.hh,
+                f.rect.landscape(),
+                f.view.vis,
+                f.score,
+                cards::name(c),
+                m
+            );
+        }
+        for b in a.blobs.iter() {
+            println!(
+                "   blob ({:.0},{:.0}) {:.0}x{:.0} white {:.2} bg {:.2}",
+                b.rect.cx,
+                b.rect.cy,
+                2.0 * b.rect.hw,
+                2.0 * b.rect.hh,
+                b.white,
+                b.bg
+            );
+        }
+    }
+
     #[test]
     #[ignore]
     fn banco() {
@@ -540,11 +823,18 @@ mod bench {
                     img.px[y * img.w + x + dx] = keep.at(x, y);
                 }
             }
+            if let Ok(d) = std::env::var("SALVA") {
+                img.save_png(std::path::Path::new(&format!("{d}/mazzo{dx}.png"))).unwrap();
+            }
             let (a, b) = report(&format!("mazzo +{dx}"), &img);
             (ok, auto, n) = (ok + a, auto + b, n + 5);
         }
         // Sfocato (schermo ridimensionato due volte).
-        let (a, b) = report("sfocato", &resize(&resize(&site, 0.55), 1.0 / 0.55));
+        let sf = resize(&resize(&site, 0.55), 1.0 / 0.55);
+        if let Ok(d) = std::env::var("SALVA") {
+            sf.save_png(std::path::Path::new(&format!("{d}/sfocato.png"))).unwrap();
+        }
+        let (a, b) = report("sfocato", &sf);
         (ok, auto, n) = (ok + a, auto + b, n + 5);
         println!("giuste {ok}/{n}, automatiche {auto}/{n}");
         for _ in 0..3 {
@@ -554,3 +844,265 @@ mod bench {
         }
     }
 }
+
+/// Tavoli finti con mazzi, tavoli e colori diversi: il riconoscimento deve reggere anche su
+/// grafiche che non conosce (un terzo mazzo napoletano, mai visto) e su quelle che conosce ma
+/// ridisegnate un po' diverse (proporzioni, colori, sfocatura, carte ruotate, scale diverse).
+#[cfg(test)]
+mod other_sites {
+    use super::synth::{table, writing_only, Bg, Deal, Look};
+    use super::*;
+    use briscola_core::cards::{self, Card};
+
+    fn load_jpg(path: &std::path::Path) -> Img {
+        let im = image::open(path).unwrap().to_rgba8();
+        Img::from_rgba(im.width() as usize, im.height() as usize, im.as_raw())
+    }
+
+    /// I bastoni del mazzo che l'app non conosce, dall'asso al re.
+    fn unknown_deck() -> Vec<(Card, Img)> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/mazzo_despues");
+        (1..=10).map(|k| (cards::make(3, k - 1), load_jpg(&dir.join(format!("bastoni_{k}.jpg"))))).collect()
+    }
+
+    fn looks() -> Vec<Look> {
+        let d = Look::default();
+        vec![
+            d,
+            Look { bg: Bg::Wood, card_h: 150.0, pile: 0.8, cover: 0.5, ..d },
+            Look { bg: Bg::Felt([30, 60, 140]), card_h: 110.0, aspect: Some(0.68), fan: 6.0, ..d },
+            Look { bg: Bg::Felt([120, 25, 30]), card_h: 190.0, hue: 8.0, sat: 1.3, gamma: 0.85, ..d },
+            Look { bg: Bg::Wood, card_h: 130.0, sat: 0.75, gamma: 1.2, blur: true, cover: 0.4, ..d },
+            Look {
+                bg: Bg::Felt([20, 105, 70]),
+                card_h: 140.0,
+                aspect: Some(0.56),
+                hue: -8.0,
+                fan: -5.0,
+                pile: 0.85,
+                ..d
+            },
+            Look { bg: Bg::Felt([45, 45, 50]), card_h: 85.0, hue: 15.0, sat: 0.6, ..d },
+            Look {
+                bg: Bg::Felt([90, 60, 30]),
+                card_h: 230.0,
+                aspect: Some(0.66),
+                hue: -15.0,
+                gamma: 1.3,
+                fan: 8.0,
+                cover: 0.55,
+                ..d
+            },
+            Look { bg: Bg::Sea, card_h: 160.0, pile: 0.8, ..d },
+            Look { bg: Bg::Sky, card_h: 140.0, pile: 0.8, cover: 0.5, ..d },
+            Look { bg: Bg::Sea, card_h: 120.0, aspect: Some(0.7), blur: true, fan: 5.0, ..d },
+        ]
+    }
+
+    /// Per ogni ruolo: (giusta, abbastanza sicura da non chiedere conferma).
+    fn check(img: &Img, want: &[(&str, Card)]) -> Vec<(String, bool, bool)> {
+        let s = read_briscola(img, &Mutex::new(Memory::in_memory()));
+        let get = |role: &str| -> Option<CardView> {
+            let s = s.as_ref()?;
+            match role {
+                "briscola" => s.trump.clone(),
+                "avversario" => s.opp_slot.clone(),
+                "tua" => s.my_slot.clone(),
+                r => s.hand.get(r[4..].parse::<usize>().ok()?).cloned(),
+            }
+        };
+        let mut out: Vec<(String, bool, bool)> = want
+            .iter()
+            .map(|(role, c)| match get(role).and_then(|v| v.best(CardSet::FULL)) {
+                Some((b, m)) => {
+                    let note = if b != *c {
+                        " (sbagliata)".to_string()
+                    } else if m < 1.4 {
+                        format!(" (da confermare, {m:.2})")
+                    } else {
+                        String::new()
+                    };
+                    (format!("{role}: {}{note}", cards::name(b)), b == *c, b == *c && m >= 1.4)
+                }
+                None => (format!("{role}: non vista"), false, false),
+            })
+            .collect();
+        // Nessuna carta in più (una scritta presa per una carta della mano).
+        let hand = want.iter().filter(|(r, _)| r.starts_with("mano")).count();
+        let seen = s.as_ref().map_or(0, |s| s.hand.len());
+        if seen != hand {
+            out.push((format!("mano di {seen} carte invece di {hand}"), false, false));
+        }
+        out
+    }
+
+    /// Distribuisce le carte a turno: tre in mano, una per parte in tavola, la briscola.
+    /// Con `writing` scritte attorno alle carte e loghi stampati sul tavolo (sotto le carte, più o
+    /// meno marcati a seconda del tavolo).
+    fn run(deck: &[(Card, Img)], label: &str, writing: bool, verbose: bool) -> (usize, usize, usize) {
+        let (mut ok, mut auto, mut n) = (0, 0, 0);
+        for (k, look) in looks().iter().enumerate() {
+            let logo = if writing { [0.35, 0.6, 0.9][k % 3] } else { 0.0 };
+            let look = &Look { writing, logo, ..*look };
+            let pick = |i: usize| &deck[(k * 6 + i) % deck.len()];
+            let (h0, h1, h2, o, m, t) = (pick(0), pick(1), pick(2), pick(3), pick(4), pick(5));
+            let deal =
+                Deal { hand: vec![&h0.1, &h1.1, &h2.1], opp: Some(&o.1), mine: Some(&m.1), trump: Some(&t.1), deck: true };
+            let img = table(&deal, look);
+            if verbose {
+                let dir = std::env::var("SALVA").ok();
+                if let Some(d) = dir {
+                    img.save_png(std::path::Path::new(&format!("{d}/{label}_{k}.png"))).unwrap();
+                    screen::diagnose(&img)
+                        .save_png(std::path::Path::new(&format!("{d}/{label}_{k}_diag.png")))
+                        .unwrap();
+                }
+            }
+            let want = [
+                ("mano0", h0.0),
+                ("mano1", h1.0),
+                ("mano2", h2.0),
+                ("avversario", o.0),
+                ("tua", m.0),
+                ("briscola", t.0),
+            ];
+            let res = check(&img, &want);
+            if verbose {
+                let line: Vec<String> = res.iter().map(|r| r.0.clone()).collect();
+                println!("{label} tavolo {k}: {}", line.join(" · "));
+            }
+            ok += res.iter().filter(|r| r.1).count();
+            auto += res.iter().filter(|r| r.2).count();
+            n += res.len();
+        }
+        (ok, auto, n)
+    }
+
+    fn known_deck(style: usize) -> Vec<(Card, Img)> {
+        // Un ordine che mescola semi e valori.
+        (0..40u8).map(|i| (i * 7) % 40).map(|c| (c, reference::card_image(style, c))).collect()
+    }
+
+    /// Stampa i tavoli uno per uno (con SALVA=cartella salva anche le immagini e la diagnosi).
+    /// `cargo test --release -p brismaster banco_siti -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn banco_siti() {
+        let writing = std::env::var("SCRITTE").is_ok();
+        for (label, deck) in
+            [("sconosciuto", unknown_deck()), ("wikimedia", known_deck(0)), ("classico", known_deck(1))]
+        {
+            let (ok, auto, n) = run(&deck, label, writing, true);
+            println!("== {label}: giuste {ok}/{n}, senza conferma {auto}/{n}");
+        }
+    }
+
+    /// Un mazzo napoletano che l'app non conosce: tutte le carte giuste e senza conferma, su tutti
+    /// i tavoli (legno, panni di colori diversi, carte piccole e grandi, colori e proporzioni
+    /// diversi, sfocato, mano a ventaglio, briscola coperta di più o di meno).
+    #[test]
+    fn unknown_deck_on_many_tables() {
+        let (ok, auto, n) = run(&unknown_deck(), "sconosciuto", false, false);
+        assert_eq!((ok, auto), (n, n), "giuste {ok}/{n}, senza conferma {auto}/{n}");
+    }
+
+    /// I mazzi che conosce, ridisegnati un po' diversi su tutti i tavoli.
+    #[test]
+    fn known_decks_redrawn() {
+        for style in 0..2 {
+            let (ok, auto, n) = run(&known_deck(style), "noto", false, false);
+            assert_eq!((ok, auto), (n, n), "mazzo {style}: giuste {ok}/{n}, senza conferma {auto}/{n}");
+        }
+    }
+
+    /// Scritte sullo schermo (finestrelle, chat, punteggi, nomi, scritte grandi, anche toccate dalle
+    /// carte) e loghi stampati sul tavolo: nessuno è preso per una carta e le carte restano giuste.
+    #[test]
+    fn writing_is_not_a_card() {
+        for look in looks() {
+            let img = writing_only(&look);
+            let s = read_briscola(&img, &Mutex::new(Memory::in_memory()));
+            assert!(s.is_none(), "{look:?}: carte viste fra le scritte");
+        }
+        // Tutte giuste. Le carte del mazzo sconosciuto più piccole (85 pixel) sono al limite della
+        // sicurezza: le finestrelle bianche spostano di poco il bianco dello schermo, e una può
+        // chiedere conferma.
+        for (label, deck, confirm) in [("sconosciuto", unknown_deck(), 1), ("noto", known_deck(1), 0)] {
+            let (ok, auto, n) = run(&deck, label, true, false);
+            assert!(ok == n && auto + confirm >= n, "{label} con scritte: giuste {ok}/{n}, senza conferma {auto}/{n}");
+        }
+    }
+
+    /// Bordo e inchiostro delle carte vere e di quello che si prende per carta fra scritte e loghi.
+    /// `cargo test --release -p brismaster misure_scritte -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn misure_scritte() {
+        let show = |tag: &str, img: &Img| {
+            for f in detect::analyze(img).cards {
+                let (b, i) = detect::traits(&f.view.img, f.view.vis);
+                println!(
+                    "{tag} ({:.0},{:.0}) parz {} vis {:.2}-{:.2} sim {:.2} bordo {b:.2} inchiostro {i:.3} tavolo {:.3}",
+                    f.rect.cx,
+                    f.rect.cy,
+                    f.partial(),
+                    f.view.vis[0],
+                    f.view.vis[1],
+                    f.score,
+                    f.inside
+                );
+            }
+        };
+        for (k, look) in looks().iter().enumerate() {
+            show(&format!("FALSA t{k}"), &writing_only(look));
+        }
+        for (label, deck) in [("sconosciuto", unknown_deck()), ("wiki", known_deck(0)), ("classico", known_deck(1))] {
+            for (k, look) in looks().iter().enumerate() {
+                let pick = |i: usize| &deck[(k * 6 + i) % deck.len()];
+                let deal = Deal {
+                    hand: vec![&pick(0).1, &pick(1).1, &pick(2).1],
+                    opp: Some(&pick(3).1),
+                    mine: Some(&pick(4).1),
+                    trump: Some(&pick(5).1),
+                    deck: true,
+                };
+                show(&format!("vera {label} t{k}"), &table(&deal, look));
+                let logo = [0.35, 0.6, 0.9][k % 3];
+                show(&format!("scritte {label} t{k}"), &table(&deal, &Look { writing: true, logo, ..*look }));
+            }
+        }
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
+        for name in ["sito_briscola.png", "solitalian_briscola.png", "solitalian_mare.jpg"] {
+            show(&format!("vera {name}"), &load_jpg(&dir.join(name)));
+        }
+    }
+
+    /// Per ogni carta disegnata piccola (110 pixel, come sul tavolo di prova) quale carta si legge
+    /// e con che distacco dalla seconda. `cargo test --release -p brismaster distacco_carte -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn distacco_carte() {
+        let style: usize = std::env::var("STILE").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+        let deck = known_deck(style);
+        let look = Look { card_h: 110.0, aspect: Some(76.0 / 110.0), ..Look::default() };
+        let mut rows = Vec::new();
+        for chunk in deck.chunks(3) {
+            let hand: Vec<&Img> = chunk.iter().map(|c| &c.1).collect();
+            let img = table(&Deal { hand, opp: None, mine: None, trump: None, deck: true }, &look);
+            let s = read_briscola(&img, &Mutex::new(Memory::in_memory())).expect("carte");
+            for (k, v) in s.hand.iter().enumerate() {
+                let Some(&(want, _)) = chunk.get(k) else { continue };
+                let (got, m) = v.best(CardSet::FULL).unwrap();
+                // La seconda carta più probabile.
+                let mut sc: Vec<(Card, f32)> = (0..40u8).map(|c| (c, v.scores[c as usize])).collect();
+                sc.sort_by(|a, b| b.1.total_cmp(&a.1));
+                rows.push((m, format!("{:<20} -> {:<20} distacco {m:5.2}  seconda {}", cards::name(want), cards::name(got), cards::name(sc[1].0))));
+            }
+        }
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, r) in rows.iter().take(15) {
+            println!("{r}");
+        }
+    }
+}
+

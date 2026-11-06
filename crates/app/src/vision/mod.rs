@@ -97,6 +97,9 @@ pub struct CardView {
     pub sim: [f32; 40],
     /// Punteggio di ciascuna delle 40 carte (più alto = più probabile).
     pub scores: [f32; 40],
+    /// Dove sta la carta intera nella schermata letta: sinistra, alto, destra, basso, in frazioni
+    /// della schermata (serve alla Psy Fly per volarci sopra).
+    pub at: [f32; 4],
 }
 
 pub const CARD_W: usize = 100;
@@ -146,7 +149,7 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
 
 impl CardView {
     pub fn new(img: Img, vis: [f32; 2], sim: [f32; 40]) -> CardView {
-        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim) }
+        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim), at: [0.0; 4] }
     }
 
     /// La carta più probabile fra `among`, e quanto stacca la seconda.
@@ -197,6 +200,8 @@ pub struct Reader<S> {
     pub rx: Receiver<Reading<S>>,
     stop: Arc<AtomicBool>,
     last: Arc<Mutex<Option<Img>>>,
+    /// Il monitor dell'ultima cattura e l'area letta: servono a ritrovare le carte sul desktop.
+    place: Arc<Mutex<Option<(capture::Geom, screen::Area)>>>,
 }
 
 /// Ogni quanto si cattura lo schermo: spesso, perché costa poco. Le schermate si analizzano poi
@@ -228,6 +233,7 @@ impl<S: Send + 'static> Reader<S> {
         let monitor = Arc::new(AtomicUsize::new(screen::area().lock().unwrap().monitor));
         let monitors = Arc::new(AtomicUsize::new(1));
         let (err_tx, err_rx) = channel::<String>();
+        let place = Arc::new(Mutex::new(None));
 
         // Cattura: ogni CAPTURE_EVERY, e tiene le schermate in cui qualcosa è cambiato.
         {
@@ -238,6 +244,7 @@ impl<S: Send + 'static> Reader<S> {
                 monitors.clone(),
                 card_px.clone(),
             );
+            let place = place.clone();
             std::thread::spawn(move || {
                 let mut chosen = None;
                 while !flag.load(Ordering::Relaxed) {
@@ -248,9 +255,10 @@ impl<S: Send + 'static> Reader<S> {
                         monitor.store(area.monitor, Ordering::Relaxed);
                         chosen = Some(area);
                     }
-                    match capture::grab(monitor.load(Ordering::Relaxed)) {
-                        Ok((img, count)) => {
+                    match capture::grab_geom(monitor.load(Ordering::Relaxed)) {
+                        Ok((img, count, geom)) => {
                             monitors.store(count.max(1), Ordering::Relaxed);
+                            *place.lock().unwrap_or_else(|e| e.into_inner()) = Some((geom, area));
                             let table = screen::table(&img, &area);
                             let k = shrink_factor(table.w, card_px.load(Ordering::Relaxed));
                             let table = shrink_by(table, k);
@@ -337,13 +345,33 @@ impl<S: Send + 'static> Reader<S> {
                 ctx.request_repaint();
             }
         });
-        Reader { rx, stop, last }
+        Reader { rx, stop, last, place }
+    }
+
+    /// Il monitor che si sta leggendo (None prima della prima cattura).
+    pub fn monitor(&self) -> Option<capture::Geom> {
+        self.place.lock().unwrap_or_else(|e| e.into_inner()).map(|p| p.0)
+    }
+
+    /// Dove sta sul desktop, in pixel veri (sinistra, alto, destra, basso), una carta della
+    /// schermata letta (`CardView::at`).
+    pub fn on_desktop(&self, at: [f32; 4]) -> Option<[f32; 4]> {
+        let (g, area) = (*self.place.lock().unwrap_or_else(|e| e.into_inner()))?;
+        Some(place_on_desktop(at, g, area))
     }
 
     /// L'ultima schermata letta (già ritagliata sul tavolo), per la diagnosi.
     pub fn last_frame(&self) -> Option<Img> {
         self.last.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
+}
+
+/// Da frazioni della schermata letta (ritagliata sull'area) a pixel del desktop.
+pub fn place_on_desktop(at: [f32; 4], g: capture::Geom, area: screen::Area) -> [f32; 4] {
+    let [l, t, r, b] = area.rect.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+    let x = |f: f32| g.x + (l + f * (r - l)) * g.w;
+    let y = |f: f32| g.y + (t + f * (b - t)) * g.h;
+    [x(at[0]), y(at[1]), x(at[2]), y(at[3])]
 }
 
 /// Le schermate in attesa di analisi: si tiene una schermata quando è cambiata rispetto all'ultima

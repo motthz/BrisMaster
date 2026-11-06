@@ -2,6 +2,7 @@
 
 use crate::cards_ui::{self, BEST, CARD_SIZE, GOLD};
 use crate::record::{self, Advice, CardRec, Event, Recorder};
+use crate::psyfly;
 use crate::vision::memory::{similarity, Memory};
 use crate::vision::{read_briscola, CardView, Img, Reader, Reading, Scene};
 use briscola_core::ai::{evaluate_with_log, MoveEval};
@@ -354,6 +355,8 @@ struct Vision {
     sightings: Sightings,
     /// Scelta del monitor e dell'area del tavolo, e diagnosi.
     picker: crate::vision::screen::AreaPicker,
+    /// L'ultima lettura non ha trovato il tavolo.
+    lost: bool,
 }
 
 struct Confirm {
@@ -723,6 +726,43 @@ impl Assistant {
         }
     }
 
+    /// Accende la lettura dello schermo (la Psy Fly ne ha bisogno per vedere le carte).
+    pub fn vision_on(&mut self, ctx: &egui::Context) {
+        self.set_vision(true, ctx);
+    }
+
+    /// Cosa deve fare la Psy Fly: dove sono le tue carte sullo schermo e quale giocare.
+    pub fn fly_sight(&self) -> psyfly::Sight {
+        let Some(reader) = &self.vision.reader else {
+            return psyfly::Sight { monitor: None, hand: Vec::new(), guide: psyfly::Guide::NoTable };
+        };
+        let monitor = reader.monitor();
+        let scene = self.vision.scene.as_ref().filter(|_| !self.vision.lost);
+        let hand: Vec<[f32; 4]> =
+            scene.map_or(Vec::new(), |s| s.hand.iter().filter_map(|v| reader.on_desktop(v.at)).collect());
+        let guide = match self.pos.step() {
+            _ if scene.is_none() => psyfly::Guide::NoTable,
+            Step::Over => match self.pos.points[ME as usize] {
+                p if p > 60 => psyfly::Guide::Won,
+                60 => psyfly::Guide::Tie,
+                _ => psyfly::Guide::Lost,
+            },
+            Step::MyMove => {
+                let best = self.analysis.as_ref().and_then(|a| a.evals.first()).map(|e| e.card);
+                // La carta consigliata fra quelle in mano sullo schermo.
+                let view = best.and_then(|c| {
+                    scene?.hand.iter().find(|v| v.best(self.pos.hand).is_some_and(|b| b.0 == c))
+                });
+                match view.and_then(|v| reader.on_desktop(v.at)) {
+                    Some(card) => psyfly::Guide::Play { card, take: Vec::new() },
+                    None => psyfly::Guide::Thinking,
+                }
+            }
+            _ => psyfly::Guide::Waiting,
+        };
+        psyfly::Sight { monitor, hand, guide }
+    }
+
     /// Raccoglie l'ultima lettura dello schermo e la confronta con la partita.
     fn poll_vision(&mut self) {
         let Some(reader) = &self.vision.reader else { return };
@@ -740,8 +780,10 @@ impl Assistant {
                 );
                 self.sync(&scene);
                 self.vision.scene = Some(scene);
+                self.vision.lost = false;
             }
             Some(Reading::NoTable) => {
+                self.vision.lost = true;
                 self.vision.status = "Non vedo il tavolo: tieni la partita aperta e visibile sullo schermo".into()
             }
             Some(Reading::Error(e)) => self.vision.status = format!("Lettura dello schermo non riuscita: {e}"),
@@ -2343,7 +2385,7 @@ mod tests {
             let v = ((i / 7) as u32).wrapping_mul(c as u32 + 3).wrapping_mul(2654435761).wrapping_shr(24) as u8;
             *p = [v, v / 2, 255 - v];
         }
-        CardView { img, partial: false, vis: crate::vision::WHOLE, sim: [0.0; 40], scores }
+        CardView { img, partial: false, vis: crate::vision::WHOLE, sim: [0.0; 40], scores, at: [0.0; 4] }
     }
 
     /// Ogni lettura arriva due volte, come dallo schermo (la prima si scarta per prudenza).

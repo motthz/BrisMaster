@@ -7,6 +7,7 @@ use crate::burraco_ui::BurracoAssistant;
 use crate::cards_ui;
 use crate::poker::HoldemAssistant;
 use crate::poker_it::PokerIt;
+use crate::psyfly::Fly;
 use crate::scala40_ui::Scala40Ui;
 use crate::scopa_ui::ScopaUi;
 use crate::settemezzo_ui::{self, SetteMezzo};
@@ -83,6 +84,8 @@ struct Settings {
     compact: bool,
     /// Finestra compatta sempre in primo piano.
     on_top: bool,
+    /// La Psy Fly accesa.
+    psy_fly: bool,
 }
 
 impl Default for Settings {
@@ -95,6 +98,7 @@ impl Default for Settings {
             settemezzo: settemezzo_ui::Prefs::default(),
             compact: false,
             on_top: false,
+            psy_fly: false,
         }
     }
 }
@@ -121,6 +125,10 @@ pub struct BrisApp {
     holdem: HoldemAssistant,
     /// Dimensioni e livello della finestra applicati: (compatta, in primo piano).
     window: Option<(bool, bool)>,
+    /// La mosca psichica che indica sul tavolo del sito la carta da giocare.
+    fly: Fly,
+    /// Il gioco per cui la mosca ha già acceso la lettura dello schermo.
+    fly_reading: Option<Gioco>,
 }
 
 impl BrisApp {
@@ -149,6 +157,8 @@ impl BrisApp {
             poker_it: PokerIt::load(cc.storage),
             holdem: HoldemAssistant::default(),
             window: None,
+            fly: Fly::default(),
+            fly_reading: None,
             settings,
         };
         if app.settings.auto_update {
@@ -202,6 +212,33 @@ impl BrisApp {
         self.window = Some(want);
     }
 
+    /// L'interruttore della Psy Fly: accendendola si accende anche la lettura dello schermo.
+    fn fly_switch(&mut self, ui: &mut egui::Ui) {
+        self.fly.on = self.settings.psy_fly;
+        if self.fly.switch(ui) {
+            self.settings.psy_fly = self.fly.on;
+        }
+    }
+
+    fn vision_on(&mut self, ctx: &egui::Context) {
+        match self.settings.game {
+            Gioco::Briscola => self.assistant.vision_on(ctx),
+            Gioco::Scopa => self.scopa.vision_on(ctx),
+            _ => {}
+        }
+    }
+
+    /// La Psy Fly vola solo nei giochi che leggono lo schermo.
+    fn show_fly(&mut self, ctx: &egui::Context) {
+        let sight = match self.settings.game {
+            Gioco::Briscola => self.assistant.fly_sight(),
+            Gioco::Scopa => self.scopa.fly_sight(),
+            _ => return,
+        };
+        self.fly.on = self.settings.psy_fly;
+        self.fly.show(ctx, sight);
+    }
+
     fn compact_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let title = format!("BrisMaster · {}", self.settings.game.label());
@@ -211,6 +248,8 @@ impl BrisApp {
                     self.settings.compact = false;
                 }
                 ui.checkbox(&mut self.settings.on_top, "In primo piano");
+                ui.separator();
+                self.fly_switch(ui);
             });
         });
     }
@@ -236,6 +275,8 @@ impl BrisApp {
                     {
                         self.settings.compact = true;
                     }
+                    self.fly_switch(ui);
+                    ui.separator();
                     ui.label(
                         RichText::new("Assistente: inserisci le carte, il motore ti dice cosa giocare").size(16.0),
                     );
@@ -320,6 +361,34 @@ impl eframe::App for BrisApp {
         self.poll_background();
 
         self.apply_window(&ui.ctx().clone());
+        // La mosca accesa (anche dall'ultima volta) vede le carte con la lettura dello schermo:
+        // si accende una volta per gioco, poi l'utente può spegnerla.
+        if !self.settings.psy_fly {
+            self.fly_reading = None;
+        } else if self.fly_reading != Some(self.settings.game) {
+            self.vision_on(&ui.ctx().clone());
+            self.fly_reading = Some(self.settings.game);
+        }
+        let ui_ctx = ui.ctx().clone();
+        self.ui_main(ui, now);
+        self.show_fly(&ui_ctx);
+    }
+
+    /// Lo sfondo della finestra principale è opaco: la trasparenza serve solo alla Psy Fly.
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.panel_fill.to_normalized_gamma_f32()
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, "settings", &self.settings);
+        eframe::set_value(storage, "scopa", &self.scopa.settings);
+        eframe::set_value(storage, "blackjack", &self.blackjack.settings);
+        self.poker_it.save(storage);
+    }
+}
+
+impl BrisApp {
+    fn ui_main(&mut self, ui: &mut egui::Ui, now: f64) {
         if self.compact() {
             egui::Panel::top("top").show(ui, |ui| {
                 ui.add_space(4.0);
@@ -381,10 +450,4 @@ impl eframe::App for BrisApp {
         });
     }
 
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, "settings", &self.settings);
-        eframe::set_value(storage, "scopa", &self.scopa.settings);
-        eframe::set_value(storage, "blackjack", &self.blackjack.settings);
-        self.poker_it.save(storage);
-    }
 }

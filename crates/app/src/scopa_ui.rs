@@ -3,6 +3,7 @@
 
 use crate::assistant::is_rank_prefix;
 use crate::cards_ui::{self, BEST, GOLD};
+use crate::psyfly;
 use crate::vision::{memory::Memory, read_scopa, CardView, Img, Reader, Reading, ScopaScene};
 use eframe::egui::{self, vec2, Color32, Rect, RichText, Stroke, Vec2};
 use rand::rngs::SmallRng;
@@ -222,6 +223,8 @@ struct Vision {
     deal: Option<ScopaScene>,
     /// Carta dell'avversario vista di passaggio (anche in una sola lettura) prima che prendesse.
     transit: Option<Card>,
+    /// L'ultima lettura non ha trovato il tavolo.
+    lost: bool,
 }
 
 struct Confirm {
@@ -624,6 +627,35 @@ impl Assist {
 
     // --- Lettura dello schermo -----------------------------------------------------------------
 
+    /// Cosa deve fare la Psy Fly: la carta da giocare e quelle da prendere, sullo schermo.
+    fn fly_sight(&self) -> psyfly::Sight {
+        let Some(reader) = &self.vision.reader else {
+            return psyfly::Sight { monitor: None, hand: Vec::new(), guide: psyfly::Guide::NoTable };
+        };
+        let monitor = reader.monitor();
+        let scene = self.vision.scene.as_ref().filter(|_| !self.vision.lost);
+        let hand: Vec<[f32; 4]> =
+            scene.map_or(Vec::new(), |s| s.hand.iter().filter_map(|v| reader.on_desktop(v.at)).collect());
+        let guide = match (scene, self.obs) {
+            (None, _) => psyfly::Guide::NoTable,
+            (Some(scene), Some(o)) if self.step() == Step::MyMove => {
+                let best = self.analysis.as_ref().and_then(|(ev, _)| ev.first()).map(|e| e.mv);
+                let find = |views: &[CardView], among: CardSet, c: Card| {
+                    views.iter().find(|v| v.best(among).is_some_and(|b| b.0 == c)).and_then(|v| reader.on_desktop(v.at))
+                };
+                match best.and_then(|m| Some((find(&scene.hand, o.hand, m.card)?, m))) {
+                    Some((card, m)) => {
+                        let take = m.take.iter().filter_map(|c| find(&scene.table, o.table, c)).collect();
+                        psyfly::Guide::Play { card, take }
+                    }
+                    None => psyfly::Guide::Thinking,
+                }
+            }
+            _ => psyfly::Guide::Waiting,
+        };
+        psyfly::Sight { monitor, hand, guide }
+    }
+
     /// Accende o spegne la lettura dello schermo.
     fn set_vision(&mut self, on: bool, ctx: &egui::Context) {
         if on && self.vision.reader.is_none() {
@@ -652,8 +684,10 @@ impl Assist {
                 self.watch_transit(&scene);
                 self.sync(&scene);
                 self.vision.scene = Some(scene);
+                self.vision.lost = false;
             }
             Some(Reading::NoTable) => {
+                self.vision.lost = true;
                 self.vision.status = "Non vedo il tavolo: tieni la partita aperta e visibile sullo schermo".into()
             }
             Some(Reading::Error(e)) => self.vision.status = format!("Lettura dello schermo non riuscita: {e}"),
@@ -919,6 +953,16 @@ impl ScopaUi {
         let a = &mut self.assist;
         ui.scope_builder(egui::UiBuilder::new().max_rect(right), |ui| assist_side(a, ui, samples, false));
         ui.scope_builder(egui::UiBuilder::new().max_rect(left), |ui| assist_table(a, ui));
+    }
+
+    /// Accende la lettura dello schermo (la Psy Fly ne ha bisogno per vedere le carte).
+    pub fn vision_on(&mut self, ctx: &egui::Context) {
+        self.assist.set_vision(true, ctx);
+    }
+
+    /// Cosa deve fare la Psy Fly.
+    pub fn fly_sight(&self) -> psyfly::Sight {
+        self.assist.fly_sight()
     }
 
     /// Finestra compatta: solo l'inserimento e il consiglio, con un riepilogo del tavolo in cima.
@@ -1452,7 +1496,7 @@ mod tests {
             let v = ((i / 7) as u32).wrapping_mul(c as u32 + 3).wrapping_mul(2654435761).wrapping_shr(24) as u8;
             *p = [v, v / 2, 255 - v];
         }
-        CardView { img, partial: false, vis: crate::vision::WHOLE, sim: [0.0; 40], scores }
+        CardView { img, partial: false, vis: crate::vision::WHOLE, sim: [0.0; 40], scores, at: [0.0; 4] }
     }
 
     fn scene(table: &[Card], hand: &[Card]) -> ScopaScene {

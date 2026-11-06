@@ -7,6 +7,7 @@ mod burraco_ui;
 mod cards_ui;
 mod poker;
 mod poker_it;
+mod psyfly;
 mod record;
 mod scala40_ui;
 mod scopa_ui;
@@ -20,7 +21,10 @@ fn main() -> eframe::Result {
             .with_title(format!("BrisMaster {}", update::CURRENT))
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([1080.0, 700.0])
-            .with_icon(icona()),
+            .with_icon(icona())
+            // Con la trasparenza la finestra della Psy Fly può essere trasparente (la finestra
+            // principale resta piena: il suo sfondo è opaco, vedi `clear_color`).
+            .with_transparent(true),
         ..Default::default()
     };
     eframe::run_native("BrisMaster", options, Box::new(|cc| Ok(Box::new(app::BrisApp::new(cc)))))

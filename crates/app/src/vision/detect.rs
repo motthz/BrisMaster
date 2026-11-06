@@ -940,8 +940,24 @@ pub struct Analysis {
     pub blobs: Vec<Blob>,
 }
 
+thread_local! {
+    /// La lunghezza delle carte trovate dall'ultima analisi in questo thread (0 se nessuna).
+    static LAST_CARD_L: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
+/// La lunghezza delle carte trovate dall'ultima analisi fatta in questo thread (0 se nessuna).
+pub fn last_card_l() -> f32 {
+    LAST_CARD_L.with(|l| l.get())
+}
+
 /// Trova e riconosce le carte scoperte.
 pub fn analyze(img: &Img) -> Analysis {
+    let a = analyze_inner(img);
+    LAST_CARD_L.with(|l| l.set(if a.cards.is_empty() { 0.0 } else { a.card_l }));
+    a
+}
+
+fn analyze_inner(img: &Img) -> Analysis {
     let p = Paper::of(img);
     let paper: Vec<bool> = img.px.iter().map(|&px| p.is(px)).collect();
     let base = blobs_r(img, &paper, 1);

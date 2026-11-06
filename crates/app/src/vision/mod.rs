@@ -216,7 +216,14 @@ impl<S: Send + 'static> Reader<S> {
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let last = Arc::new(Mutex::new(None));
-        let queue = Arc::new((Mutex::new(Frames::new(every.max(std::time::Duration::from_millis(600)))), Condvar::new()));
+        let queue: Arc<(Mutex<Frames<usize>>, Condvar)> = Arc::new((
+            Mutex::new(Frames::new(
+                every.max(std::time::Duration::from_millis(600)),
+            )),
+            Condvar::new(),
+        ));
+        // Quanto sono lunghe le carte sullo schermo, in pixel veri (0 se non si sa ancora).
+        let card_px = Arc::new(std::sync::atomic::AtomicU32::new(0));
         // Monitor da catturare (l'analisi passa al successivo se non trova il tavolo) e errori.
         let monitor = Arc::new(AtomicUsize::new(screen::area().lock().unwrap().monitor));
         let monitors = Arc::new(AtomicUsize::new(1));
@@ -224,7 +231,13 @@ impl<S: Send + 'static> Reader<S> {
 
         // Cattura: ogni CAPTURE_EVERY, e tiene le schermate in cui qualcosa è cambiato.
         {
-            let (flag, queue, monitor, monitors) = (stop.clone(), queue.clone(), monitor.clone(), monitors.clone());
+            let (flag, queue, monitor, monitors, card_px) = (
+                stop.clone(),
+                queue.clone(),
+                monitor.clone(),
+                monitors.clone(),
+                card_px.clone(),
+            );
             std::thread::spawn(move || {
                 let mut chosen = None;
                 while !flag.load(Ordering::Relaxed) {
@@ -238,9 +251,15 @@ impl<S: Send + 'static> Reader<S> {
                     match capture::grab(monitor.load(Ordering::Relaxed)) {
                         Ok((img, count)) => {
                             monitors.store(count.max(1), Ordering::Relaxed);
-                            let table = shrink(screen::table(&img, &area));
+                            let table = screen::table(&img, &area);
+                            let k = shrink_factor(table.w, card_px.load(Ordering::Relaxed));
+                            let table = shrink_by(table, k);
                             let (lock, cv) = &*queue;
-                            if lock.lock().unwrap_or_else(|e| e.into_inner()).offer(table, std::time::Instant::now()) {
+                            if lock.lock().unwrap_or_else(|e| e.into_inner()).offer_with(
+                                table,
+                                k,
+                                std::time::Instant::now(),
+                            ) {
                                 cv.notify_one();
                             }
                         }
@@ -264,7 +283,7 @@ impl<S: Send + 'static> Reader<S> {
                     let (lock, cv) = &*queue;
                     let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
                     loop {
-                        if let Some(t) = q.next() {
+                        if let Some(t) = q.next_with() {
                             break Some(t);
                         }
                         if flag.load(Ordering::Relaxed) {
@@ -278,10 +297,17 @@ impl<S: Send + 'static> Reader<S> {
                         Ok(e) => Reading::Error(e),
                         Err(_) => continue,
                     },
-                    Some(table) => {
+                    Some((table, k)) => {
                         // Un errore nella lettura di una schermata non deve fermare le letture
                         // dopo: si mostra e si continua.
-                        let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&table, &mem)));
+                        let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            read(&table, &mem)
+                        }));
+                        // La misura delle carte decide quanto rimpicciolire le schermate dopo.
+                        card_px.store(
+                            (detect::last_card_l() * k as f32).round() as u32,
+                            Ordering::Relaxed,
+                        );
                         *frame.lock().unwrap_or_else(|e| e.into_inner()) = Some(table);
                         match scene {
                             Err(e) => {
@@ -324,8 +350,8 @@ impl<S: Send + 'static> Reader<S> {
 /// tenuta (o ogni tanto anche se non cambia). Se l'analisi resta indietro, si scartano le schermate
 /// più simili a quella prima, mai l'ultima: uno stato breve (una presa che resta in tavola un
 /// attimo) non si perde.
-pub struct Frames {
-    frames: std::collections::VecDeque<(Img, Vec<u8>)>,
+pub struct Frames<T = ()> {
+    frames: std::collections::VecDeque<(Img, Vec<u8>, T)>,
     last: Option<Vec<u8>>,
     pushed: Option<std::time::Instant>,
     every: std::time::Duration,
@@ -335,12 +361,29 @@ pub struct Frames {
 const FRAMES: usize = 8;
 
 impl Frames {
-    pub fn new(every: std::time::Duration) -> Frames {
-        Frames { frames: Default::default(), last: None, pushed: None, every }
-    }
-
     /// Offre una schermata appena catturata; vero se è stata tenuta.
     pub fn offer(&mut self, img: Img, now: std::time::Instant) -> bool {
+        self.offer_with(img, (), now)
+    }
+
+    /// La prossima schermata da analizzare.
+    pub fn next(&mut self) -> Option<Img> {
+        self.next_with().map(|f| f.0)
+    }
+}
+
+impl<T> Frames<T> {
+    pub fn new(every: std::time::Duration) -> Frames<T> {
+        Frames {
+            frames: Default::default(),
+            last: None,
+            pushed: None,
+            every,
+        }
+    }
+
+    /// Come `offer`, con un dato attaccato alla schermata.
+    pub fn offer_with(&mut self, img: Img, tag: T, now: std::time::Instant) -> bool {
         let sig = signature(&img);
         let changed = self.last.as_ref().is_none_or(|l| difference(l, &sig) >= 1.5);
         let stale = self.pushed.is_none_or(|t| now.duration_since(t) >= self.every);
@@ -359,18 +402,18 @@ impl Frames {
         }
         self.last = Some(sig.clone());
         self.pushed = Some(now);
-        self.frames.push_back((img, sig));
+        self.frames.push_back((img, sig, tag));
         true
     }
 
-    /// La prossima schermata da analizzare.
-    pub fn next(&mut self) -> Option<Img> {
-        self.frames.pop_front().map(|f| f.0)
+    /// La prossima schermata da analizzare, con il suo dato.
+    pub fn next_with(&mut self) -> Option<(Img, T)> {
+        self.frames.pop_front().map(|f| (f.0, f.2))
     }
 }
 
 /// Impronta di una schermata: la luminosità media su una griglia 48 x 32.
-fn signature(img: &Img) -> Vec<u8> {
+pub fn signature(img: &Img) -> Vec<u8> {
     let (gw, gh) = (48usize, 32usize);
     let mut out = Vec::with_capacity(gw * gh);
     for j in 0..gh {
@@ -393,17 +436,28 @@ fn signature(img: &Img) -> Vec<u8> {
 }
 
 /// Differenza media fra due impronte (0-255).
-fn difference(a: &[u8], b: &[u8]) -> f32 {
+pub fn difference(a: &[u8], b: &[u8]) -> f32 {
     if a.len() != b.len() {
         return 255.0;
     }
     a.iter().zip(b).map(|(&x, &y)| (x as i32 - y as i32).unsigned_abs()).sum::<u32>() as f32 / a.len().max(1) as f32
 }
 
-/// Le schermate molto grandi (monitor 4K) si rimpiccioliscono: le carte restano grandi abbastanza
-/// e l'analisi è molto più veloce.
-pub fn shrink(img: Img) -> Img {
-    let k = img.w.div_ceil(2000);
+/// Le schermate molto grandi (monitor 4K) si rimpiccioliscono, così l'analisi è molto più
+/// veloce, ma solo se le carte restano grandi abbastanza da leggerle: con il gioco in una finestra
+/// di uno schermo grande le carte sono piccole e la schermata si legge intera.
+///
+/// Di quanto rimpicciolire una schermata larga `w` con carte lunghe `card_px` pixel (0 se non si
+/// sa ancora: allora si legge intera finché non si vedono le carte).
+pub fn shrink_factor(w: usize, card_px: u32) -> usize {
+    w.div_ceil(2000).min(card_px as usize / MIN_CARD_PX).max(1)
+}
+
+/// Le carte, nella schermata rimpicciolita, restano lunghe almeno tanto.
+const MIN_CARD_PX: usize = 110;
+
+/// Rimpicciolisce di `k` volte per lato.
+pub fn shrink_by(img: Img, k: usize) -> Img {
     if k <= 1 {
         return img;
     }
@@ -452,6 +506,21 @@ mod tests {
 
     fn best(v: &CardView) -> Card {
         v.best(CardSet::FULL).unwrap().0
+    }
+
+    /// Su uno schermo grande la schermata si rimpicciolisce solo se le carte restano leggibili:
+    /// il gioco in una finestra non ingrandita di un monitor 2560 o 4K si legge intero.
+    #[test]
+    fn small_cards_are_never_shrunk() {
+        // Carte ancora sconosciute: si legge intera.
+        assert_eq!(shrink_factor(3840, 0), 1);
+        // Finestra a 100% su 2560 o 4K: carte di 110 pixel, niente rimpicciolimento.
+        assert_eq!(shrink_factor(2560, 110), 1);
+        assert_eq!(shrink_factor(3840, 110), 1);
+        // 4K con il sito ingrandito: carte di 230 pixel, si dimezza (restano 115).
+        assert_eq!(shrink_factor(3840, 230), 2);
+        // Schermi piccoli: mai.
+        assert_eq!(shrink_factor(1920, 400), 1);
     }
 
     /// Le schermate catturate spesso e analizzate lentamente: lo stato che dura una cattura sola

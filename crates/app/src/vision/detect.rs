@@ -585,6 +585,13 @@ impl Try {
         Try { rect, vis, cols, card, m }
     }
 
+    /// Come `with_cols`, senza le righe coperte da una fascia che attraversa la carta.
+    fn uncovered(img: &Img, rect: RotRect, cols: [f32; 2]) -> Try {
+        let card = warp(img, &rect);
+        let m = reference::Match::with_cols_uncovered(&card, WHOLE, cols);
+        Try { rect, vis: WHOLE, cols, card, m }
+    }
+
     /// Confronto completo.
     fn finish(self, img: &Img) -> Found {
         let sim = self.m.refine();
@@ -900,6 +907,62 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
     out
 }
 
+/// Una fila di carte sovrapposte di lato (la mano "sovrapposta"): si provano 2, 3 o 4 carte
+/// distribuite lungo la fila, coperte verso destra o verso sinistra, ciascuna con la sua striscia
+/// visibile, e si tiene la disposizione che somiglia di più.
+fn row_cards(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
+    // Lungo la fila, e la testa delle carte in alto.
+    let (long, len, short) = if r.hw >= r.hh { (r.u, 2.0 * r.hw, r.v) } else { (r.v, 2.0 * r.hh, r.u) };
+    let v = if short.1 >= 0.0 { short } else { (-short.0, -short.1) };
+    let along = if long.0 >= 0.0 { long } else { (-long.0, -long.1) };
+    let mut best: Option<(f32, Vec<Found>)> = None;
+    for n in 2..=4usize {
+        let step = (len - card_w) / (n - 1) as f32;
+        if !(0.2 * card_w..=1.05 * card_w).contains(&step) {
+            continue;
+        }
+        let seen = (step / card_w).min(1.0);
+        for right_on_top in [true, false] {
+            let tries: Vec<(RotRect, [f32; 2])> = (0..n)
+                .map(|k| {
+                    let t = -len / 2.0 + card_w / 2.0 + k as f32 * step;
+                    let rect = RotRect {
+                        cx: r.cx + t * along.0,
+                        cy: r.cy + t * along.1,
+                        u: (v.1, -v.0),
+                        v,
+                        hw: card_w / 2.0,
+                        hh: card_l / 2.0,
+                    };
+                    let cols = match (right_on_top, k) {
+                        (true, k) if k + 1 < n => [0.0, seen],
+                        (false, k) if k > 0 => [1.0 - seen, 1.0],
+                        _ => WHOLE,
+                    };
+                    (rect, cols)
+                })
+                .collect();
+            let found = par_map(&tries, |(rect, cols)| Some(Try::uncovered(img, *rect, *cols).finish(img)));
+            let found: Vec<Found> = found.into_iter().flatten().collect();
+            let mean = found.iter().map(|f| f.score).sum::<f32>() / n as f32;
+            if best.as_ref().is_none_or(|b| mean > b.0) {
+                best = Some((mean, found));
+            }
+        }
+    }
+    // La disposizione stessa è una prova: in una fila che somiglia bene nel complesso basta che
+    // ogni carta somigli abbastanza e stacchi chiaramente la seconda (la fascia che attraversa la
+    // fila confonde il controllo del colore del tavolo dentro la carta).
+    let Some((mean, found)) = best else { return Vec::new() };
+    found
+        .into_iter()
+        .filter(|f| {
+            let margin = f.view.best(briscola_core::cards::CardSet::FULL).map_or(0.0, |b| b.1);
+            f.accepted(SCAN_ACCEPT) || (mean >= 0.72 && f.score >= SCAN_ACCEPT && margin >= 1.0 && traits(&f.view.img, f.view.vis).1 >= MIN_INK)
+        })
+        .collect()
+}
+
 /// Somiglianza minima per una carta trovata facendo scorrere la finestra.
 const SCAN_ACCEPT: f32 = 0.7;
 
@@ -950,8 +1013,24 @@ pub struct Analysis {
     pub blobs: Vec<Blob>,
 }
 
+thread_local! {
+    /// La lunghezza delle carte trovate dall'ultima analisi in questo thread (0 se nessuna).
+    static LAST_CARD_L: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
+/// La lunghezza delle carte trovate dall'ultima analisi fatta in questo thread (0 se nessuna).
+pub fn last_card_l() -> f32 {
+    LAST_CARD_L.with(|l| l.get())
+}
+
 /// Trova e riconosce le carte scoperte.
 pub fn analyze(img: &Img) -> Analysis {
+    let a = analyze_inner(img);
+    LAST_CARD_L.with(|l| l.set(if a.cards.is_empty() { 0.0 } else { a.card_l }));
+    a
+}
+
+fn analyze_inner(img: &Img) -> Analysis {
     let p = Paper::of(img);
     let paper: Vec<bool> = img.px.iter().map(|&px| p.is(px)).collect();
     let base = blobs_r(img, &paper, 1);
@@ -1111,6 +1190,23 @@ pub fn analyze(img: &Img) -> Analysis {
             }
             let pts: Vec<(f32, f32)> = (0..4).flat_map(|k| [a.outline(k as f32, 1.0, 0.0), b.outline(k as f32, 1.0, 0.0)]).collect();
             let Some(u) = min_area_rect(pts) else { continue };
+            // Due pezzi che insieme sono una fila di carte sovrapposte (la mano attraversata da una
+            // fascia): alti come una carta e larghi più di una. Si cercano tutte le carte della fila.
+            let row = (0.8..=1.25).contains(&(u.short() / card_l)) && (1.3..=4.5).contains(&(u.long() / card_w));
+            if row {
+                let around = RotRect { hw: u.hw + 0.15 * card_w, hh: u.hh + 0.15 * card_w, ..u };
+                let mut found = row_cards(img, &u, card_l, card_w);
+                for f in scan(img, &paper, &around, card_l, card_w) {
+                    if !found.iter().any(|g| g.rect.dist(&f.rect) < 0.3 * card_w) {
+                        found.push(f);
+                    }
+                }
+                if !found.is_empty() {
+                    cards.extend(found);
+                    (joined[i], joined[j]) = (true, true);
+                }
+                continue;
+            }
             if !(0.6..=1.2).contains(&(u.long() / card_l)) || !(0.6..=1.25).contains(&(u.short() / card_w)) {
                 continue;
             }

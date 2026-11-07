@@ -48,7 +48,7 @@ pub fn canon_index(c: Card, trump: u8) -> usize {
 
 /// Seme rinumerato: briscola 0, gli altri 1..3 nell'ordine originale.
 #[inline]
-fn canon_suit(s: u8, trump: u8) -> u8 {
+pub(crate) fn canon_suit(s: u8, trump: u8) -> u8 {
     if s == trump {
         0
     } else if s < trump {

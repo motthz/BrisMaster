@@ -14,6 +14,7 @@
 //! SPEC: vedi `agents.rs` (es. engine:1000, ismcts:2000, noisy:0.25:heuristic, v0.1.1/engine:1000).
 
 mod agents;
+mod rl_agent;
 mod banco;
 mod arena;
 mod opponents;

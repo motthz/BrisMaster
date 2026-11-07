@@ -247,6 +247,7 @@ impl Agent for Infer {
     fn start(&mut self, order: &[Card], first: u8) {
         self.game = Some(Game::from_order(order, first));
         self.log = Log::default();
+        self.search.rl_hist.clear();
         self.me = None;
         if self.exact.is_some() {
             self.exact = Some(Exact::default());
@@ -408,6 +409,7 @@ impl Agent for Infer {
             }
         }
         self.log.before_play(g, me, c);
+        self.search.rl_hist.push((g.to_move(), c));
         g.play(c);
     }
 }
@@ -732,6 +734,11 @@ fn make_searcher(spec: &str) -> Result<Infer, String> {
                     a.search.prior = Some(prior_net()?);
                     a.search.prior_weight = num()?;
                 }
+                "rlroll" => a.search.rl = Some((crate::rl_agent::load(v)?, a.search.rl.as_ref().map_or(40, |r| r.1))),
+                "rlmosse" => {
+                    let n = num()? as u8;
+                    a.search.rl.as_mut().ok_or("rlmosse va dopo rlroll")?.1 = n;
+                }
                 "media" => a.opts.by_mean = v == "1",
                 "dove" => (a.search.model_tree, a.search.model_rollout) = match v {
                     "albero" => (true, false),
@@ -806,6 +813,12 @@ fn make_searcher(spec: &str) -> Result<Infer, String> {
 
 /// Crea un giocatore da SPEC, anche di una versione rilasciata (`vX.Y.Z/SPEC`).
 pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
+    if let Some(rest) = spec.strip_prefix("rlcerca:") {
+        return crate::rl_agent::make_search(rest, policy_net()?); // rete + ricerca: rlcerca:FILE:MONDI[:PROFONDITA]
+    }
+    if let Some(rest) = spec.strip_prefix("rl:") {
+        return crate::rl_agent::make(rest); // rete auto-allenata: rl:FILE[:TEMP]
+    }
     if let Some(rest) = spec.strip_prefix("reale:") {
         // reale:FILE[:TEMP] prima delle versioni: il percorso del file contiene '/'.
         return Ok(Box::new(Current(make_net_file_player(rest)?, String::new())));

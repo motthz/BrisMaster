@@ -309,6 +309,9 @@ pub struct IsmctsPlayer {
     /// Storia pubblica fino alla radice (carte giocate in ordine, con chi le ha giocate),
     /// necessaria alla rete auto-allenata.
     pub rl_hist: Vec<(u8, Card)>,
+    /// Peso del valore della rete auto-allenata rispetto alla simulazione classica a carte
+    /// scoperte dalla stessa foglia (1 = solo rete).
+    pub rl_mix: f64,
 }
 
 /// Rimescola la mano di `me` con le carte del mazzo che l'avversario non conosce
@@ -361,6 +364,7 @@ impl IsmctsPlayer {
             shadow: false,
             rl: None,
             rl_hist: Vec::new(),
+            rl_mix: 1.0,
         }
     }
 
@@ -386,6 +390,7 @@ impl IsmctsPlayer {
             shadow: false,
             rl: None,
             rl_hist: Vec::new(),
+            rl_mix: 1.0,
         }
     }
 
@@ -590,6 +595,15 @@ impl IsmctsPlayer {
                         g.play(c);
                         left -= 1;
                     }
+                    let mixed = match self.policy {
+                        Some(p) if self.rl_mix < 1.0 && !g.is_over() && g.deck_len > solve_at => {
+                            let mut r = g;
+                            rollout_until(&mut r, Some(&p), self.rollout_eps, self.rollout_solve, rng);
+                            let p0 = if r.is_over() { r.points[0] } else { solver.solve(&r, 0) };
+                            Some((result(p0), p0 as f64))
+                        }
+                        _ => None,
+                    };
                     if g.is_over() || g.deck_len <= solve_at {
                         let p0 = if g.is_over() { g.points[0] } else { solver.solve(&g, 0) };
                         (result(p0), p0 as f64)
@@ -602,7 +616,14 @@ impl IsmctsPlayer {
                         // Punti stimati: quelli già fatti più una quota del resto secondo il valore.
                         let rest = 120.0 - g.points[0] as f64 - g.points[1] as f64;
                         let pts = g.points[0] as f64 + rest * (0.5 + 0.25 * v0);
-                        ((v0 + 1.0) / 2.0, pts)
+                        let (w, pts) = ((v0 + 1.0) / 2.0, pts);
+                        match mixed {
+                            Some((rw, rp)) => {
+                                let m = self.rl_mix;
+                                (m * w + (1.0 - m) * rw, m * pts + (1.0 - m) * rp)
+                            }
+                            None => (w, pts),
+                        }
                     }
                 }
                 (_, None) => {

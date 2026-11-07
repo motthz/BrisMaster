@@ -159,8 +159,12 @@ impl Position {
     }
 }
 
+/// Strati nascosti di una rete nuova (quelli di un file si leggono dal file).
 pub const H1: usize = 96;
 pub const H2: usize = 32;
+/// Strati nascosti più larghi ammessi.
+pub const MAX_H1: usize = 512;
+pub const MAX_H2: usize = 128;
 
 /// Uscite della rete di valutazione: probabilità di vincere e quota dei punti finali.
 pub const VALUE_OUT: usize = 2;
@@ -171,6 +175,9 @@ pub const POLICY_OUT: usize = NUM_CARDS;
 #[derive(Clone)]
 pub struct Net {
     pub n_out: usize,
+    /// Larghezza dei due strati nascosti.
+    pub h1: usize,
+    pub h2: usize,
     /// Pesi del primo strato per riga d'ingresso: `w1[i * H1 + j]`.
     pub w1: Vec<f32>,
     pub b1: Vec<f32>,
@@ -182,8 +189,8 @@ pub struct Net {
 
 /// Valori intermedi del calcolo in avanti (servono anche all'allenamento).
 pub struct Forward {
-    pub h1: [f32; H1],
-    pub h2: [f32; H2],
+    pub h1: [f32; MAX_H1],
+    pub h2: [f32; MAX_H2],
     /// Uscite prima della sigmoide (valutazione) o della softmax (politica); valgono le prime `n_out`.
     pub z: [f32; POLICY_OUT],
 }
@@ -204,6 +211,12 @@ pub fn policy() -> &'static Net {
 impl Net {
     /// Rete con pesi casuali piccoli (inizializzazione di He), per l'allenamento.
     pub fn random(seed: u64, n_out: usize) -> Net {
+        Net::random_sized(seed, n_out, H1, H2)
+    }
+
+    /// Come `random`, con strati nascosti larghi `h1` e `h2`.
+    pub fn random_sized(seed: u64, n_out: usize, h1: usize, h2: usize) -> Net {
+        assert!(h1 <= MAX_H1 && h2 <= MAX_H2, "strati nascosti troppo larghi");
         use rand::{Rng, SeedableRng};
         let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
         let mut init = |n: usize, fan_in: usize| -> Vec<f32> {
@@ -212,52 +225,55 @@ impl Net {
         };
         Net {
             n_out,
-            w1: init(N_IN * H1, NUM_CARDS + 3),
-            b1: vec![0.0; H1],
-            w2: init(H1 * H2, H1),
-            b2: vec![0.0; H2],
-            w3: init(H2 * n_out, H2),
+            h1,
+            h2,
+            w1: init(N_IN * h1, NUM_CARDS + 3),
+            b1: vec![0.0; h1],
+            w2: init(h1 * h2, h1),
+            b2: vec![0.0; h2],
+            w3: init(h2 * n_out, h2),
             b3: vec![0.0; n_out],
         }
     }
 
     pub fn forward(&self, p: &Position) -> Forward {
+        let (n1, n2) = (self.h1, self.h2);
         let mut idx = [0u16; NUM_CARDS + 2];
         let (dense, n) = p.active(&mut idx);
-        let mut h1 = [0f32; H1];
-        h1.copy_from_slice(&self.b1);
+        let mut h1 = [0f32; MAX_H1];
+        h1[..n1].copy_from_slice(&self.b1);
         for &i in &idx[..n] {
-            let row = &self.w1[i as usize * H1..(i as usize + 1) * H1];
-            for j in 0..H1 {
+            let row = &self.w1[i as usize * n1..(i as usize + 1) * n1];
+            for j in 0..n1 {
                 h1[j] += row[j];
             }
         }
         for (k, &x) in dense.iter().enumerate() {
-            let row = &self.w1[(I_PTS + k) * H1..(I_PTS + k + 1) * H1];
-            for j in 0..H1 {
+            let row = &self.w1[(I_PTS + k) * n1..(I_PTS + k + 1) * n1];
+            for j in 0..n1 {
                 h1[j] += row[j] * x;
             }
         }
-        for v in h1.iter_mut() {
+        for v in h1[..n1].iter_mut() {
             *v = v.max(0.0);
         }
-        let mut h2 = [0f32; H2];
-        h2.copy_from_slice(&self.b2);
-        for (i, &x) in h1.iter().enumerate() {
+        let mut h2 = [0f32; MAX_H2];
+        h2[..n2].copy_from_slice(&self.b2);
+        for (i, &x) in h1[..n1].iter().enumerate() {
             if x != 0.0 {
-                let row = &self.w2[i * H2..(i + 1) * H2];
-                for j in 0..H2 {
+                let row = &self.w2[i * n2..(i + 1) * n2];
+                for j in 0..n2 {
                     h2[j] += row[j] * x;
                 }
             }
         }
-        for v in h2.iter_mut() {
+        for v in h2[..n2].iter_mut() {
             *v = v.max(0.0);
         }
         let k = self.n_out;
         let mut z = [0f32; POLICY_OUT];
         z[..k].copy_from_slice(&self.b3);
-        for (i, &x) in h2.iter().enumerate() {
+        for (i, &x) in h2[..n2].iter().enumerate() {
             if x != 0.0 {
                 let row = &self.w3[i * k..(i + 1) * k];
                 for j in 0..k {
@@ -272,6 +288,13 @@ impl Net {
     #[inline]
     pub fn eval(&self, g: &Game) -> (f32, f32) {
         let f = self.forward(&Position::of(g));
+        (sigmoid(f.z[0]), sigmoid(f.z[1]) * 120.0)
+    }
+
+    /// Come `eval`, ma dalla sola osservazione di chi deve muovere (rete onesta).
+    #[inline]
+    pub fn eval_obs(&self, g: &Game) -> (f32, f32) {
+        let f = self.forward(&Position::of_obs(&Observation::of(g, g.to_move())));
         (sigmoid(f.z[0]), sigmoid(f.z[1]) * 120.0)
     }
 
@@ -299,7 +322,7 @@ impl Net {
 
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = MAGIC.to_vec();
-        for d in [N_IN, H1, H2, self.n_out] {
+        for d in [N_IN, self.h1, self.h2, self.n_out] {
             out.extend_from_slice(&(d as u32).to_le_bytes());
         }
         for v in [&self.w1, &self.b1, &self.w2, &self.b2, &self.w3, &self.b3] {
@@ -315,8 +338,9 @@ impl Net {
             return Err("file della rete non valido".into());
         }
         let dim = |k: usize| u32::from_le_bytes(b[4 + 4 * k..8 + 4 * k].try_into().unwrap()) as usize;
-        if (dim(0), dim(1), dim(2)) != (N_IN, H1, H2) {
-            return Err(format!("dimensioni della rete diverse: {} {} {}", dim(0), dim(1), dim(2)));
+        let (h1, h2) = (dim(1), dim(2));
+        if dim(0) != N_IN || h1 == 0 || h2 == 0 || h1 > MAX_H1 || h2 > MAX_H2 {
+            return Err(format!("dimensioni della rete diverse: {} {} {}", dim(0), h1, h2));
         }
         let n_out = dim(3);
         if n_out != VALUE_OUT && n_out != POLICY_OUT {
@@ -329,11 +353,13 @@ impl Net {
         };
         Ok(Net {
             n_out,
-            w1: take(N_IN * H1)?,
-            b1: take(H1)?,
-            w2: take(H1 * H2)?,
-            b2: take(H2)?,
-            w3: take(H2 * n_out)?,
+            h1,
+            h2,
+            w1: take(N_IN * h1)?,
+            b1: take(h1)?,
+            w2: take(h1 * h2)?,
+            b2: take(h2)?,
+            w3: take(h2 * n_out)?,
             b3: take(n_out)?,
         })
     }
@@ -382,5 +408,12 @@ mod tests {
         assert_eq!(back.w1, net.w1);
         let back = Net::from_bytes(&pol.to_bytes()).unwrap();
         assert_eq!((back.n_out, back.w3.len()), (POLICY_OUT, pol.w3.len()));
+        // Una rete più larga si salva, si rilegge e calcola le stesse uscite.
+        let wide = Net::random_sized(3, POLICY_OUT, 256, 64);
+        let back = Net::from_bytes(&wide.to_bytes()).unwrap();
+        assert_eq!((back.h1, back.h2), (256, 64));
+        let g = Game::new(&mut rng, 0);
+        let p = Position::of(&g);
+        assert_eq!(back.forward(&p).z, wide.forward(&p).z);
     }
 }

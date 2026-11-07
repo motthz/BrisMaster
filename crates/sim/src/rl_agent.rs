@@ -19,7 +19,7 @@ pub struct RlAgent {
     hist: Vec<(u8, Card)>,
 }
 
-fn load(path: &str) -> Result<Arc<RlNet>, String> {
+pub fn load(path: &str) -> Result<Arc<RlNet>, String> {
     static CACHE: OnceLock<Mutex<HashMap<String, Arc<RlNet>>>> = OnceLock::new();
     let mut c = CACHE.get_or_init(Default::default).lock().unwrap();
     if let Some(n) = c.get(path) {

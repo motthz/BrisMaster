@@ -247,6 +247,7 @@ impl Agent for Infer {
     fn start(&mut self, order: &[Card], first: u8) {
         self.game = Some(Game::from_order(order, first));
         self.log = Log::default();
+        self.search.rl_hist.clear();
         self.me = None;
         if self.exact.is_some() {
             self.exact = Some(Exact::default());
@@ -408,6 +409,7 @@ impl Agent for Infer {
             }
         }
         self.log.before_play(g, me, c);
+        self.search.rl_hist.push((g.to_move(), c));
         g.play(c);
     }
 }
@@ -731,6 +733,11 @@ fn make_searcher(spec: &str) -> Result<Infer, String> {
                 "guida" => {
                     a.search.prior = Some(prior_net()?);
                     a.search.prior_weight = num()?;
+                }
+                "rlroll" => a.search.rl = Some((crate::rl_agent::load(v)?, a.search.rl.as_ref().map_or(40, |r| r.1))),
+                "rlmosse" => {
+                    let n = num()? as u8;
+                    a.search.rl.as_mut().ok_or("rlmosse va dopo rlroll")?.1 = n;
                 }
                 "media" => a.opts.by_mean = v == "1",
                 "dove" => (a.search.model_tree, a.search.model_rollout) = match v {

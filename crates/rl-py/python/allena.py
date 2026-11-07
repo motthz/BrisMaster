@@ -215,6 +215,8 @@ def main():
         s = torch.load(stato, weights_only=False, map_location=DEV)
         net.load_state_dict(s["net"])
         opt.load_state_dict(s["opt"])
+        for g in opt.param_groups:  # il passo scelto ora vale anche ripartendo
+            g["lr"] = args.lr
         it, games, pool = s["it"], s["games"], s["pool"]
         print(f"ripreso dal giro {it}, {games} partite", flush=True)
     seed = args.seed + it

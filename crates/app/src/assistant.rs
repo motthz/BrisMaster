@@ -369,6 +369,10 @@ struct Vision {
     auto: bool,
     /// Letture di fila in cui lo schermo è cambiato ma la partita no.
     stall: u32,
+    /// Letture di fila senza tavolo, e se da quando il tavolo è tornato non ci si è ancora
+    /// riallineati: solo allora la partita può essere andata avanti senza che si vedesse.
+    away: u32,
+    gap: bool,
 }
 
 struct Confirm {
@@ -788,12 +792,21 @@ impl Assistant {
 
     /// Raccoglie l'ultima lettura dello schermo e la confronta con la partita.
     fn poll_vision(&mut self) {
-        let Some(reader) = &self.vision.reader else { return };
-        let mut latest = None;
-        while let Ok(r) = reader.rx.try_recv() {
-            latest = Some(r);
+        // Tutte le letture arrivate, in ordine: quando l'app non è in primo piano (si guarda il
+        // gioco) l'interfaccia si aggiorna di rado, e tenere solo l'ultima lettura perdeva le
+        // giocate di mezzo.
+        let readings: Vec<Reading<Scene>> = match &self.vision.reader {
+            Some(reader) => std::iter::from_fn(|| reader.rx.try_recv().ok()).collect(),
+            None => return,
+        };
+        for r in readings {
+            self.take_reading(r);
         }
-        match latest {
+    }
+
+    /// Una lettura dello schermo.
+    fn take_reading(&mut self, latest: Reading<Scene>) {
+        match Some(latest) {
             Some(Reading::Scene(scene)) => {
                 self.vision.status = format!(
                     "Vedo: briscola {} · {} carte in mano · {} in tavola",
@@ -806,6 +819,7 @@ impl Assistant {
                 self.vision.lost = false;
             }
             Some(Reading::NoTable) => {
+                self.lost_table();
                 self.vision.lost = true;
                 self.vision.status = "Non vedo il tavolo: tieni la partita aperta e visibile sullo schermo".into()
             }
@@ -814,8 +828,17 @@ impl Assistant {
         }
     }
 
+    /// Una lettura senza tavolo (un'altra finestra davanti, un'altra scheda).
+    fn lost_table(&mut self) {
+        self.vision.away += 1;
+        if self.vision.away >= 3 {
+            self.vision.gap = true;
+        }
+    }
+
     /// Inserisce nella partita quello che si vede sullo schermo, se è uguale alla lettura precedente.
     fn sync(&mut self, scene: &Scene) {
+        self.vision.away = 0;
         let fixed = self.fix_layout(scene);
         let scene = fixed.as_ref().unwrap_or(scene);
         let best = |v: &CardView| v.best(CardSet::FULL).map(|b| b.0);
@@ -938,6 +961,14 @@ impl Assistant {
         if b.history.len() <= self.history.len() {
             return false;
         }
+        // La ricostruzione deve tornare con quello che si vede adesso: le carte lette con sicurezza
+        // in mano devono essere in mano (al più manca la pescata da segnare) e non giocate.
+        let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
+        let seen: Vec<Card> = scene.hand.iter().filter_map(sure).collect();
+        let missing = seen.iter().filter(|&&c| !b.pos.hand.contains(c)).count();
+        if seen.iter().any(|&c| b.pos.played.contains(c)) || missing > b.pos.to_draw as usize {
+            return false;
+        }
         let events = std::mem::take(&mut b.rec.events);
         self.pos = b.pos;
         self.history = b.history;
@@ -956,6 +987,10 @@ impl Assistant {
     /// dalla carta in tavola. Le carte giocate dall'avversario in quel tempo non si possono sapere
     /// (e i punti possono non tornare): si dice all'utente.
     fn resync(&mut self, scene: &Scene) -> bool {
+        // Solo dopo un tratto in cui il tavolo non si vedeva davvero.
+        if !self.vision.gap {
+            return false;
+        }
         let pos = self.pos;
         if matches!(pos.step(), Step::Trump | Step::First | Step::Over) {
             return false;
@@ -964,7 +999,9 @@ impl Assistant {
         // La mano letta con sicurezza, uguale nelle ultime letture.
         let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
         let hand: Vec<Card> = scene.hand.iter().filter_map(sure).collect();
-        let stable = matches!(self.vision.sightings.full_hands.as_slice(), [.., (_, a), (_, b)] if a == b && *b == hand);
+        let now = self.vision.sightings.frame;
+        let stable = matches!(self.vision.sightings.full_hands.as_slice(),
+            [.., (fa, a), (fb, b)] if a == b && *b == hand && *fb + 1 >= now && *fa + 4 >= now);
         if !stable || hand.len() != scene.hand.len() || hand.is_empty() {
             return false;
         }
@@ -984,7 +1021,10 @@ impl Assistant {
         // Carte a testa all'inizio della presa in tavola: meno di tre vuol dire mazzo finito, e allora
         // le prese fatte si sanno esattamente (20 meno le carte rimaste).
         let each = hand.len() as u8 + mine_on_table as u8;
-        let exhausted = each < 3 && pos.deck_len > 0;
+        // (E la briscola non è più al suo posto: con una carta della mano non letta le carte
+        // sembrano meno di tre anche col mazzo ancora pieno.)
+        let trump_shown = scene.trump.as_ref().and_then(sure) == Some(trump);
+        let exhausted = each < 3 && pos.deck_len > 0 && !trump_shown;
         if new.is_empty() && missing.len() <= 1 && !exhausted {
             // Niente di nuovo in mano: non è un buco, al più una giocata non vista.
             return false;
@@ -1033,6 +1073,7 @@ impl Assistant {
         }
         self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
         self.pos = p;
+        self.vision.gap = false;
         self.changed();
         self.vision.last = None;
         self.vision.status = format!(
@@ -2375,8 +2416,12 @@ impl Sightings {
     /// La mia carta sparita dalla mano mentre al suo posto è arrivata la pescata (o, a mazzo
     /// finito, la mano si è accorciata).
     fn played_from_hand(&self, pos: &Position, scene: &Scene) -> Option<Card> {
-        // Le ultime due letture sicure della mano dicono la stessa cosa.
-        let [.., (_, a), (_, b)] = self.full_hands.as_slice() else { return None };
+        // Le ultime due letture sicure della mano, recenti (una lettura di tanto tempo fa non dice
+        // com'è la mano adesso), dicono la stessa cosa.
+        let [.., (fa, a), (fb, b)] = self.full_hands.as_slice() else { return None };
+        if *fb + 1 < self.frame || *fa + 4 < self.frame {
+            return None;
+        }
         if a != b || b.len() != scene.hand.len() {
             return None;
         }
@@ -3086,6 +3131,10 @@ mod tests {
             .and_then(|v| v.parse::<u64>().ok());
         // ZOOM=fattore: il sito ingrandito o rimpicciolito.
         let zoom = std::env::var("ZOOM").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
+        // AGGIORNA=ms: l'interfaccia raccoglie le letture a questi intervalli (app non in primo
+        // piano); VECCHIA_UI=1: come la 0.5.10, tiene solo l'ultima lettura di ogni raccolta.
+        let ui = std::env::var("AGGIORNA").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        let old_ui = std::env::var("VECCHIA_UI").is_ok();
         let desk = std::env::var("SCHERMO")
             .ok()
             .and_then(|v| v.parse::<usize>().ok());
@@ -3200,13 +3249,26 @@ mod tests {
                         );
                         if busy <= tick {
                             if let Some((_, i)) = q.next_with() {
-                                out.push((i, 0));
+                                out.push((i, 0, tick + cost));
                                 busy = tick + cost;
                             }
                         }
                         tick += 100;
                     }
-                    out
+                    // L'interfaccia raccoglie le letture ogni `ui` ms; la 0.5.10 teneva solo
+                    // l'ultima di ogni raccolta.
+                    if old_ui {
+                        let ui = ui.max(1);
+                        let mut kept: Vec<(usize, u64, u64)> = Vec::new();
+                        for r in out {
+                            if kept.last().is_some_and(|k| k.2 / ui == r.2 / ui) {
+                                kept.pop();
+                            }
+                            kept.push(r);
+                        }
+                        out = kept;
+                    }
+                    out.into_iter().map(|(i, e, _)| (i, e)).collect()
                 }
             };
             let mut card_px = 0u32;
@@ -3232,6 +3294,9 @@ mod tests {
                 let trump = by_name(e["trump"].as_str().unwrap()).unwrap();
                 let scene = read_briscola(&img, &a.vision.memory);
                 card_px = (crate::vision::detect::last_card_l() * k as f32).round() as u32;
+                if scene.is_none() {
+                    a.lost_table();
+                }
                 if let Some(scene) = &scene {
                     a.sync(scene);
                     for _ in 0..extra {

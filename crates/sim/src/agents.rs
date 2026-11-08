@@ -740,6 +740,7 @@ fn make_searcher(spec: &str) -> Result<Infer, String> {
                     a.search.rl.as_mut().ok_or("rlmosse va dopo rlroll")?.1 = n;
                 }
                 "rlmix" => a.search.rl_mix = num()?,
+                "rlmixfine" => a.search.rl_mix_late = Some(num()?),
                 "media" => a.opts.by_mean = v == "1",
                 "dove" => (a.search.model_tree, a.search.model_rollout) = match v {
                     "albero" => (true, false),

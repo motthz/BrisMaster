@@ -312,6 +312,9 @@ pub struct IsmctsPlayer {
     /// Peso del valore della rete auto-allenata rispetto alla simulazione classica a carte
     /// scoperte dalla stessa foglia (1 = solo rete).
     pub rl_mix: f64,
+    /// Peso della rete a mazzo vuoto: il peso va da `rl_mix` (mazzo pieno) a questo, in
+    /// proporzione alle carte nel mazzo (`None` = sempre `rl_mix`).
+    pub rl_mix_late: Option<f64>,
 }
 
 /// Rimescola la mano di `me` con le carte del mazzo che l'avversario non conosce
@@ -365,6 +368,7 @@ impl IsmctsPlayer {
             rl: None,
             rl_hist: Vec::new(),
             rl_mix: 1.0,
+            rl_mix_late: None,
         }
     }
 
@@ -391,6 +395,7 @@ impl IsmctsPlayer {
             rl: None,
             rl_hist: Vec::new(),
             rl_mix: 1.0,
+            rl_mix_late: None,
         }
     }
 
@@ -595,8 +600,12 @@ impl IsmctsPlayer {
                         g.play(c);
                         left -= 1;
                     }
+                    let mix = match self.rl_mix_late {
+                        Some(late) => late + (self.rl_mix - late) * g.deck_len as f64 / 33.0,
+                        None => self.rl_mix,
+                    };
                     let mixed = match self.policy {
-                        Some(p) if self.rl_mix < 1.0 && !g.is_over() && g.deck_len > solve_at => {
+                        Some(p) if mix < 1.0 && !g.is_over() && g.deck_len > solve_at => {
                             let mut r = g;
                             rollout_until(&mut r, Some(&p), self.rollout_eps, self.rollout_solve, rng);
                             let p0 = if r.is_over() { r.points[0] } else { solver.solve(&r, 0) };
@@ -619,7 +628,7 @@ impl IsmctsPlayer {
                         let (w, pts) = ((v0 + 1.0) / 2.0, pts);
                         match mixed {
                             Some((rw, rp)) => {
-                                let m = self.rl_mix;
+                                let m = mix;
                                 (m * w + (1.0 - m) * rw, m * pts + (1.0 - m) * rp)
                             }
                             None => (w, pts),

@@ -102,6 +102,8 @@ struct Infer {
     adapt: Option<Adapt>,
     /// Varianti da provare (`prova:`).
     opts: Opts,
+    /// Deduzione delle carte avversarie con la rete auto-allenata (`prova:rldeduz=FILE`).
+    rl_infer: Option<Arc<briscola_core::rl::RlNet>>,
 }
 
 /// Varianti del giocatore per le prove delle idee (`prova:CHIAVE=VALORE,...@GIOCATORE`).
@@ -304,7 +306,10 @@ impl Agent for Infer {
                         0..=12 => self.temp * self.opts.temp_late as f32,
                         _ => self.temp,
                     };
-                    Belief::infer(&obs, &self.log.events, &self.policy, t, self.floor, self.pool, rng)
+                    match &self.rl_infer {
+                        Some(net) => Belief::infer_rl(&obs, &self.log.events, net, &self.search.rl_hist, t, self.floor, self.pool, rng),
+                        None => Belief::infer(&obs, &self.log.events, &self.policy, t, self.floor, self.pool, rng),
+                    }
                 }
             })
         };
@@ -697,6 +702,7 @@ fn make_infer(rest: &str, spec: &str) -> Result<Infer, String> {
         model: None,
         adapt: None,
         opts: Opts::default(),
+        rl_infer: None,
     })
 }
 
@@ -740,6 +746,14 @@ fn make_searcher(spec: &str) -> Result<Infer, String> {
                     a.search.rl.as_mut().ok_or("rlmosse va dopo rlroll")?.1 = n;
                 }
                 "rlmix" => a.search.rl_mix = num()?,
+                "rlguida" => {
+                    a.search.rl_guide = Some(crate::rl_agent::load(v)?);
+                    if a.search.prior_weight == 0.0 {
+                        a.search.prior_weight = 1.0;
+                    }
+                }
+                "rlpeso" => a.search.prior_weight = num()?,
+                "rldeduz" => a.rl_infer = Some(crate::rl_agent::load(v)?),
                 "rlmixfine" => a.search.rl_mix_late = Some(num()?),
                 "media" => a.opts.by_mean = v == "1",
                 "dove" => (a.search.model_tree, a.search.model_rollout) = match v {

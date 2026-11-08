@@ -315,6 +315,9 @@ pub struct IsmctsPlayer {
     /// Peso della rete a mazzo vuoto: il peso va da `rl_mix` (mazzo pieno) a questo, in
     /// proporzione alle carte nel mazzo (`None` = sempre `rl_mix`).
     pub rl_mix_late: Option<f64>,
+    /// Rete auto-allenata come guida dei primi livelli dell'albero (al posto di `prior`, con
+    /// lo stesso `prior_weight`), vista da chi muove con la storia pubblica.
+    pub rl_guide: Option<Arc<RlNet>>,
 }
 
 /// Rimescola la mano di `me` con le carte del mazzo che l'avversario non conosce
@@ -369,6 +372,7 @@ impl IsmctsPlayer {
             rl_hist: Vec::new(),
             rl_mix: 1.0,
             rl_mix_late: None,
+            rl_guide: None,
         }
     }
 
@@ -396,6 +400,7 @@ impl IsmctsPlayer {
             rl_hist: Vec::new(),
             rl_mix: 1.0,
             rl_mix_late: None,
+            rl_guide: None,
         }
     }
 
@@ -463,6 +468,7 @@ impl IsmctsPlayer {
         let mut solver = Solver::default();
         let mut nodes = vec![Node { card: 255, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0, wins: 0.0, points: 0.0, ov: 0.0, oa: 0.0, orw: 0.0 }];
         let mut base = None;
+        let mut rl_cache: std::collections::HashMap<(usize, u64), [f64; NUM_CARDS]> = Default::default();
         for it in 0..self.iterations {
             if it % self.reuse.max(1) == 0 {
                 base = Some(world(rng));
@@ -518,7 +524,26 @@ impl IsmctsPlayer {
                 }
                 // Probabilità della rete guida per le carte di chi muove (vista da lui).
                 let mut guide = [0f64; NUM_CARDS];
-                let guided = match &self.prior {
+                let rl_guided = match &self.rl_guide {
+                    Some(net) if path.len() <= PRIOR_DEPTH && legal.len() > 1 => {
+                        let mover = g.to_move();
+                        let key = (cur, g.hands[mover as usize].0);
+                        let p = rl_cache.entry(key).or_insert_with(|| {
+                            let o = Observation::of(&g, mover);
+                            let mut hist = self.rl_hist.clone();
+                            hist.extend(path[1..].iter().map(|&k| (nodes[k].mover, nodes[k].card)));
+                            let mut p = [0f64; NUM_CARDS];
+                            for (c, q) in net.policy(&o, &hist, 1.0) {
+                                p[c as usize] = q as f64;
+                            }
+                            p
+                        });
+                        guide = *p;
+                        true
+                    }
+                    _ => false,
+                };
+                let guided = rl_guided || match &self.prior {
                     Some(net) if path.len() <= PRIOR_DEPTH && legal.len() > 1 => {
                         let o = Observation::of(&g, g.to_move());
                         let mut pr = [0f32; 3];

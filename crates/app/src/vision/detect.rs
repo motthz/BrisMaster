@@ -104,6 +104,8 @@ impl Blob {
 pub struct Paper {
     /// Ogni canale bilanciato: valore corretto per ciascuno dei 256 valori.
     lut: [[u8; 256]; 3],
+    /// Luminosità minima del bianco, bilanciato.
+    min: u8,
 }
 
 impl Paper {
@@ -172,7 +174,13 @@ impl Paper {
                 *o = (v as f32 * gain).min(255.0) as u8;
             }
         }
-        Paper { lut }
+        Paper { lut, min: 190 }
+    }
+
+    /// Il bianco severo: solo i punti chiari quasi quanto il bianco più bianco. Su un tavolo chiaro
+    /// come le carte (crema, bianco sporco) le carte sono appena più chiare del tavolo.
+    pub fn strict(img: &Img, min: u8) -> Paper {
+        Paper { min, ..Paper::of(img) }
     }
 
     /// Vero se il colore, bilanciato, è bianco: poco saturo (il legno chiaro di un tavolo non lo è
@@ -181,7 +189,7 @@ impl Paper {
     pub fn is(&self, p: [u8; 3]) -> bool {
         let q = [self.lut[0][p[0] as usize], self.lut[1][p[1] as usize], self.lut[2][p[2] as usize]];
         let (max, min) = (q[0].max(q[1]).max(q[2]) as u32, q[0].min(q[1]).min(q[2]) as u32);
-        max > 190 && (max - min) * 255 < 45 * max
+        max > self.min as u32 && (max - min) * 255 < 45 * max
     }
 }
 
@@ -520,9 +528,9 @@ pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
             dark += ((v as f32) < 0.7 * 255.0) as usize;
         }
     }
-    // Una carta vista senza colori (schermo in bianco e nero): il disegno è quello scuro, contato a
-    // metà (le scritte nere su un riquadro bianco non devono passare per carte).
-    if tinted * 200 < n {
+    // Schermo in bianco e nero: il disegno è quello scuro, contato a metà (le scritte nere su un
+    // riquadro bianco non devono passare per carte).
+    if reference::gray_screen() && tinted * 200 < n {
         return (border, dark as f32 / n.max(1) as f32 / 2.0);
     }
     (border, ink as f32 / n.max(1) as f32)
@@ -587,6 +595,11 @@ const RATIO: f32 = 0.62;
 /// Proporzioni (lato corto / lato lungo) accettate per una carta intera.
 fn card_shaped(r: &RotRect) -> bool {
     (0.52..=0.76).contains(&(r.short() / r.long()))
+}
+
+/// Come `card_shaped`, per le carte disegnate stirate dal sito (più strette o quasi quadrate).
+fn card_shaped_wide(r: &RotRect) -> bool {
+    (0.4..=1.0).contains(&(r.short() / r.long()))
 }
 
 /// Una carta trovata e riconosciuta.
@@ -1042,8 +1055,18 @@ fn par_chunks<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<
     let n = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
     let size = items.len().div_ceil(n).max(1);
     let f = &f;
+    // (Lo schermo in bianco e nero vale anche nei thread che leggono le carte.)
+    let gray = reference::gray_screen();
     std::thread::scope(|s| {
-        let handles: Vec<_> = items.chunks(size).map(|c| s.spawn(move || c.iter().map(f).collect::<Vec<R>>())).collect();
+        let handles: Vec<_> = items
+            .chunks(size)
+            .map(|c| {
+                s.spawn(move || {
+                    reference::set_gray_screen(gray);
+                    c.iter().map(f).collect::<Vec<R>>()
+                })
+            })
+            .collect();
         handles.into_iter().flat_map(|h| h.join().expect("lettura di una carta")).collect()
     })
 }
@@ -1066,8 +1089,17 @@ fn clear(mask: &mut [bool], w: usize, h: usize, r: &RotRect) {
 /// Applica `f` a ogni elemento, in parallelo (un thread per elemento: le zone sono poche).
 fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let f = &f;
+    let gray = reference::gray_screen();
     std::thread::scope(|s| {
-        let handles: Vec<_> = items.iter().map(|it| s.spawn(move || f(it))).collect();
+        let handles: Vec<_> = items
+            .iter()
+            .map(|it| {
+                s.spawn(move || {
+                    reference::set_gray_screen(gray);
+                    f(it)
+                })
+            })
+            .collect();
         handles.into_iter().map(|h| h.join().expect("lettura di una carta")).collect()
     })
 }
@@ -1087,6 +1119,9 @@ pub struct Analysis {
 thread_local! {
     /// La lunghezza delle carte trovate dall'ultima analisi in questo thread (0 se nessuna).
     static LAST_CARD_L: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+    /// La prova che ha trovato le carte l'ultima volta (vedi `analyze`), e quante.
+    static LAST_TRY: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static LAST_N: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// La lunghezza delle carte trovate dall'ultima analisi fatta in questo thread (0 se nessuna).
@@ -1096,28 +1131,60 @@ pub fn last_card_l() -> f32 {
 
 /// Trova e riconosce le carte scoperte.
 pub fn analyze(img: &Img) -> Analysis {
-    let mut a = analyze_inner(img, &Paper::of(img));
-    // Poche carte: forse sono più scure del bianco dello schermo. Si riprova con bianchi più scuri e
-    // si tiene la lettura che trova più carte.
-    if a.cards.len() < 3 {
-        for p in Paper::darker(img) {
-            let b = analyze_inner(img, &p);
-            if b.cards.len() >= 2 && b.cards.len() > a.cards.len() {
-                a = b;
-            }
+    // Schermo senza colori: quasi nessun punto colorato.
+    let (mut n, mut tinted) = (0usize, 0usize);
+    for p in img.px.iter().step_by(7) {
+        let (hi, lo) = (p[0].max(p[1]).max(p[2]) as u32, p[0].min(p[1]).min(p[2]) as u32);
+        n += 1;
+        tinted += (hi - lo > 40) as usize;
+    }
+    reference::set_gray_screen(tinted * 300 < n);
+    // Le prove, dalla solita alle ripieghe: bianchi più scuri (carte scurite, trasparenti), bianco
+    // severo (tavolo chiaro come le carte), carte stirate. Si comincia da quella che ha funzionato
+    // l'ultima volta e ci si ferma appena si trovano abbastanza carte.
+    const TRIES: usize = 7;
+    let run = |k: usize| -> Option<Analysis> {
+        match k {
+            0 => Some(analyze_inner(img, &Paper::of(img))),
+            1..=3 => Paper::darker(img).into_iter().nth(k - 1).map(|p| analyze_inner(img, &p)),
+            4 => Some(analyze_inner(img, &Paper::strict(img, 249))),
+            5 => Some(analyze_inner(img, &Paper::strict(img, 243))),
+            _ => Some(analyze_shaped(img, &Paper::of(img), card_shaped_wide)),
+        }
+    };
+    let first = LAST_TRY.with(|t| t.get());
+    let last_n = LAST_N.with(|t| t.get());
+    let mut best: Option<(usize, Analysis)> = None;
+    for k in std::iter::once(first).chain((0..TRIES).filter(|&k| k != first)) {
+        let Some(a) = run(k) else { continue };
+        let n = a.cards.len();
+        if best.as_ref().is_none_or(|(_, b)| n > b.cards.len() && (k == 0 || n >= 2)) {
+            best = Some((k, a));
+        }
+        // Abbastanza carte, o quante se ne vedevano prima con la stessa prova (a fine partita ne
+        // restano poche): niente altre prove.
+        if n >= 3 || (k == first && n >= 1 && n + 1 >= last_n) {
+            break;
         }
     }
+    let (k, a) = best.expect("almeno una prova");
+    LAST_TRY.with(|t| t.set(if a.cards.is_empty() { 0 } else { k }));
+    LAST_N.with(|t| t.set(a.cards.len()));
     LAST_CARD_L.with(|l| l.set(if a.cards.is_empty() { 0.0 } else { a.card_l }));
     a
 }
 
 fn analyze_inner(img: &Img, p: &Paper) -> Analysis {
+    analyze_shaped(img, p, card_shaped)
+}
+
+fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysis {
     let paper: Vec<bool> = img.px.iter().map(|&px| p.is(px)).collect();
     let base = blobs_r(img, &paper, 1);
     let mut cards: Vec<Found> = Vec::new();
     let mut rest: Vec<Blob> = Vec::new();
     let light: Vec<Blob> = base.iter().copied().filter(|b| b.light()).collect();
-    let found = par_map(&light, |b| card_shaped(&b.rect).then(|| as_full(img, &b.rect)).flatten());
+    let found = par_map(&light, |b| shaped(&b.rect).then(|| as_full(img, &b.rect)).flatten());
     for (b, f) in light.into_iter().zip(found) {
         match f {
             Some(f) => cards.push(f),

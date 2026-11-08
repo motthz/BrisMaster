@@ -866,9 +866,18 @@ impl Assistant {
         // Il controllore: se lo schermo continua a cambiare ma la partita resta ferma, la partita
         // si rigioca da capo con tutto quello che si è visto finora (e le carte decise
         // dall'utente). Se la ricostruzione va più avanti, si tiene quella.
-        if self.history.len() != before {
+        // Fermo vuol dire: la partita non avanza e quello che si vede (mano e tavolo) non è quello
+        // che la partita dice, anche con lo schermo fermo.
+        let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
+        let seen_hand: Vec<Card> = scene.hand.iter().filter_map(sure).collect();
+        let seen_table: Vec<Card> = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().filter_map(sure).collect();
+        let differs = seen_hand.len() != self.pos.hand.len() as usize
+            || seen_hand.iter().any(|&c| !self.pos.hand.contains(c))
+            || self.pos.table.is_some_and(|t| !seen_table.contains(&t))
+            || (self.pos.table.is_none() && !seen_table.is_empty());
+        if self.history.len() != before || !differs {
             self.vision.stall = 0;
-        } else if prev != sig && !matches!(self.pos.step(), Step::Trump | Step::Over) {
+        } else if !matches!(self.pos.step(), Step::Trump | Step::Over) {
             self.vision.stall += 1;
             if self.vision.stall >= STALL {
                 self.vision.stall = 0;

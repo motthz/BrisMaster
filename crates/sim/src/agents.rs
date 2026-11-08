@@ -104,6 +104,8 @@ struct Infer {
     opts: Opts,
     /// Deduzione delle carte avversarie con la rete auto-allenata (`prova:rldeduz=FILE`).
     rl_infer: Option<Arc<briscola_core::rl::RlNet>>,
+    /// Spareggio: se le due mosse migliori sono entro questo margine di visite, sceglie la rete.
+    rl_tie: Option<(Arc<briscola_core::rl::RlNet>, f64)>,
 }
 
 /// Varianti del giocatore per le prove delle idee (`prova:CHIAVE=VALORE,...@GIOCATORE`).
@@ -400,6 +402,19 @@ impl Agent for Infer {
                 .max_by(|a, b| (a.reward / a.visits).partial_cmp(&(b.reward / b.visits)).unwrap())
                 .unwrap()
                 .card;
+        }
+        if let Some((net, margin)) = &self.rl_tie {
+            // Mossa in dubbio (le due più visitate entro il margine): decide la rete auto-allenata.
+            let mut v: Vec<&RootChild> = root.iter().collect();
+            v.sort_by(|a, b| b.visits.partial_cmp(&a.visits).unwrap());
+            if v.len() > 1 && v[1].visits >= (1.0 - margin) * v[0].visits {
+                let near: Vec<Card> = v.iter().filter(|c| c.visits >= (1.0 - margin) * v[0].visits).map(|c| c.card).collect();
+                let pol = net.policy(&obs, &self.search.rl_hist, 1.0);
+                return *near.iter().max_by(|&&a, &&b| {
+                    let p = |c: Card| pol.iter().find(|x| x.0 == c).map_or(0.0, |x| x.1);
+                    p(a).partial_cmp(&p(b)).unwrap()
+                }).unwrap();
+            }
         }
         root.iter().max_by(|a, b| a.visits.partial_cmp(&b.visits).unwrap()).unwrap().card
     }
@@ -703,6 +718,7 @@ fn make_infer(rest: &str, spec: &str) -> Result<Infer, String> {
         adapt: None,
         opts: Opts::default(),
         rl_infer: None,
+        rl_tie: None,
     })
 }
 
@@ -753,6 +769,8 @@ fn make_searcher(spec: &str) -> Result<Infer, String> {
                     }
                 }
                 "rlpeso" => a.search.prior_weight = num()?,
+                "rlspareggio" => a.rl_tie = Some((crate::rl_agent::load(v)?, a.rl_tie.as_ref().map_or(0.1, |t| t.1))),
+                "rlmargine" => a.rl_tie.as_mut().ok_or("rlmargine va dopo rlspareggio")?.1 = num()?,
                 "rldeduz" => a.rl_infer = Some(crate::rl_agent::load(v)?),
                 "rlmixfine" => a.search.rl_mix_late = Some(num()?),
                 "media" => a.opts.by_mean = v == "1",

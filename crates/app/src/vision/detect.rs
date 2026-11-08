@@ -132,12 +132,42 @@ impl Paper {
             }
         }
         let bright: Vec<[u8; 3]> = colors[(top * 92 / 100).max(100)..].iter().flatten().copied().collect();
+        Paper::from_white(&bright, 2.5)
+    }
+
+    /// Bianchi di riserva, più scuri del bianco dello schermo: le carte scurite (non giocabili, un
+    /// velo sopra, lo schermo abbassato) o trasparenti sul tavolo sono meno chiare delle scritte del
+    /// sito. Per ciascun livello, il colore dei punti poco colorati di quella luminosità.
+    pub fn darker(img: &Img) -> Vec<Paper> {
+        let mut by_v = vec![Vec::new(); 256];
+        for &p in img.px.iter().step_by(3) {
+            let (_, s, v) = hsv(p);
+            if s < 110 && v >= 60 {
+                by_v[v as usize].push(p);
+            }
+        }
+        let n = img.px.len() / 3;
+        let top = (0..256).rev().find(|&v| !by_v[v].is_empty()).unwrap_or(255);
+        let mut out = Vec::new();
+        for f in [0.72f32, 0.55, 0.42] {
+            let l = (top as f32 * f) as usize;
+            let (a, b) = ((l * 90 / 100).max(60), (l * 110 / 100).min(255));
+            let pts: Vec<[u8; 3]> = by_v[a..=b].iter().flatten().copied().collect();
+            // Abbastanza punti per essere carte (almeno mezza carta piccola).
+            if pts.len() * 1000 >= n * 2 {
+                out.push(Paper::from_white(&pts, 4.0));
+            }
+        }
+        out
+    }
+
+    fn from_white(bright: &[[u8; 3]], max_gain: f32) -> Paper {
         let mut lut = [[0u8; 256]; 3];
         for (c, l) in lut.iter_mut().enumerate() {
             let mut ch: Vec<u8> = bright.iter().map(|p| p[c]).collect();
             ch.sort_unstable();
             let white = ch.get(ch.len() / 2).copied().unwrap_or(255).max(1) as f32;
-            let gain = (255.0 / white).clamp(1.0, 2.5);
+            let gain = (255.0 / white).clamp(1.0, max_gain);
             for (v, o) in l.iter_mut().enumerate() {
                 *o = (v as f32 * gain).min(255.0) as u8;
             }
@@ -397,7 +427,41 @@ pub fn warp(img: &Img, r: &RotRect) -> Img {
             out.px[j * CARD_W + i] = img.sample(x, y);
         }
     }
+    balance(&mut out);
     out
+}
+
+/// Bilancia i colori della carta raddrizzata sul suo bianco (i punti più chiari e poco colorati:
+/// la carta): con la luce notturna, uno schermo caldo o freddo, più scuro o slavato, la carta torna
+/// dei colori di quelle di riferimento. Non cambia niente se il bianco non si trova.
+fn balance(card: &mut Img) {
+    let mut light: Vec<[u8; 3]> = card.px.iter().copied().filter(|&p| hsv(p).1 < 120).collect();
+    if light.len() < card.px.len() / 20 {
+        return;
+    }
+    let lum = |p: &[u8; 3]| p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32;
+    light.sort_unstable_by_key(lum);
+    let top = &light[light.len() * 85 / 100..];
+    let mut white = [0f32; 3];
+    for c in 0..3 {
+        let mut ch: Vec<u8> = top.iter().map(|p| p[c]).collect();
+        ch.sort_unstable();
+        white[c] = ch[ch.len() / 2] as f32;
+    }
+    if white.iter().any(|&w| w < 60.0) {
+        return;
+    }
+    // Il bianco delle carte di riferimento è appena caldo.
+    const PAPER: [f32; 3] = [250.0, 247.0, 236.0];
+    let gain: [f32; 3] = std::array::from_fn(|c| (PAPER[c] / white[c]).clamp(0.6, 3.0));
+    if gain.iter().all(|g| (g - 1.0).abs() < 0.03) {
+        return;
+    }
+    for p in card.px.iter_mut() {
+        for c in 0..3 {
+            p[c] = (p[c] as f32 * gain[c]).min(255.0) as u8;
+        }
+    }
 }
 
 /// Quanto la zona raddrizzata sembra carta e non scritta, nella fascia visibile `vis`:
@@ -444,7 +508,7 @@ pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
     }
     let border = rim.iter().filter(|&&p| p).count() as f32 / rim.len() as f32;
     let mut n = 0;
-    let mut ink = 0;
+    let (mut ink, mut tinted, mut dark) = (0, 0, 0);
     for y in (y0 + m..y1 - m).step_by(2) {
         for x in (CARD_W / 10..CARD_W - CARD_W / 10).step_by(2) {
             let (_, sat, v) = hsv(balanced(card.at(x, y)));
@@ -452,7 +516,14 @@ pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
             if sat >= 60 && v >= 50 {
                 ink += 1;
             }
+            tinted += (sat >= 35) as usize;
+            dark += ((v as f32) < 0.7 * 255.0) as usize;
         }
+    }
+    // Una carta vista senza colori (schermo in bianco e nero): il disegno è quello scuro, contato a
+    // metà (le scritte nere su un riquadro bianco non devono passare per carte).
+    if tinted * 200 < n {
+        return (border, dark as f32 / n.max(1) as f32 / 2.0);
     }
     (border, ink as f32 / n.max(1) as f32)
 }
@@ -1025,13 +1096,22 @@ pub fn last_card_l() -> f32 {
 
 /// Trova e riconosce le carte scoperte.
 pub fn analyze(img: &Img) -> Analysis {
-    let a = analyze_inner(img);
+    let mut a = analyze_inner(img, &Paper::of(img));
+    // Poche carte: forse sono più scure del bianco dello schermo. Si riprova con bianchi più scuri e
+    // si tiene la lettura che trova più carte.
+    if a.cards.len() < 3 {
+        for p in Paper::darker(img) {
+            let b = analyze_inner(img, &p);
+            if b.cards.len() >= 2 && b.cards.len() > a.cards.len() {
+                a = b;
+            }
+        }
+    }
     LAST_CARD_L.with(|l| l.set(if a.cards.is_empty() { 0.0 } else { a.card_l }));
     a
 }
 
-fn analyze_inner(img: &Img) -> Analysis {
-    let p = Paper::of(img);
+fn analyze_inner(img: &Img, p: &Paper) -> Analysis {
     let paper: Vec<bool> = img.px.iter().map(|&px| p.is(px)).collect();
     let base = blobs_r(img, &paper, 1);
     let mut cards: Vec<Found> = Vec::new();

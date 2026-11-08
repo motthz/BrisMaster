@@ -323,6 +323,9 @@ pub struct Assistant {
 /// Distacco minimo fra la carta più probabile e la seconda per inserirla senza chiedere.
 const AUTO_MARGIN: f32 = 1.4;
 
+/// Letture con lo schermo cambiato e la partita ferma prima di ricostruirla dallo storico.
+const STALL: u32 = 8;
+
 /// Lettura della partita dallo schermo.
 #[derive(Default)]
 struct Vision {
@@ -357,6 +360,15 @@ struct Vision {
     picker: crate::vision::screen::AreaPicker,
     /// L'ultima lettura non ha trovato il tavolo.
     lost: bool,
+    /// Le carte decise dall'utente (scritte o confermate), con le prese fatte fino a quel momento
+    /// e il passo: servono a ricostruire la partita dallo storico.
+    user_moves: Vec<(u8, Step, Card)>,
+    /// Chi apre la partita, se l'ha detto l'utente.
+    user_first: Option<u8>,
+    /// Vero mentre è la lettura dello schermo a inserire carte (non l'utente).
+    auto: bool,
+    /// Letture di fila in cui lo schermo è cambiato ma la partita no.
+    stall: u32,
 }
 
 struct Confirm {
@@ -399,6 +411,9 @@ impl Assistant {
     }
 
     fn set_first(&mut self, p: u8) {
+        if !self.vision.auto {
+            self.vision.user_first = Some(p);
+        }
         self.first_entry(p);
         self.auto_fill();
     }
@@ -521,8 +536,13 @@ impl Assistant {
 
     /// Inserisce una carta indicata dall'utente. Falso se non è possibile adesso.
     fn enter(&mut self, c: Card) -> bool {
+        let (tricks, step) = (self.pos.tricks, self.pos.step());
         let ok = self.record_entry(c, false);
         if ok {
+            if !self.vision.auto {
+                let step = if matches!(step, Step::Draw(_)) { Step::Draw(0) } else { step };
+                self.vision.user_moves.push((tricks, step, c));
+            }
             self.auto_fill();
         }
         ok
@@ -837,16 +857,189 @@ impl Assistant {
             self.vision.no_trump = 0;
         }
         // Poi gli eventi dedotti da quello che si è visto, nell'ordine in cui il gioco li vuole.
+        let before = self.history.len();
         for _ in 0..12 {
             if self.vision.confirm.is_some() || !self.advance(scene) {
                 break;
             }
         }
+        // Il controllore: se lo schermo continua a cambiare ma la partita resta ferma, la partita
+        // si rigioca da capo con tutto quello che si è visto finora (e le carte decise
+        // dall'utente). Se la ricostruzione va più avanti, si tiene quella.
+        if self.history.len() != before {
+            self.vision.stall = 0;
+        } else if prev != sig && !matches!(self.pos.step(), Step::Trump | Step::Over) {
+            self.vision.stall += 1;
+            if self.vision.stall >= STALL {
+                self.vision.stall = 0;
+                if !self.rebuild(scene) {
+                    self.resync(scene);
+                }
+            }
+        }
         self.vision.seen = Some(sig);
+    }
+
+    /// Rigioca la partita da capo dallo storico delle letture (gli avvistamenti di ogni carta, con
+    /// quando e dove) e dalle carte decise dall'utente, e la adotta se arriva più avanti di quella
+    /// in corso: un evento capito male o in ritardo non blocca più la partita.
+    fn rebuild(&mut self, scene: &Scene) -> bool {
+        let Some(trump) = self.pos.trump_card else { return false };
+        let mut b = Assistant::default();
+        b.rec.off = true;
+        b.vision.memory = self.vision.memory.clone();
+        b.vision.sightings = self.vision.sightings.clone();
+        b.vision.doubts = self.vision.doubts.clone();
+        if !b.enter(trump) {
+            return false;
+        }
+        if let Some(p) = self.vision.user_first {
+            b.set_first(p);
+        }
+        let moves = &self.vision.user_moves;
+        let mut used = vec![false; moves.len()];
+        for _ in 0..160 {
+            if b.pos.step() == Step::Over {
+                break;
+            }
+            b.vision.confirm = None;
+            if b.advance(scene) {
+                continue;
+            }
+            // Dove le letture non bastano, la carta che aveva deciso l'utente a quel punto.
+            let step = match b.pos.step() {
+                Step::Draw(_) => Step::Draw(0),
+                s => s,
+            };
+            let allowed = b.pos.allowed();
+            let next = moves
+                .iter()
+                .enumerate()
+                .find(|(i, (t, s, c))| !used[*i] && *t == b.pos.tricks && *s == step && allowed.contains(*c));
+            match next {
+                Some((i, &(_, _, c))) => {
+                    used[i] = true;
+                    if !b.enter(c) {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+        if b.history.len() <= self.history.len() {
+            return false;
+        }
+        let events = std::mem::take(&mut b.rec.events);
+        self.pos = b.pos;
+        self.history = b.history;
+        self.tricks = b.tricks;
+        self.rec.events = events;
+        self.rec.write(&self.pos);
+        self.changed();
+        self.vision.last = None;
+        self.vision.status = format!("Partita ricostruita dallo storico delle letture: {} prese", self.pos.tricks);
+        true
+    }
+
+    /// Il tavolo non si è visto per un po' (un'altra finestra davanti, un'altra scheda) e intanto si
+    /// è giocato: la partita riparte da quello che si vede adesso. Le mie carte sparite dalla mano
+    /// sono giocate, ogni presa passata ha fatto pescare una carta a testa, e chi muove si capisce
+    /// dalla carta in tavola. Le carte giocate dall'avversario in quel tempo non si possono sapere
+    /// (e i punti possono non tornare): si dice all'utente.
+    fn resync(&mut self, scene: &Scene) -> bool {
+        let pos = self.pos;
+        if matches!(pos.step(), Step::Trump | Step::First | Step::Over) {
+            return false;
+        }
+        let Some(trump) = pos.trump_card else { return false };
+        // La mano letta con sicurezza, uguale nelle ultime letture.
+        let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
+        let hand: Vec<Card> = scene.hand.iter().filter_map(sure).collect();
+        let stable = matches!(self.vision.sightings.full_hands.as_slice(), [.., (_, a), (_, b)] if a == b && *b == hand);
+        if !stable || hand.len() != scene.hand.len() || hand.is_empty() {
+            return false;
+        }
+        // In tavola una carta sola, sicura, che non sia la briscola: dice chi muove.
+        let table: Vec<Card> = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().filter_map(sure).collect();
+        let [t] = table.as_slice() else { return false };
+        let t = *t;
+        if t == trump && pos.deck_len > 0 {
+            return false;
+        }
+        let missing: Vec<Card> = pos.hand.iter().filter(|c| !hand.contains(c)).collect();
+        let new: Vec<Card> = hand.iter().copied().filter(|&c| !pos.hand.contains(c)).collect();
+        // La carta in tavola è mia se era in mano, o se sta dalla mia parte del tavolo (pescata e
+        // giocata mentre il tavolo non si vedeva).
+        let mine_on_table = missing.contains(&t) || scene.my_slot.as_ref().and_then(sure) == Some(t);
+        let drawn_and_played = mine_on_table && !pos.hand.contains(t);
+        // Carte a testa all'inizio della presa in tavola: meno di tre vuol dire mazzo finito, e allora
+        // le prese fatte si sanno esattamente (20 meno le carte rimaste).
+        let each = hand.len() as u8 + mine_on_table as u8;
+        let exhausted = each < 3 && pos.deck_len > 0;
+        if new.is_empty() && missing.len() <= 1 && !exhausted {
+            // Niente di nuovo in mano: non è un buco, al più una giocata non vista.
+            return false;
+        }
+        let gone: Vec<Card> = missing.iter().copied().filter(|&c| c != t).collect();
+        // Nuove carte impossibili (già uscite o la briscola ancora sotto il mazzo): lettura sbagliata.
+        if new.iter().any(|&c| pos.played.contains(c) || (c == trump && pos.deck_len > 2)) {
+            return false;
+        }
+        let done = if exhausted || pos.deck_len == 0 {
+            (20 - each).saturating_sub(pos.tricks)
+        } else {
+            gone.len().max(new.len() + drawn_and_played as usize) as u8
+        };
+        if done == 0 {
+            return false;
+        }
+        let mut p = pos;
+        for &c in &gone {
+            p.played.insert(c);
+        }
+        if let Some(x) = pos.table {
+            p.played.insert(x);
+        }
+        p.hand = CardSet::EMPTY;
+        for &c in &hand {
+            p.hand.insert(c);
+        }
+        p.tricks = (pos.tricks + done).min(19);
+        p.deck_len = if exhausted { 0 } else { pos.deck_len.saturating_sub(2 * done) };
+        if p.deck_len == 0 && pos.deck_len > 0 {
+            p.trump_card_owner = Some(if hand.contains(&trump) { ME } else { OPP });
+        }
+        p.to_draw = 0;
+        p.table = Some(t);
+        p.leader = if mine_on_table { ME } else { OPP };
+        if mine_on_table {
+            p.hand.remove(t);
+        }
+        let mine = p.hand.len() as u8;
+        p.opp_hand_len = if mine_on_table { mine + 1 } else { mine.saturating_sub(1) };
+        if !mine_on_table && pos.unseen().contains(t) {
+            // La carta dell'avversario in tavola è nota.
+        } else if !mine_on_table {
+            return false;
+        }
+        self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
+        self.pos = p;
+        self.changed();
+        self.vision.last = None;
+        self.vision.status = format!(
+            "Ripreso dopo un tratto in cui il tavolo non si vedeva: {done} prese non viste (le carte dell'avversario di quelle prese e i punti possono non essere giusti)"
+        );
+        true
     }
 
     /// La briscola scoperta (chiede conferma se non è sicura).
     fn sync_trump(&mut self, scene: &Scene) {
+        self.vision.auto = true;
+        self.sync_trump_inner(scene);
+        self.vision.auto = false;
+    }
+
+    fn sync_trump_inner(&mut self, scene: &Scene) {
         let Some(v) = &scene.trump else { return };
         let Some((card, margin)) = v.best(CardSet::FULL) else { return };
         if margin >= AUTO_MARGIN && !self.vision.doubts.contains(&(Step::Trump, card)) {
@@ -873,32 +1066,48 @@ impl Assistant {
             v.best(CardSet::FULL)
                 .is_some_and(|(c, m)| c == t && m >= AUTO_MARGIN)
         };
+        // Nella riga presa per la mano c'è una carta che in mano non può essere (la briscola ancora
+        // sotto il mazzo, quella in tavola; una carta già giocata sì: alcuni siti la ridisegnano in
+        // mano per un attimo): la mano è coperta (una notifica,
+        // una finestra) e la riga più bassa è fatta d'altro. Di questa lettura vale solo la briscola.
+        let impossible = |v: &CardView| {
+            v.best(CardSet::FULL).is_some_and(|(c, m)| {
+                m >= AUTO_MARGIN && (c == t || self.pos.table == Some(c))
+            })
+        };
+        if scene.hand.iter().any(impossible) {
+            let trump = [&scene.trump, &scene.opp_slot, &scene.my_slot]
+                .into_iter()
+                .flatten()
+                .chain(scene.hand.iter())
+                .find(|v| is_trump(v))
+                .cloned();
+            return Some(Scene { trump, opp_slot: None, my_slot: None, hand: Vec::new() });
+        }
         if !scene.opp_slot.as_ref().is_some_and(is_trump)
             && !scene.my_slot.as_ref().is_some_and(is_trump)
         {
             return None;
         }
-        let mut out = Scene {
-            trump: None,
-            opp_slot: None,
-            my_slot: None,
-            hand: scene.hand.clone(),
-        };
-        for v in [&scene.trump, &scene.opp_slot, &scene.my_slot]
-            .into_iter()
-            .flatten()
-        {
-            if out.trump.is_none() && is_trump(v) {
-                out.trump = Some(v.clone());
-            } else {
-                out.hand.push(v.clone());
-            }
-        }
+        // L'altra carta fuori dalla mano resta in tavola (con le carte grandi la briscola finisce
+        // vicino alle carte giocate), a meno che non sia una carta che so di avere in mano: allora
+        // non si sa se è in mano o giocata e non si conta.
+        let trump = [&scene.trump, &scene.opp_slot, &scene.my_slot].into_iter().flatten().find(|v| is_trump(v)).cloned();
+        let mine = |v: &CardView| v.best(CardSet::FULL).is_some_and(|(c, _)| self.pos.hand.contains(c));
+        let table = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().find(|v| !is_trump(v) && !mine(v)).cloned();
+        let out = Scene { trump, opp_slot: table, my_slot: None, hand: scene.hand.clone() };
         Some(out)
     }
 
     /// Un passo della partita dedotto dagli avvistamenti. Falso se per ora non si può andare avanti.
     fn advance(&mut self, scene: &Scene) -> bool {
+        self.vision.auto = true;
+        let ok = self.advance_inner(scene);
+        self.vision.auto = false;
+        ok
+    }
+
+    fn advance_inner(&mut self, scene: &Scene) -> bool {
         let pos = self.pos;
         let sights = &self.vision.sightings;
         let event = match pos.step() {
@@ -999,6 +1208,11 @@ impl Assistant {
         if !still || self.vision.confirm.is_some() || scene.hand.len() != self.pos.hand.len() as usize {
             return;
         }
+        // Una presa in corso che sullo schermo non c'è più si è chiusa senza che si vedesse: la mano
+        // è cambiata per una giocata e una pescata, non per una lettura sbagliata.
+        if self.pos.table.is_some() && scene.opp_slot.is_none() && scene.my_slot.is_none() {
+            return;
+        }
         // Al mio turno una carta sparita dalla mano e una nuova al suo posto sono una giocata e la
         // pescata che la segue (il sito ha chiuso la presa in un attimo), non una pescata letta male.
         let pending = match self.pos.step() {
@@ -1080,8 +1294,13 @@ impl Assistant {
         if self.pos.trump_card.is_none() {
             return false;
         }
-        let fresh = scene.hand.len() == 3 && scene.opp_slot.is_none() && scene.my_slot.is_none();
         let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
+        // Tre carte diverse fra loro e dalla briscola (una lettura confusa della schermata finale
+        // vede due volte la stessa carta, o la briscola fra le carte in mano).
+        let best = |v: &CardView| v.best(CardSet::FULL).map(|b| b.0);
+        let ids: Vec<Option<Card>> = scene.hand.iter().map(best).collect();
+        let distinct = ids.iter().enumerate().all(|(i, a)| a.is_some() && !ids[..i].contains(a)) && !ids.contains(&best(t));
+        let fresh = scene.hand.len() == 3 && distinct && scene.opp_slot.is_none() && scene.my_slot.is_none();
         // Una carta della mano nuova è già stata giocata in questa partita: è un'altra partita.
         let replayed = scene.hand.iter().filter_map(sure).any(|c| self.pos.played.contains(c));
         // Briscola diversa: dalla carta riconosciuta (regge anche se cambia lo sfondo), o, se non
@@ -1895,7 +2114,7 @@ impl Sighting {
 /// mai stata in mano mia che compare in tavola l'ha giocata l'avversario; una carta nuova in mano
 /// è una pescata. Così non conta né quanto in fretta il sito chiude le prese, né dove disegna le
 /// carte, né se due letture di fila sono uguali.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Sightings {
     frame: u64,
     hand: Vec<Sighting>,

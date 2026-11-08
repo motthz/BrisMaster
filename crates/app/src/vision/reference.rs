@@ -137,13 +137,23 @@ fn corr(o: &Stats, t: &Stats, (r0, r1): (usize, usize)) -> f32 {
             dot[c] += (a[c] * b[c]) as f64;
         }
     }
-    let (mut num, mut vo, mut vt) = (0.0, 0.0, 0.0);
+    let (mut num, mut vo, mut vt) = ([0.0; 3], [0.0; 3], [0.0; 3]);
     for (c, d) in dot.iter().enumerate() {
         let (so, st) = (o.sum[r1][c] - o.sum[r0][c], t.sum[r1][c] - t.sum[r0][c]);
-        num += d - so * st / n;
-        vo += o.sq[r1][c] - o.sq[r0][c] - so * so / n;
-        vt += t.sq[r1][c] - t.sq[r0][c] - st * st / n;
+        num[c] = d - so * st / n;
+        vo[c] = o.sq[r1][c] - o.sq[r0][c] - so * so / n;
+        vt[c] = t.sq[r1][c] - t.sq[r0][c] - st * st / n;
     }
+    combine(num, vo, vt, n)
+}
+
+/// La correlazione dai tre canali. Una carta vista senza colori (schermo in bianco e nero, filtro
+/// grigio, carta scolorita) si confronta solo sulla luminosità: i colori delle carte di riferimento
+/// non devono contare contro di lei.
+fn combine(num: [f64; 3], vo: [f64; 3], vt: [f64; 3], n: f64) -> f32 {
+    let gray = vo[1] + vo[2] < 0.006 * vo[0];
+    let used: &[usize] = if gray { &[0] } else { &[0, 1, 2] };
+    let (num, vo, vt): (f64, f64, f64) = used.iter().fold((0.0, 0.0, 0.0), |a, &c| (a.0 + num[c], a.1 + vo[c], a.2 + vt[c]));
     // Meno di 6 livelli di scarto medio: niente disegni.
     if vo < 36.0 * n || vt < 1e-3 {
         return 0.0;
@@ -158,7 +168,7 @@ fn corr_masked(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize,
         return -1.0;
     }
     let n = (rows.len() * (c1 - c0)) as f64;
-    let (mut num, mut vo, mut vt) = (0.0, 0.0, 0.0);
+    let (mut num, mut vo, mut vt) = ([0.0; 3], [0.0; 3], [0.0; 3]);
     for c in 0..3 {
         let (mut so, mut st, mut d, mut qo, mut qt) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
         for &j in &rows {
@@ -171,14 +181,11 @@ fn corr_masked(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize,
                 qt += b * b;
             }
         }
-        num += d - so * st / n;
-        vo += qo - so * so / n;
-        vt += qt - st * st / n;
+        num[c] = d - so * st / n;
+        vo[c] = qo - so * so / n;
+        vt[c] = qt - st * st / n;
     }
-    if vo < 36.0 * n || vt < 1e-3 {
-        return 0.0;
-    }
-    (num / (vo * vt).sqrt()) as f32
+    combine(num, vo, vt, n)
 }
 
 /// Le righe della carta raddrizzata attraversate da qualcosa che la copre (una fascia, una
@@ -218,7 +225,7 @@ fn corr_rect(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize, u
         return -1.0;
     }
     let n = ((r1 - r0) * (c1 - c0)) as f64;
-    let (mut num, mut vo, mut vt) = (0.0, 0.0, 0.0);
+    let (mut num, mut vo, mut vt) = ([0.0; 3], [0.0; 3], [0.0; 3]);
     for c in 0..3 {
         let (mut so, mut st, mut d, mut qo, mut qt) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
         for j in r0..r1 {
@@ -231,14 +238,11 @@ fn corr_rect(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize, u
                 qt += b * b;
             }
         }
-        num += d - so * st / n;
-        vo += qo - so * so / n;
-        vt += qt - st * st / n;
+        num[c] = d - so * st / n;
+        vo[c] = qo - so * so / n;
+        vt[c] = qt - st * st / n;
     }
-    if vo < 36.0 * n || vt < 1e-3 {
-        return 0.0;
-    }
-    (num / (vo * vt).sqrt()) as f32
+    combine(num, vo, vt, n)
 }
 
 /// Le carte di riferimento in miniatura: per ogni stile le 40 carte (indice stile * 40 + carta).

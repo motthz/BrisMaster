@@ -795,6 +795,10 @@ impl Assistant {
                 self.entry_error = None;
                 if let Some(c) = cards_ui::parse_card(&self.keys) {
                     self.keys.clear();
+                    // Durante un recupero si può inserire una carta del passato:
+                    // l'immagine attuale non ne è necessariamente la fotografia.
+                    let learn_image = self.vision.reader.is_some() && !self.vision.lost
+                        && !self.vision.inconsistent && !self.screen_is_behind();
                     let seen = self.vision.confirm.take();
                     // La carta che l'utente scrive a mano si impara dall'immagine sullo schermo:
                     // la pescata (l'unica carta della mano non ancora nota) o quella dell'avversario.
@@ -816,8 +820,10 @@ impl Assistant {
                         self.reject(step, card);
                     }
                     if self.enter(c) {
-                        if let Some((img, vis)) = seen.map(|v| (v.img, v.vis)).or(shown) {
-                            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&img, vis, c);
+                        if learn_image {
+                            if let Some((img, vis)) = seen.map(|v| (v.img, v.vis)).or(shown) {
+                                self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&img, vis, c);
+                            }
                         }
                     } else {
                         self.entry_error = Some(format!("{} non è possibile adesso", cards::name(c)));
@@ -1458,6 +1464,11 @@ impl Assistant {
             seen.iter().filter(|(c, m, _)| !self.pos.hand.contains(*c) && *m >= AUTO_MARGIN).collect();
         let missing: Vec<Card> = self.pos.hand.iter().filter(|h| !seen.iter().any(|(c, ..)| c == h)).collect();
         let ([(right, _, view)], [wrong]) = (extra.as_slice(), missing.as_slice()) else { return };
+        // Una proposta rifiutata dall'utente non deve subito sovrascrivere la sua
+        // correzione: durante il recupero non impariamo dall'immagine attuale.
+        if self.vision.doubts.iter().any(|(step, card)| matches!(step, Step::Draw(_)) && *card == *right) {
+            return;
+        }
         // La carta che manca si è vista in tavola: l'ho giocata, non era una pescata letta male.
         if self.vision.sightings.glimpsed(*wrong) {
             return;
@@ -3304,6 +3315,44 @@ mod tests {
         a.set_first(ME);
         for c in [10, 20, 30] { a.enter(c); }
         a
+    }
+
+    #[test]
+    fn typing_a_historical_card_does_not_relabel_the_current_image() {
+        for recovering in [false, true] {
+            let mut a = manual_turn();
+            a.enter(10);
+            a.vision.memory = Arc::new(Mutex::new(Memory::in_memory()));
+            a.vision.reader = Some(Reader::from_readings(Vec::<Reading<Scene>>::new()));
+            a.vision.inconsistent = recovering;
+            let view = seen(14, 4.0);
+            a.vision.confirm = Some(Confirm { step: Step::OppMove, card: 14, img: view.img, vis: view.vis, texture: None });
+            a.type_char('4');
+            a.type_char('c'); // Quattro di Coppe: carta 13, eventualmente di una presa precedente.
+            assert_eq!(a.pos.tricks, 1);
+            assert_eq!(a.vision.memory.lock().unwrap().len(), if recovering { 0 } else { 1 });
+        }
+    }
+
+    #[test]
+    fn a_rejected_draw_does_not_overwrite_the_manual_recovery() {
+        let mut a = manual_turn();
+        a.enter(10);
+        a.enter(1);
+        assert!(matches!(a.pos.step(), Step::Draw(_)));
+        a.vision.memory = Arc::new(Mutex::new(Memory::in_memory()));
+        a.vision.reader = Some(Reader::from_readings(Vec::<Reading<Scene>>::new()));
+        a.vision.inconsistent = true;
+        let view = seen(14, 4.0);
+        a.vision.confirm = Some(Confirm { step: a.pos.step(), card: 14, img: view.img, vis: view.vis, texture: None });
+        a.type_char('4');
+        a.type_char('c');
+        let stale = Scene { trump: Some(seen(0, 4.0)), hand: [14, 20, 30].map(|c| seen(c, 4.0)).to_vec(), ..Default::default() };
+        show(&mut a, &stale);
+        show(&mut a, &stale);
+        assert!(a.pos.hand.contains(13));
+        assert!(!a.pos.hand.contains(14));
+        assert_eq!(a.vision.memory.lock().unwrap().len(), 0);
     }
 
     #[test]

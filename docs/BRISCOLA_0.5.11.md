@@ -138,6 +138,10 @@ riportati separatamente sotto.
   impossibile quando la risposta della diciassettesima presa era coperta.
 - Le ricostruzioni lavorano su una copia isolata della memoria: un'ipotesi
   scartata non modifica le carte apprese o i file dell'utente.
+- La memoria delle immagini passa alla versione 4: le vecchie immagini vengono
+  riapprese con la nuova normalizzazione del bianco, evitando di conservare
+  etichette errate provenienti dalle versioni precedenti. Lo storico delle
+  partite salvate resta separato e non viene cancellato.
 - Ctrl+Z elimina anche la carta o il primo giocatore dagli indizi manuali usati
   per ricostruire la partita, così non possono tornare da uno storico obsoleto.
 - Dopo prese non viste, un avviso persistente chiarisce che punti e carte
@@ -169,8 +173,9 @@ Il risultato finale richiede 20 prese, punti uguali alla verità, tutte e 40 le
 carte giocate, mazzo e mani vuoti. Le discrepanze nei checkpoint intermedi sono
 stampate separatamente: un recupero tardivo non equivale a riconoscere ogni
 fotogramma correttamente. Il secondo numero di `Ok((20, N))` conta gli interventi
-richiesti all'utente: conferme verificate sulla sequenza vera o inserimento della
-briscola quando l'app la chiede esplicitamente. Non si inseriscono carte vere
+richiesti all'utente: conferme e correzioni verificate sulla sequenza vera, inserimento della
+briscola oppure della carta mancante richiesta dal pannello quando lo storico
+non coincide con lo schermo. Non si inseriscono carte vere
 senza che il programma chieda un intervento.
 
 Il workflow di release esegue anche le 17 condizioni di sviluppo prima di

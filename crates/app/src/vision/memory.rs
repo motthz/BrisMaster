@@ -15,7 +15,9 @@ const TH: usize = 40;
 
 /// Versione del modo di raddrizzare le carte: le immagini ricordate con un modo diverso non
 /// sarebbero confrontabili e si ricomincia da capo.
-const VERSION: u32 = 3;
+// La normalizzazione del bianco è cambiata; le vecchie immagini possono anche
+// contenere etichette apprese prima delle correzioni del recupero.
+const VERSION: u32 = 4;
 
 fn whole() -> [f32; 2] {
     WHOLE

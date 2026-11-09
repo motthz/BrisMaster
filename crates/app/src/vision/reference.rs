@@ -126,7 +126,7 @@ impl Stats {
 
 /// Correlazione normalizzata fra due miniature sulle righe r0..r1 (0 se la prima è quasi uniforme:
 /// un riquadro bianco non somiglia a nessuna carta).
-fn corr(o: &Stats, t: &Stats, (r0, r1): (usize, usize)) -> f32 {
+fn corr(o: &Stats, t: &Stats, (r0, r1): (usize, usize), gray: bool) -> f32 {
     if r1 < r0 + 4 {
         return -1.0;
     }
@@ -137,13 +137,22 @@ fn corr(o: &Stats, t: &Stats, (r0, r1): (usize, usize)) -> f32 {
             dot[c] += (a[c] * b[c]) as f64;
         }
     }
-    let (mut num, mut vo, mut vt) = (0.0, 0.0, 0.0);
+    let (mut num, mut vo, mut vt) = ([0.0; 3], [0.0; 3], [0.0; 3]);
     for (c, d) in dot.iter().enumerate() {
         let (so, st) = (o.sum[r1][c] - o.sum[r0][c], t.sum[r1][c] - t.sum[r0][c]);
-        num += d - so * st / n;
-        vo += o.sq[r1][c] - o.sq[r0][c] - so * so / n;
-        vt += t.sq[r1][c] - t.sq[r0][c] - st * st / n;
+        num[c] = d - so * st / n;
+        vo[c] = o.sq[r1][c] - o.sq[r0][c] - so * so / n;
+        vt[c] = t.sq[r1][c] - t.sq[r0][c] - st * st / n;
     }
+    combine(num, vo, vt, n, gray)
+}
+
+/// La correlazione dai tre canali. Una carta vista senza colori (schermo in bianco e nero, filtro
+/// grigio, carta scolorita) si confronta solo sulla luminosità: i colori delle carte di riferimento
+/// non devono contare contro di lei.
+fn combine(num: [f64; 3], vo: [f64; 3], vt: [f64; 3], n: f64, gray: bool) -> f32 {
+    let used: &[usize] = if gray { &[0] } else { &[0, 1, 2] };
+    let (num, vo, vt): (f64, f64, f64) = used.iter().fold((0.0, 0.0, 0.0), |a, &c| (a.0 + num[c], a.1 + vo[c], a.2 + vt[c]));
     // Meno di 6 livelli di scarto medio: niente disegni.
     if vo < 36.0 * n || vt < 1e-3 {
         return 0.0;
@@ -152,13 +161,13 @@ fn corr(o: &Stats, t: &Stats, (r0, r1): (usize, usize)) -> f32 {
 }
 
 /// Come `corr_rect`, saltando le righe coperte (`skip`).
-fn corr_masked(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize, usize), skip: &[bool; TH]) -> f32 {
+fn corr_masked(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize, usize), skip: &[bool; TH], gray: bool) -> f32 {
     let rows: Vec<usize> = (r0..r1).filter(|&j| !skip[j]).collect();
     if rows.len() < 4 || c1 < c0 + 4 {
         return -1.0;
     }
     let n = (rows.len() * (c1 - c0)) as f64;
-    let (mut num, mut vo, mut vt) = (0.0, 0.0, 0.0);
+    let (mut num, mut vo, mut vt) = ([0.0; 3], [0.0; 3], [0.0; 3]);
     for c in 0..3 {
         let (mut so, mut st, mut d, mut qo, mut qt) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
         for &j in &rows {
@@ -171,14 +180,11 @@ fn corr_masked(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize,
                 qt += b * b;
             }
         }
-        num += d - so * st / n;
-        vo += qo - so * so / n;
-        vt += qt - st * st / n;
+        num[c] = d - so * st / n;
+        vo[c] = qo - so * so / n;
+        vt[c] = qt - st * st / n;
     }
-    if vo < 36.0 * n || vt < 1e-3 {
-        return 0.0;
-    }
-    (num / (vo * vt).sqrt()) as f32
+    combine(num, vo, vt, n, gray)
 }
 
 /// Le righe della carta raddrizzata attraversate da qualcosa che la copre (una fascia, una
@@ -213,12 +219,12 @@ fn covered_rows(img: &Img) -> Vec<bool> {
 }
 
 /// Come `corr`, ma solo sulle colonne c0..c1 (la carta coperta di lato da un'altra).
-fn corr_rect(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize, usize)) -> f32 {
+fn corr_rect(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize, usize), gray: bool) -> f32 {
     if r1 < r0 + 4 || c1 < c0 + 4 {
         return -1.0;
     }
     let n = ((r1 - r0) * (c1 - c0)) as f64;
-    let (mut num, mut vo, mut vt) = (0.0, 0.0, 0.0);
+    let (mut num, mut vo, mut vt) = ([0.0; 3], [0.0; 3], [0.0; 3]);
     for c in 0..3 {
         let (mut so, mut st, mut d, mut qo, mut qt) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
         for j in r0..r1 {
@@ -231,14 +237,11 @@ fn corr_rect(o: &Stats, t: &Stats, (r0, r1): (usize, usize), (c0, c1): (usize, u
                 qt += b * b;
             }
         }
-        num += d - so * st / n;
-        vo += qo - so * so / n;
-        vt += qt - st * st / n;
+        num[c] = d - so * st / n;
+        vo[c] = qo - so * so / n;
+        vt[c] = qt - st * st / n;
     }
-    if vo < 36.0 * n || vt < 1e-3 {
-        return 0.0;
-    }
-    (num / (vo * vt).sqrt()) as f32
+    combine(num, vo, vt, n, gray)
 }
 
 /// Le carte di riferimento in miniatura: per ogni stile le 40 carte (indice stile * 40 + carta).
@@ -255,6 +258,22 @@ fn templates() -> &'static Vec<Stats> {
         }
         out
     })
+}
+
+thread_local! {
+    /// Lo schermo letto adesso è senza colori (filtro in bianco e nero del sistema): le carte si
+    /// confrontano sulla sola luminosità.
+    static GRAY_SCREEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Dice se lo schermo che si sta leggendo è senza colori (vedi `GRAY_SCREEN`).
+pub fn set_gray_screen(gray: bool) {
+    GRAY_SCREEN.with(|g| g.set(gray));
+}
+
+/// Vero se lo schermo che si sta leggendo è senza colori.
+pub fn gray_screen() -> bool {
+    GRAY_SCREEN.with(|g| g.get())
 }
 
 /// Peso della differenza fra le firme di colore (vedi `Hues`) nella somiglianza.
@@ -409,6 +428,8 @@ struct Seen {
     sat: Vec<[f64; 3]>,
     /// Le righe della carta coperte da qualcosa che la attraversa (vuoto se nessuna).
     covered: Vec<bool>,
+    /// La carta si vede senza colori (schermo in bianco e nero): si confronta la luminosità.
+    gray: bool,
     cache: HashMap<[i32; 4], Stats>,
 }
 
@@ -426,7 +447,8 @@ impl Seen {
                 }
             }
         }
-        Seen { vis, cols, sat, covered: Vec::new(), cache: HashMap::new() }
+        let gray = GRAY_SCREEN.with(|g| g.get());
+        Seen { vis, cols, sat, covered: Vec::new(), gray, cache: HashMap::new() }
     }
 
     /// Somma cumulata in un punto qualsiasi (interpolata; fuori dalla carta si ferma al bordo).
@@ -484,13 +506,16 @@ impl Seen {
                 *s = (a..b).any(|y| self.covered[y]);
             }
             let cols = if self.cols == WHOLE { (0, TW) } else { crop.cols(self.cols) };
-            return corr_masked(self.thumb(crop), &templates()[card], rows, cols, &skip);
+            let gray = self.gray;
+            return corr_masked(self.thumb(crop), &templates()[card], rows, cols, &skip, gray);
         }
         if self.cols == WHOLE {
-            corr(self.thumb(crop), &templates()[card], rows)
+            let gray = self.gray;
+            corr(self.thumb(crop), &templates()[card], rows, gray)
         } else {
             let cols = crop.cols(self.cols);
-            corr_rect(self.thumb(crop), &templates()[card], rows, cols)
+            let gray = self.gray;
+            corr_rect(self.thumb(crop), &templates()[card], rows, cols, gray)
         }
     }
 }
@@ -610,7 +635,7 @@ impl Match {
         // (I colori di riferimento sono di tutta la larghezza: per una striscia non si confrontano.)
         let vis = self.seen.vis;
         let whole_width = self.seen.cols == WHOLE;
-        if let Some(seen) = self.hues.share(vis).filter(|_| whole_width) {
+        if let Some(seen) = self.hues.share(vis).filter(|_| whole_width && !self.seen.gray) {
             let dist: Vec<Option<f32>> = template_hues()
                 .iter()
                 .map(|t| t.share(vis).map(|t| seen.iter().zip(&t).map(|(a, b)| (a - b).abs()).sum()))

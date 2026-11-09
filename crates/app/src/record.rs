@@ -158,11 +158,13 @@ pub struct Recorder {
     /// Ora di inizio e file, fissati alla prima carta giocata.
     file: Option<(String, PathBuf)>,
     pub error: Option<String>,
+    /// Non scrive niente (la partita rigiocata per ricostruirla).
+    pub off: bool,
 }
 
 impl Default for Recorder {
     fn default() -> Self {
-        Recorder { events: Vec::new(), dir: dir(), file: None, error: None }
+        Recorder { events: Vec::new(), dir: dir(), file: None, error: None, off: false }
     }
 }
 
@@ -193,6 +195,9 @@ impl Recorder {
 
     /// Scrive il file, ma solo da quando è stata giocata almeno una carta.
     pub fn write(&mut self, pos: &Position) {
+        if self.off {
+            return;
+        }
         if !self.events.iter().any(|e| matches!(e, Event::Giocata { .. })) {
             // Annullate tutte le giocate: niente file per una partita mai cominciata.
             if let Some((_, p)) = &self.file {

@@ -130,7 +130,7 @@ fn reference_scores(sim: &[f32; 40]) -> [f32; 40] {
 use briscola_core::cards::{Card, CardSet};
 pub use detect::ScopaScene;
 use memory::Memory;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -196,7 +196,9 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
     if !found {
         return None;
     }
-    let mem = mem.lock().unwrap_or_else(|e| e.into_inner());
+    // Il confronto è costoso: lavora su una fotografia della memoria, senza
+    // trattenere il mutex usato anche dall'interfaccia per apprendere le carte.
+    let mem = mem.lock().unwrap_or_else(|e| e.into_inner()).isolated();
     for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
         recognize(v, &mem);
     }
@@ -206,7 +208,7 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
 /// Lettura per la scopa: mano e carte in tavola, riconosciute (None se il tavolo non si vede).
 pub fn read_scopa(img: &Img, mem: &Mutex<Memory>) -> Option<ScopaScene> {
     let mut scene = detect::scopa(img)?;
-    let mem = mem.lock().unwrap_or_else(|e| e.into_inner());
+    let mem = mem.lock().unwrap_or_else(|e| e.into_inner()).isolated();
     for v in scene.hand.iter_mut().chain(&mut scene.table) {
         recognize(v, &mem);
     }
@@ -261,6 +263,8 @@ const MISSES: u32 = 2;
 pub struct Reader<S> {
     pub rx: Receiver<Reading<S>>,
     stop: Arc<AtomicBool>,
+    lag_ms: Arc<AtomicU64>,
+    last_result: Arc<Mutex<std::time::Instant>>,
     last: Arc<Mutex<Option<Img>>>,
     /// Dove stanno le carte dell'ultima scena sul desktop.
     spot: Arc<Mutex<Spot>>,
@@ -280,8 +284,12 @@ impl<S: Located + Send + 'static> Reader<S> {
         every: std::time::Duration,
         read: fn(&Img, &Mutex<Memory>) -> Option<S>,
     ) -> Reader<S> {
-        let (tx, rx) = channel();
+        // Se la finestra è minimizzata, l'interfaccia può non raccogliere subito:
+        // la memoria resta limitata e l'analisi aspetta senza bloccare la UI.
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let stop = Arc::new(AtomicBool::new(false));
+        let lag_ms = Arc::new(AtomicU64::new(0));
+        let last_result = Arc::new(Mutex::new(std::time::Instant::now()));
         let last = Arc::new(Mutex::new(None));
         let queue: Arc<(Mutex<Frames<(usize, Option<Place>)>>, Condvar)> = Arc::new((
             Mutex::new(Frames::new(
@@ -345,33 +353,21 @@ impl<S: Located + Send + 'static> Reader<S> {
         // Analisi: le schermate tenute, una dopo l'altra.
         let (flag, frame) = (stop.clone(), last.clone());
         let found = spot.clone();
+        let age = lag_ms.clone();
+        let completed = last_result.clone();
         std::thread::spawn(move || {
             while !flag.load(Ordering::Relaxed) {
-                let table = {
-                    let (lock, cv) = &*queue;
-                    let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
-                    loop {
-                        if let Some(t) = q.next_with() {
-                            break Some(t);
-                        }
-                        if flag.load(Ordering::Relaxed) {
-                            break None;
-                        }
-                        q = cv.wait_timeout(q, std::time::Duration::from_millis(500)).unwrap_or_else(|e| e.into_inner()).0;
-                    }
-                };
-                let reading = match table {
-                    None => match err_rx.try_recv() {
-                        Ok(e) => Reading::Error(e),
-                        Err(_) => continue,
-                    },
-                    Some((table, (k, at))) => {
+                let reading = match wait_frame(&queue, &flag, &err_rx) {
+                    Err(error) => Reading::Error(error),
+                    Ok(None) => { flag.store(true, Ordering::Relaxed); break; }
+                    Ok(Some((table, (k, at), captured))) => {
                         // Un errore nella lettura di una schermata non deve fermare le letture
                         // dopo: si mostra e si continua.
                         let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&table, &mem)));
                         // La misura delle carte decide quanto rimpicciolire le schermate dopo.
                         card_px.store((detect::last_card_l() * k as f32).round() as u32, Ordering::Relaxed);
                         *frame.lock().unwrap_or_else(|e| e.into_inner()) = Some(table.clone());
+                        age.store(captured.elapsed().as_millis().min(u64::MAX as u128) as u64, Ordering::Relaxed);
                         match scene {
                             Err(e) => {
                                 let why = e
@@ -404,6 +400,7 @@ impl<S: Located + Send + 'static> Reader<S> {
                         }
                     }
                 };
+                *completed.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
                 if tx.send(reading).is_err() {
                     flag.store(true, Ordering::Relaxed);
                     break;
@@ -411,11 +408,17 @@ impl<S: Located + Send + 'static> Reader<S> {
                 ctx.request_repaint();
             }
         });
-        Reader { rx, stop, last, spot }
+        Reader { rx, stop, lag_ms, last_result, last, spot }
     }
 }
 
 impl<S> Reader<S> {
+    /// Età della schermata quando termina il riconoscimento, compresa l'attesa in coda.
+    pub fn lag(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.lag_ms.load(Ordering::Relaxed))
+            + self.last_result.lock().unwrap_or_else(|e| e.into_inner()).elapsed()
+    }
+
     /// Il monitor dove sono state viste le carte (None finché non se ne vede nessuna).
     pub fn monitor(&self) -> Option<capture::Geom> {
         self.spot.lock().unwrap_or_else(|e| e.into_inner()).place.map(|p| p.0)
@@ -547,7 +550,31 @@ impl<T> Frames<T> {
 
     /// La prossima schermata da analizzare, con il suo dato.
     pub fn next_with(&mut self) -> Option<(Img, T)> {
-        self.frames.pop_front().map(|f| (f.0, f.2))
+        self.next_timed().map(|(img, tag, _)| (img, tag))
+    }
+
+    fn next_timed(&mut self) -> Option<(Img, T, std::time::Instant)> {
+        self.frames.pop_front().map(|f| (f.0, f.2, f.3))
+    }
+}
+
+/// L'attesa di un fotogramma deve terminare anche quando la cattura fallisce:
+/// altrimenti gli errori restano nel canale e l'interfaccia aspetta in silenzio.
+fn wait_frame<T>(
+    queue: &(Mutex<Frames<T>>, Condvar), stop: &AtomicBool,
+    errors: &Receiver<String>,
+) -> Result<Option<(Img, T, std::time::Instant)>, String> {
+    let (lock, cv) = queue;
+    let mut frames = lock.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        if let Some(frame) = frames.next_timed() { return Ok(Some(frame)); }
+        match errors.try_recv() {
+            Ok(error) => return Err(error),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return Ok(None),
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+        if stop.load(Ordering::Relaxed) { return Ok(None); }
+        frames = cv.wait_timeout(frames, std::time::Duration::from_millis(500)).unwrap_or_else(|e| e.into_inner()).0;
     }
 }
 
@@ -627,6 +654,19 @@ pub fn shrink_by(img: Img, k: usize) -> Img {
     out
 }
 
+#[cfg(test)]
+impl<S> Reader<S> {
+    /// Canale finito per riprodurre ritardi dell'interfaccia senza catturare il desktop.
+    pub(crate) fn from_readings(readings: impl IntoIterator<Item = Reading<S>>) -> Self {
+        let (tx, rx) = channel();
+        for reading in readings { tx.send(reading).ok().unwrap(); }
+        Reader {
+            rx, stop: Arc::new(AtomicBool::new(false)), lag_ms: Arc::new(AtomicU64::new(0)), last_result: Arc::new(Mutex::new(std::time::Instant::now())),
+            last: Arc::new(Mutex::new(None)), spot: Arc::new(Mutex::new(Spot::default())),
+        }
+    }
+}
+
 impl<S> Drop for Reader<S> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -655,8 +695,43 @@ mod tests {
         v.best(CardSet::FULL).unwrap().0
     }
 
-    /// Su uno schermo grande la schermata si rimpicciolisce solo se le carte restano leggibili:
-    /// il gioco in una finestra non ingrandita di un monitor 2560 o 4K si legge intero.
+    #[test]
+    fn capture_error_is_delivered_without_a_frame() {
+        let queue = (Mutex::new(Frames::<()>::new(std::time::Duration::from_millis(350))), Condvar::new());
+        let (tx, rx) = channel();
+        tx.send("cattura non disponibile".to_owned()).unwrap();
+        let result = wait_frame(&queue, &AtomicBool::new(false), &rx);
+        assert!(matches!(result, Err(error) if error == "cattura non disponibile"));
+        drop(tx);
+        assert!(matches!(wait_frame(&queue, &AtomicBool::new(false), &rx), Ok(None)));
+    }
+
+    #[test]
+    fn silent_reader_becomes_stale_even_without_new_messages() {
+        let reader = Reader::<Scene>::from_readings(Vec::new());
+        *reader.last_result.lock().unwrap() = std::time::Instant::now() - std::time::Duration::from_secs(3);
+        assert!(reader.lag() >= std::time::Duration::from_secs(3));
+    }
+
+    #[test]
+    fn queued_frames_keep_the_capture_time() {
+        let mut queue = Frames::new(std::time::Duration::from_millis(350));
+        let captured = std::time::Instant::now() - std::time::Duration::from_secs(3);
+        queue.offer_with(Img::new(16, 16), (), captured);
+        let (_, _, time) = queue.next_timed().unwrap();
+        assert!(time.elapsed() >= std::time::Duration::from_secs(3));
+    }
+
+    #[test]
+    fn dark_screen_fallback_never_panics() {
+        // Include nero totale, la soglia 60 e i livelli in cui a > b nel vecchio codice.
+        for value in 0..=120u8 {
+            let mut img = Img::new(16, 16);
+            img.px.fill([value; 3]);
+            let _ = detect::Paper::darker(&img);
+        }
+    }
+
     #[test]
     fn small_cards_are_never_shrunk() {
         // Carte ancora sconosciute: si legge intera.

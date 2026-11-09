@@ -113,6 +113,8 @@ riportati separatamente sotto.
 - La coda delle letture si svuota in lotti di massimo otto elementi e con un
   budget di circa 8 ms per aggiornamento. Nessuna lettura già analizzata viene
   scartata per fare spazio alla successiva; il recupero lascia rispondere la UI.
+  Il canale delle letture è limitato a 16 elementi: se la finestra non le
+  raccoglie, l'analisi attende e la memoria non cresce senza limite.
 - Il confronto delle immagini lavora su una copia della memoria, liberando
   subito il mutex condiviso con l'interfaccia: il confronto non può tenerla
   in attesa mentre riconosce tutte le carte.

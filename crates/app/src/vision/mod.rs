@@ -284,7 +284,9 @@ impl<S: Located + Send + 'static> Reader<S> {
         every: std::time::Duration,
         read: fn(&Img, &Mutex<Memory>) -> Option<S>,
     ) -> Reader<S> {
-        let (tx, rx) = channel();
+        // Se la finestra è minimizzata, l'interfaccia può non raccogliere subito:
+        // la memoria resta limitata e l'analisi aspetta senza bloccare la UI.
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let stop = Arc::new(AtomicBool::new(false));
         let lag_ms = Arc::new(AtomicU64::new(0));
         let last_result = Arc::new(Mutex::new(std::time::Instant::now()));

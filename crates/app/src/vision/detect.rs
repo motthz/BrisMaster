@@ -116,7 +116,7 @@ impl Paper {
         let mut colors = vec![Vec::new(); 256];
         for &p in img.px.iter().step_by(3) {
             let (_, s, v) = hsv(p);
-            if s < 110 {
+            if s < 160 {
                 hist[v as usize] += 1;
                 if v >= 100 {
                     colors[v as usize].push(p);
@@ -145,7 +145,7 @@ impl Paper {
         let mut by_v = vec![Vec::new(); 256];
         for &p in img.px.iter().step_by(3) {
             let (_, s, v) = hsv(p);
-            if s < 110 && v >= 60 {
+            if s < 160 && v >= 60 {
                 by_v[v as usize].push(p);
             }
         }
@@ -447,7 +447,7 @@ pub fn warp(img: &Img, r: &RotRect) -> Img {
 /// la carta): con la luce notturna, uno schermo caldo o freddo, più scuro o slavato, la carta torna
 /// dei colori di quelle di riferimento. Non cambia niente se il bianco non si trova.
 fn balance(card: &mut Img) {
-    let mut light: Vec<[u8; 3]> = card.px.iter().copied().filter(|&p| hsv(p).1 < 120).collect();
+    let mut light: Vec<[u8; 3]> = card.px.iter().copied().filter(|&p| hsv(p).1 < 160).collect();
     if light.len() < card.px.len() / 20 {
         return;
     }
@@ -1468,10 +1468,15 @@ fn best<'a>(cards: impl Iterator<Item = &'a Found>) -> Option<&'a Found> {
 /// Divide le carte scoperte trovate sullo schermo fra briscola, tavolo e mano.
 pub fn scene(img: &Img) -> Scene {
     let mut a = analyze(img);
-    // Le carte possono essere quasi senza colori anche se il tavolo è colorato:
-    // la decisione globale sullo schermo non basta. Solo se il giro normale non
-    // riconosce nulla, si prova il disegno in luminanza con gli stessi filtri.
-    if a.cards.is_empty() && !reference::gray_screen() {
+    // Le carte possono essere quasi senza colori anche se il tavolo è colorato.
+    // Anche una lettura incompleta di poche carte non deve impedire la ripiega:
+    // si misura il colore nelle carte, non nello sfondo.
+    let weak_color = a.cards.iter().filter(|c| {
+        let colored = c.view.img.px.iter().filter(|p| p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]) > 70).count();
+        colored * 100 < c.view.img.px.len()
+    }).count();
+    let desaturated = !a.cards.is_empty() && weak_color * 2 >= a.cards.len();
+    if (a.cards.is_empty() || desaturated) && !reference::gray_screen() {
         reference::set_gray_screen(true);
         let mut fallback = analyze_inner(img, &Paper::of(img));
         // Senza il colore, testi e loghi hanno più possibilità di somigliare a

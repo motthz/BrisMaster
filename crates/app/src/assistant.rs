@@ -3316,7 +3316,8 @@ mod tests {
         }
         if a.pos.tricks != 20 || a.pos.points != g.points || a.pos.played != g.played || !a.pos.hand.is_empty() || a.pos.deck_len != 0 || a.pos.opp_hand_len != 0 {
             return Err(format!("fine partita: {} prese, punti {:?} (veri {:?}), mano {}, mazzo {}",
-                a.pos.tricks, a.pos.points, g.points, a.pos.hand.len(), a.pos.deck_len));
+                a.pos.tricks, a.pos.points, g.points, a.pos.hand.len(), a.pos.deck_len)
+                + &format!(", briscola {:?} (vera {})", a.pos.trump_card.map(cards::name), cards::name(g.trump_card)));
         }
         Ok((a.pos.tricks, confirms))
     }

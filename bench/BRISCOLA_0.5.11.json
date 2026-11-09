@@ -1,0 +1,466 @@
+{
+  "release": "0.5.11",
+  "candidate_commit": "967bb7a9c40141f8feb70e9b096c32d89924e0e1",
+  "scope": "Briscola recognition, temporal reconstruction, UI responsiveness and fault recovery",
+  "app_tests": {
+    "passed": 70,
+    "failed": 0,
+    "ignored_benchmarks": 8
+  },
+  "queued_games": {
+    "games": 100,
+    "max_readings_per_ui_batch": 8,
+    "tricks_per_game": 20
+  },
+  "development": {
+    "exact_games": 17,
+    "total_games": 17,
+    "cases": [
+      {
+        "condition": "normale",
+        "seed": 1200,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "piccole",
+        "seed": 1201,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 1,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 1))"
+      },
+      {
+        "condition": "grandi",
+        "seed": 1202,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 2,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "strette",
+        "seed": 1203,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "larghe",
+        "seed": 1204,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "ventaglio-negativo",
+        "seed": 1205,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "ventaglio-positivo",
+        "seed": 1206,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "tavolo-chiaro",
+        "seed": 1207,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 1,
+        "late_checkpoints": 1,
+        "result": "Ok((20, 1))"
+      },
+      {
+        "condition": "tavolo-scuro",
+        "seed": 1208,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "schermo-scuro",
+        "seed": 1209,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "luce-calda",
+        "seed": 1210,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "luce-fredda",
+        "seed": 1211,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "grigio",
+        "seed": 1212,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "poco-sature",
+        "seed": 1213,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "molto-sature",
+        "seed": 1214,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "briscola-coperta",
+        "seed": 1215,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 1,
+        "late_checkpoints": 1,
+        "result": "Ok((20, 1))"
+      },
+      {
+        "condition": "scritte-sfocatura",
+        "seed": 1216,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      }
+    ]
+  },
+  "validation": {
+    "exact_games": 30,
+    "total_games": 30,
+    "fully_automatic_games": 26,
+    "games_with_user_input": 4,
+    "user_inputs": 26,
+    "cases": [
+      {
+        "condition": "riserva-legno-caldo",
+        "seed": 304000,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-mare-piccole",
+        "seed": 304001,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-grigio",
+        "seed": 304002,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-freddo",
+        "seed": 304003,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 6,
+        "late_checkpoints": 3,
+        "result": "Ok((20, 6))"
+      },
+      {
+        "condition": "riserva-legno-caldo",
+        "seed": 304101,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-mare-piccole",
+        "seed": 304102,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 1,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-grigio",
+        "seed": 304103,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-freddo",
+        "seed": 304104,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-legno-caldo",
+        "seed": 304203,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-mare-piccole",
+        "seed": 304204,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 1,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-grigio",
+        "seed": 304205,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-freddo",
+        "seed": 304206,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 8,
+        "late_checkpoints": 13,
+        "result": "Ok((20, 8))"
+      },
+      {
+        "condition": "riserva-legno-caldo",
+        "seed": 304304,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-mare-piccole",
+        "seed": 304305,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-grigio",
+        "seed": 304306,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-freddo",
+        "seed": 304307,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-legno-caldo",
+        "seed": 304404,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-mare-piccole",
+        "seed": 304405,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-grigio",
+        "seed": 304406,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-freddo",
+        "seed": 304407,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 8,
+        "late_checkpoints": 7,
+        "result": "Ok((20, 8))"
+      },
+      {
+        "condition": "riserva-legno-caldo",
+        "seed": 304505,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-mare-piccole",
+        "seed": 304506,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 1,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-grigio",
+        "seed": 304507,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-freddo",
+        "seed": 304508,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-legno-caldo",
+        "seed": 304607,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-mare-piccole",
+        "seed": 304608,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 1,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-grigio",
+        "seed": 304609,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-freddo",
+        "seed": 304610,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 4,
+        "late_checkpoints": 5,
+        "result": "Ok((20, 4))"
+      },
+      {
+        "condition": "riserva-legno-caldo",
+        "seed": 304708,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      },
+      {
+        "condition": "riserva-mare-piccole",
+        "seed": 304709,
+        "exact_final_state": true,
+        "tricks": 20,
+        "user_inputs": 0,
+        "late_checkpoints": 0,
+        "result": "Ok((20, 0))"
+      }
+    ]
+  },
+  "acceptance": [
+    "20 tricks",
+    "exact points for both players",
+    "all 40 cards played",
+    "empty hands and deck"
+  ],
+  "limitations": [
+    "Synthetic renderer and repository image fixtures, not a live Windows/browser session.",
+    "User input is allowed only after the app requests confirmation, correction, a missing card, or the trump.",
+    "Exact completion with user input is not a claim of perfect automatic recognition.",
+    "Wall times include rendering and fixture generation, so they are not recognition-latency measurements."
+  ],
+  "unchanged_engine_regression": "https://github.com/motthz/BrisMaster/actions/runs/42689618558"
+}

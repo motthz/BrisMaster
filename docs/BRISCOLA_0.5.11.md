@@ -186,17 +186,49 @@ senza che il programma chieda un intervento.
 Il workflow di release esegue anche le 17 condizioni di sviluppo prima di
 costruire l'eseguibile e pubblicare l'installatore.
 
-## Risultati della sessione
+## Risultati conclusivi
 
-In corso: aggiornare questa sezione con gli esiti effettivi prima del rilascio.
+| Prova | Esito |
+|---|---|
+| Suite completa dell'app | **70 superati, 0 falliti**; 8 banchi esclusi dalla suite ordinaria |
+| Partite accumulate nella coda dell'interfaccia | **100/100** con stato finale corretto, elaborate in lotti |
+| Condizioni di sviluppo agli estremi | **17/17** con stato finale esatto; 3 inserimenti richiesti in 3 partite |
+| Validazione separata | **30/30** con stato finale esatto |
+| Validazione senza interventi manuali | **26/30** |
+| Validazione con interventi richiesti dall'app | **4/30**, per **26** conferme/correzioni/inserimenti totali |
 
-La prima matrice completa di sviluppo ha superato tutte le 17 condizioni.
-Nella successiva validazione con semi 104000 e 104001, un caso su 24 ha raggiunto
-20 prese con punti errati: la carta giocata era stata classificata come seconda
-riga della mano. Quel caso (`riserva-freddo`, seme 104508) è stato corretto e
-riprodotto con 20 prese, punti corretti e zero interventi manuali.
-La validazione conclusiva usa altri semi e comprende anche le protezioni contro
-attese e letture arretrate descritte sopra.
+I numeri di completamento richiedono 20 prese, punti esatti per entrambi,
+tutte le 40 carte giocate, mani e mazzo vuoti. I ritardi intermedi restano
+registrati: arrivare alla fine correttamente non equivale a capire subito ogni
+fotogramma. Le richieste all'utente sono un percorso di recupero verificato,
+non vengono conteggiate come riconoscimento automatico riuscito.
+
+I dati con condizioni, semi, checkpoint in ritardo e interventi per ciascuna
+partita sono in [BRISCOLA_0.5.11.json](../bench/BRISCOLA_0.5.11.json).
+Il candidato di codice è `967bb7a9c40141f8feb70e9b096c32d89924e0e1`. Il workflow Windows ripete test,
+17 condizioni estreme, compilazione e installatore prima della pubblicazione.
+
+La validazione finale usa basi 304000 e 304001, alternate ogni due round per
+variare indipendentemente mazzo e primo giocatore:
+
+```sh
+for round in 0 1 2 3 4 5 6 7; do
+  base=$((304000 + (round / 2) % 2))
+  BRIS_STRESS_VALIDAZIONE=1 BRIS_STRESS_ROUND=$round BRIS_STRESS_SEED=$base cargo test --release -p brismaster briscola_extreme_games -- --ignored --nocapture || exit 1
+done
+```
+
+Una validazione precedente aveva trovato un caso (`riserva-freddo`, seme
+104508) con 20 prese ma punti errati: la carta giocata era stata classificata
+come seconda riga della mano. Il confronto delle posizioni precedenti lo ha
+corretto: lo stesso caso termina con punti corretti e zero interventi.
+Un altro caso rimasto indietro (`204407`) ha verificato il recupero tramite la
+richiesta esplicita delle carte mancanti: 20 prese e punti corretti, con 7 input.
+
+Non sono prove dal vivo sul browser/desktop Windows né una riproduzione delle
+registrazioni cloud di Claude. Il motore di gioco non è cambiato; il confronto
+con la versione di riferimento era già superato sullo stesso codice del motore
+([risultato](https://github.com/motthz/BrisMaster/actions/runs/42689618558)).
 
 Le soglie temporali sono meccanismi di recupero, non una garanzia di assenza di
 qualunque blocco di sistema. Il budget della UI viene verificato fra le letture;

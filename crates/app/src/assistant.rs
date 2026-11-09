@@ -1044,7 +1044,14 @@ impl Assistant {
                 } else {
                     self.vision.inconsistent = true;
                     if self.vision.mismatch < 8 {
-                        self.vision.status = "La lettura dello schermo non corrisponde alla partita: controllo lo storico. Puoi correggere le carte o annullare l'ultima lettura.".into();
+                        let action = match self.pos.step() {
+                            Step::Draw(_) if self.pos.tricks == 0 => "Inserisci la carta iniziale che manca, anche se è già stata giocata.",
+                            Step::Draw(_) => "Inserisci la carta pescata che manca nella presa indicata.",
+                            Step::OppMove => "Inserisci la carta avversaria mancante nella presa indicata.",
+                            Step::MyMove => "Seleziona la carta che hai giocato nella presa indicata.",
+                            _ => "Puoi annullare l'ultima lettura.",
+                        };
+                        self.vision.status = format!("La lettura dello schermo non corrisponde alla partita: controllo lo storico. {action}");
                     }
                 }
             }
@@ -1701,7 +1708,7 @@ impl Assistant {
                 "Non ho una lettura aggiornata del tavolo. Il consiglio è sospeso."
             };
             ui.colored_label(GOLD, message);
-            if self.vision.reader.as_ref().is_some_and(|r| r.lag() >= std::time::Duration::from_secs(5))
+            if (self.vision.inconsistent || self.vision.reader.as_ref().is_some_and(|r| r.lag() >= std::time::Duration::from_secs(5)))
                 && ui.button("Riavvia lettura mantenendo la partita").clicked()
             {
                 self.restart_vision(ui.ctx());
@@ -3536,6 +3543,30 @@ mod tests {
                 confirms += 1;
                 a.accept_vision();
                 show(a, &scene);
+            }
+            if allow_recovery && a.vision.inconsistent && a.vision.confirm.is_none() {
+                let step = a.pos.step();
+                let requested = match step {
+                    Step::Draw(_) => {
+                        let n = a.rec.events.iter().filter(|e| matches!(e, Event::Pescata { .. })).count();
+                        true_draws.borrow().get(n).copied()
+                    }
+                    Step::MyMove | Step::OppMove => {
+                        let who = if step == Step::MyMove { ME } else { OPP };
+                        let n = a.rec.events.iter().filter(|e| matches!(e, Event::Giocata { chi, .. } if *chi == record::who(who))).count();
+                        true_plays.borrow()[who as usize].get(n).copied()
+                    }
+                    _ => None,
+                };
+                if let Some(card) = requested {
+                    if !a.pos.allowed().contains(card) {
+                        return Err(format!("{what}: la carta richiesta per il recupero {} non è inseribile", cards::name(card)));
+                    }
+                    confirms += 1;
+                    println!("seed={seed}; intervento manuale: carta mancante richiesta per {:?}: {}", step, cards::name(card));
+                    assert!(a.enter(card));
+                    show(a, &scene);
+                }
             }
             Ok(())
         };

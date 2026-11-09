@@ -147,6 +147,9 @@ riportati separatamente sotto.
   riapprese con la nuova normalizzazione del bianco, evitando di conservare
   etichette errate provenienti dalle versioni precedenti. Lo storico delle
   partite salvate resta separato e non viene cancellato.
+- L'inserimento da tastiera durante un recupero non insegna l'immagine attuale
+  come se fosse la carta del passato richiesta. Una proposta di pescata già
+  rifiutata non può sovrascrivere subito la carta corretta dall'utente.
 - Ctrl+Z elimina anche la carta o il primo giocatore dagli indizi manuali usati
   per ricostruire la partita, così non possono tornare da uno storico obsoleto.
 - Dopo prese non viste, un avviso persistente chiarisce che punti e carte
@@ -190,7 +193,7 @@ costruire l'eseguibile e pubblicare l'installatore.
 
 | Prova | Esito |
 |---|---|
-| Suite completa dell'app | **70 superati, 0 falliti**; 8 banchi esclusi dalla suite ordinaria |
+| Suite completa dell'app | **72 superati, 0 falliti**; 8 banchi esclusi dalla suite ordinaria |
 | Partite accumulate nella coda dell'interfaccia | **100/100** con stato finale corretto, elaborate in lotti |
 | Condizioni di sviluppo agli estremi | **17/17** con stato finale esatto; 3 inserimenti richiesti in 3 partite |
 | Validazione separata | **30/30** con stato finale esatto |
@@ -205,7 +208,12 @@ non vengono conteggiate come riconoscimento automatico riuscito.
 
 I dati con condizioni, semi, checkpoint in ritardo e interventi per ciascuna
 partita sono in [BRISCOLA_0.5.11.json](../bench/BRISCOLA_0.5.11.json).
-Il candidato di codice è `967bb7a9c40141f8feb70e9b096c32d89924e0e1`. Il workflow Windows ripete test,
+Le partite renderizzate sono state verificate sul candidato
+`967bb7a9c40141f8feb70e9b096c32d89924e0e1`. Il candidato finale `5473a96`
+aggiunge due prove sulla ripresa da tastiera: l'inserimento di una carta del
+passato non cambia l'etichetta dell'immagine corrente e una pescata rifiutata
+non sovrascrive la correzione manuale. La suite completa aggiornata supera
+72 test. Il workflow Windows ripete test,
 17 condizioni estreme, compilazione e installatore prima della pubblicazione.
 
 La validazione finale usa basi 304000 e 304001, alternate ogni due round per

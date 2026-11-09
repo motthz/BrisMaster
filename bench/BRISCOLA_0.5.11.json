@@ -1,9 +1,9 @@
 {
   "release": "0.5.11",
-  "candidate_commit": "967bb7a9c40141f8feb70e9b096c32d89924e0e1",
+  "candidate_commit": "5473a96",
   "scope": "Briscola recognition, temporal reconstruction, UI responsiveness and fault recovery",
   "app_tests": {
-    "passed": 70,
+    "passed": 72,
     "failed": 0,
     "ignored_benchmarks": 8
   },
@@ -462,5 +462,10 @@
     "Exact completion with user input is not a claim of perfect automatic recognition.",
     "Wall times include rendering and fixture generation, so they are not recognition-latency measurements."
   ],
-  "unchanged_engine_regression": "https://github.com/motthz/BrisMaster/actions/runs/42689618558"
+  "unchanged_engine_regression": "https://github.com/motthz/BrisMaster/actions/runs/42689618558",
+  "recognition_validation_commit": "967bb7a9c40141f8feb70e9b096c32d89924e0e1",
+  "keyboard_recovery": {
+    "historical_input_does_not_teach_current_image": true,
+    "rejected_draw_does_not_overwrite_user_correction": true
+  }
 }

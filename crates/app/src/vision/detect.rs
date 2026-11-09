@@ -13,6 +13,7 @@
 //! tavola (in alto quella dell'avversario, in basso la tua).
 
 use super::{hsv, reference, CardView, Img, Scene, CARD_H, CARD_W, WHOLE};
+use briscola_core::cards;
 
 /// Rettangolo ruotato: centro, asse "larghezza" `u` e asse "altezza" `v` (versori), semilati.
 #[derive(Clone, Copy, Debug)]
@@ -154,6 +155,9 @@ impl Paper {
         for f in [0.72f32, 0.55, 0.42] {
             let l = (top as f32 * f) as usize;
             let (a, b) = ((l * 90 / 100).max(60), (l * 110 / 100).min(255));
+            // Su schermi molto scuri il limite minimo può superare quello massimo.
+            // Non c'è un bianco utilizzabile a questo livello, non un intervallo da tagliare.
+            if a > b { continue; }
             let pts: Vec<[u8; 3]> = by_v[a..=b].iter().flatten().copied().collect();
             // Abbastanza punti per essere carte (almeno mezza carta piccola).
             if pts.len() * 1000 >= n * 2 {
@@ -516,7 +520,7 @@ pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
     }
     let border = rim.iter().filter(|&&p| p).count() as f32 / rim.len() as f32;
     let mut n = 0;
-    let (mut ink, mut tinted, mut dark) = (0, 0, 0);
+    let (mut ink, mut dark) = (0, 0);
     for y in (y0 + m..y1 - m).step_by(2) {
         for x in (CARD_W / 10..CARD_W - CARD_W / 10).step_by(2) {
             let (_, sat, v) = hsv(balanced(card.at(x, y)));
@@ -524,13 +528,12 @@ pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
             if sat >= 60 && v >= 50 {
                 ink += 1;
             }
-            tinted += (sat >= 35) as usize;
             dark += ((v as f32) < 0.7 * 255.0) as usize;
         }
     }
     // Schermo in bianco e nero: il disegno è quello scuro, contato a metà (le scritte nere su un
     // riquadro bianco non devono passare per carte).
-    if reference::gray_screen() && tinted * 200 < n {
+    if reference::gray_screen() {
         return (border, dark as f32 / n.max(1) as f32 / 2.0);
     }
     (border, ink as f32 / n.max(1) as f32)
@@ -1143,16 +1146,21 @@ pub fn analyze(img: &Img) -> Analysis {
     // severo (tavolo chiaro come le carte), carte stirate. Si comincia da quella che ha funzionato
     // l'ultima volta e ci si ferma appena si trovano abbastanza carte.
     const TRIES: usize = 7;
+    let darker = std::cell::OnceCell::new();
+    let paper = Paper::of(img);
+    let white_background = img.px.iter().step_by(7).filter(|&&p| paper.is(p)).count() * 100 > n.max(1) * 55;
     let run = |k: usize| -> Option<Analysis> {
         match k {
-            0 => Some(analyze_inner(img, &Paper::of(img))),
-            1..=3 => Paper::darker(img).into_iter().nth(k - 1).map(|p| analyze_inner(img, &p)),
+            0 => Some(analyze_inner(img, &paper)),
+            1..=3 => darker.get_or_init(|| Paper::darker(img)).get(k - 1).map(|p| analyze_inner(img, p)),
             4 => Some(analyze_inner(img, &Paper::strict(img, 249))),
             5 => Some(analyze_inner(img, &Paper::strict(img, 243))),
             _ => Some(analyze_shaped(img, &Paper::of(img), card_shaped_wide)),
         }
     };
-    let first = LAST_TRY.with(|t| t.get());
+    // Sul tavolo bianco si riprova prima il contorno completo (anche l'ombra),
+    // evitando di riusare una ripiega che aveva ritagliato soltanto il disegno.
+    let first = if white_background { 0 } else { LAST_TRY.with(|t| t.get()) };
     let last_n = LAST_N.with(|t| t.get());
     let mut best: Option<(usize, Analysis)> = None;
     for k in std::iter::once(first).chain((0..TRIES).filter(|&k| k != first)) {
@@ -1183,7 +1191,24 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
     let base = blobs_r(img, &paper, 1);
     let mut cards: Vec<Found> = Vec::new();
     let mut rest: Vec<Blob> = Vec::new();
-    let light: Vec<Blob> = base.iter().copied().filter(|b| b.light()).collect();
+    let light: Vec<Blob> = base.iter().copied().filter(|b| {
+        if b.light() { return true; }
+        // Su un tavolo bianco l'anello esterno è bianco quanto la carta: resta
+        // però l'ombra immediatamente fuori dal bordo. Si usa solo per sagome
+        // di carta, mai per una grande zona bianca del desktop.
+        if b.white <= 0.25 || b.rect.long() < 40.0 || b.rect.long() > 0.7 * img.h as f32 || !shaped(&b.rect) {
+            return false;
+        }
+        let (mut n, mut dark) = (0, 0);
+        for k in 0..64 {
+            let (x, y) = b.rect.outline(k as f32 / 16.0, 1.0, 1.5);
+            if x >= 0.0 && y >= 0.0 && x < img.w as f32 && y < img.h as f32 {
+                n += 1;
+                dark += !paper[y as usize * img.w + x as usize] as usize;
+            }
+        }
+        n >= 16 && dark * 2 >= n
+    }).collect();
     let found = par_map(&light, |b| shaped(&b.rect).then(|| as_full(img, &b.rect)).flatten());
     for (b, f) in light.into_iter().zip(found) {
         match f {
@@ -1442,8 +1467,72 @@ fn best<'a>(cards: impl Iterator<Item = &'a Found>) -> Option<&'a Found> {
 
 /// Divide le carte scoperte trovate sullo schermo fra briscola, tavolo e mano.
 pub fn scene(img: &Img) -> Scene {
-    let a = analyze(img);
+    let mut a = analyze(img);
+    // Le carte possono essere quasi senza colori anche se il tavolo è colorato:
+    // la decisione globale sullo schermo non basta. Solo se il giro normale non
+    // riconosce nulla, si prova il disegno in luminanza con gli stessi filtri.
+    if a.cards.is_empty() && !reference::gray_screen() {
+        reference::set_gray_screen(true);
+        let mut fallback = analyze_inner(img, &Paper::of(img));
+        // Senza il colore, testi e loghi hanno più possibilità di somigliare a
+        // una carta: per questa ripiega serve una corrispondenza molto forte.
+        fallback.cards.retain(|c| c.score >= 0.85);
+        if !fallback.cards.is_empty() { a = fallback; }
+    }
     let card_l = a.card_l;
+    // Solo briscola: con carte piccole il pezzo di briscola sotto il mazzo può essere
+    // più corto dei 40 px richiesti per cercare una carta intera. La misura delle
+    // carte già riconosciute permette di provarlo senza abbassare il filtro generale.
+    if card_l > 0.0 && card_l < 110.0 {
+        let card_w = a.cards.iter().map(|c| c.rect.short()).sum::<f32>() / a.cards.len() as f32;
+        for b in &a.blobs {
+            if b.rect.long() < 40.0 && b.rect.long() >= 0.35 * card_l && b.white > 0.08 && b.bg > 0.3 {
+                if let Some(card) = as_partial(img, &b.rect, card_l, card_w) {
+                    if !a.cards.iter().any(|c| c.rect.dist(&card.rect) < 0.5 * card_w) {
+                        a.cards.push(card);
+                    }
+                }
+            }
+        }
+    }
+    // Una carta giocata può essere coperta dalla mano quando lo zoom è alto.
+    // Il blob include talvolta una coda stretta fra due carte: per il confronto
+    // parziale si usa il rettangolo interamente visibile sopra la prima occlusione.
+    if card_l > 0.0 {
+        let known = a.cards.clone();
+        let card_w = known.iter().map(|c| c.rect.short()).sum::<f32>() / known.len() as f32;
+        for blob in &a.blobs {
+            if !blob.light() || blob.rect.landscape() { continue; }
+            let [left, top, right, bottom] = blob.rect.bounds(img);
+            let (left, top, right, bottom) = (left * img.w as f32, top * img.h as f32, right * img.w as f32, bottom * img.h as f32);
+            let cut = known.iter().filter(|c| !c.rect.landscape()).filter_map(|c| {
+                let [l, t, r, _] = c.rect.bounds(img);
+                let (l, t, r) = (l * img.w as f32, t * img.h as f32, r * img.w as f32);
+                (t > top && t < bottom && l < right && r > left).then_some(t)
+            }).min_by(|a, b| a.total_cmp(b));
+            let Some(cut) = cut else { continue };
+            if cut - top < 0.35 * card_l || bottom - cut < 3.0 { continue; }
+            let rect = RotRect { cx: (left + right) / 2.0, cy: (top + cut) / 2.0,
+                hw: (right - left) / 2.0, hh: (cut - top) / 2.0, u: (1.0, 0.0), v: (0.0, 1.0) };
+            if let Some(card) = as_partial(img, &rect, card_l, card_w) {
+                if !a.cards.iter().any(|c| c.rect.dist(&card.rect) < 0.5 * card_w) {
+                    a.cards.push(card);
+                }
+            }
+        }
+    }
+    // Una carta divisa dal disegno può essere ricostruita due volte, con centri
+    // abbastanza distanti da superare il primo filtro. Non sono due giocate.
+    a.cards.sort_by(|a, b| b.score.total_cmp(&a.score));
+    let mut distinct: Vec<Found> = Vec::new();
+    for card in a.cards {
+        let id = card.view.best(cards::CardSet::FULL).map(|b| b.0);
+        if !distinct.iter().any(|other| {
+            id.is_some() && id == other.view.best(cards::CardSet::FULL).map(|b| b.0)
+                && other.rect.dist(&card.rect) < 0.8 * card_l
+        }) { distinct.push(card); }
+    }
+    a.cards = distinct;
     let mut scene = Scene::default();
     let upright = |f: &&Found| !f.rect.landscape();
     // La riga più in basso di carte in piedi della misura delle altre, anche viste solo in parte
@@ -1512,7 +1601,7 @@ pub fn scene(img: &Img) -> Scene {
     let backs_y = a
         .blobs
         .iter()
-        .filter(|b| b.white <= 0.3 && b.rect.long() > 0.8 * card_l && b.rect.cy < bottom - 2.5 * card_l)
+        .filter(|b| b.white <= 0.3 && b.rect.long() > 0.8 * card_l && b.rect.cy < bottom - 1.25 * card_l)
         .map(|b| b.rect.cy)
         .fold(f32::MAX, f32::min);
     let mid = if backs_y < f32::MAX { (backs_y + bottom) / 2.0 } else { bottom - 2.1 * card_l };

@@ -627,6 +627,19 @@ pub fn shrink_by(img: Img, k: usize) -> Img {
     out
 }
 
+#[cfg(test)]
+impl<S> Reader<S> {
+    /// Canale finito per riprodurre ritardi dell'interfaccia senza catturare il desktop.
+    pub(crate) fn from_readings(readings: impl IntoIterator<Item = Reading<S>>) -> Self {
+        let (tx, rx) = channel();
+        for reading in readings { tx.send(reading).ok().unwrap(); }
+        Reader {
+            rx, stop: Arc::new(AtomicBool::new(false)),
+            last: Arc::new(Mutex::new(None)), spot: Arc::new(Mutex::new(Spot::default())),
+        }
+    }
+}
+
 impl<S> Drop for Reader<S> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -657,6 +670,16 @@ mod tests {
 
     /// Su uno schermo grande la schermata si rimpicciolisce solo se le carte restano leggibili:
     /// il gioco in una finestra non ingrandita di un monitor 2560 o 4K si legge intero.
+    #[test]
+    fn dark_screen_fallback_never_panics() {
+        // Include nero totale, la soglia 60 e i livelli in cui a > b nel vecchio codice.
+        for value in 0..=120u8 {
+            let mut img = Img::new(16, 16);
+            img.px.fill([value; 3]);
+            let _ = detect::Paper::darker(&img);
+        }
+    }
+
     #[test]
     fn small_cards_are_never_shrunk() {
         // Carte ancora sconosciute: si legge intera.

@@ -149,6 +149,12 @@ impl Memory {
         m
     }
 
+    /// Copia per una ricostruzione provvisoria: le ipotesi non devono insegnare
+    /// carte alla memoria della partita reale, né scrivere sul disco.
+    pub fn isolated(&self) -> Memory {
+        Memory { version: self.version, templates: self.templates.clone(), path: None }
+    }
+
     pub fn len(&self) -> usize {
         let mut cards: Vec<Card> = self.templates.iter().map(|t| t.card).collect();
         cards.sort();

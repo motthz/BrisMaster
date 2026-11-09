@@ -40,6 +40,9 @@ jobs:
       - name: Test
         if: steps.ver.outputs.exists == 'false'
         run: cargo test --workspace --release
+      - name: Briscola - partite complete agli estremi
+        if: steps.ver.outputs.exists == 'false'
+        run: cargo test --release -p brismaster briscola_extreme_games -- --ignored --nocapture
       - name: Build
         if: steps.ver.outputs.exists == 'false'
         run: cargo build --release -p brismaster

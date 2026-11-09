@@ -95,11 +95,6 @@ impl Template {
         (coarse.contrast() > 12.0).then_some(Template { coarse, fine, x0, y0, frame: (img.w, img.h) })
     }
 
-    /// Vero se è lo stesso ritaglio (della stessa scena).
-    pub fn same(&self, o: &Template) -> bool {
-        (self.x0, self.y0, self.frame) == (o.x0, o.y0, o.frame) && self.fine.px == o.fine.px
-    }
-
     /// Di quanto si è spostata la zona in `img` (frazioni della schermata), partendo dallo
     /// spostamento di prima `hint`. None se `img` ha altre misure o la zona non c'è più.
     pub fn find(&self, img: &Img, hint: [f32; 2]) -> Option<[f32; 2]> {

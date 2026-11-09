@@ -14,13 +14,33 @@ sempre i clic dell'utente: la mosca non gioca automaticamente.
 - Una presa della Scopa è indicata solo quando tutte le sue carte sono localizzate.
 - Le indicazioni scompaiono su dati scaduti, cattura guasta o coordinate di un'altra
   schermata. Gli esiti finali sono disponibili anche per la Scopa.
-- Un nuovo consiglio passa subito alla carta corretta; lo spostamento della stessa
-  carta viene interpolato. Una carta che ricompare dopo un'occultazione non viene
+- I contorni usano direttamente l'ultima posizione misurata, senza interpolazione
+  che li faccia restare indietro. Solo la mosca conserva inerzia e movimento morbido. Una carta che ricompare dopo un'occultazione non viene
   annunciata di nuovo.
 - I cuoricini dopo una giocata richiedono che la ricostruzione abbia registrato la
   carta consigliata. Un semplice clic non viene descritto come una giocata riuscita.
 - Spegnendo Psy Fly si ferma anche la lettura. Cambiando gioco il lettore inattivo
   viene sospeso; la preferenza di lettura è conservata per il ritorno al gioco.
+
+## Tracking delle carte in movimento
+
+La cattura punta a un intervallo di 16 ms, compatibilmente con il tempo richiesto
+dal monitor e dal sistema. Un tracker separato segue ciascuna carta, comprese
+quelle da prendere nella Scopa, a risoluzione piena fra i riconoscimenti completi.
+La ricerca vicino all'ultima posizione ha precisione al pixel e gestisce piccoli
+ridimensionamenti. Le carte possono muoversi indipendentemente; se una non viene
+ritrovata il suo contorno viene nascosto. Le altre continuano a essere seguite.
+Un risultato di riconoscimento in ritardo viene riallineato all'ultima cattura,
+senza riportare indietro i bordi. Le catture più vecchie non sovrascrivono le nuove.
+
+Il bordo sottile aderisce al rettangolo rilevato: pulsa il bagliore, non la sua
+geometria. La simulazione della mosca usa passi massimi di 1/120 s e una molla
+risolta analiticamente; ali antialias, sguardo e virate variano continuamente.
+
+La precisione rimane vincolata alle immagini disponibili. Non è un aggancio al
+DOM del sito: rotazioni, deformazioni forti, occlusioni o movimenti troppo rapidi
+possono richiedere un nuovo riconoscimento. La latenza della cattura non può essere
+azzerata; 16 ms è un obiettivo, non una garanzia di sincronizzazione con il monitor.
 
 ## Confini fra componenti
 

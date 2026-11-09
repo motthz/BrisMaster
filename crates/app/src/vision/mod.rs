@@ -5,6 +5,7 @@
 
 pub mod capture;
 pub mod detect;
+pub mod live;
 pub mod memory;
 pub mod reference;
 pub mod screen;
@@ -217,27 +218,25 @@ pub fn read_scopa(img: &Img, mem: &Mutex<Memory>) -> Option<ScopaScene> {
 
 /// Le carte di una scena: dove stanno nella schermata (frazioni), le tue per prime.
 pub trait Located {
-    /// Le zone da inseguire quando lo schermo si sposta: la tua mano, o tutte le carte se non ce n'è.
+    /// Tutte le carte visibili, inseguite singolarmente fra i riconoscimenti.
     fn spots(&self) -> Vec<[f32; 4]>;
 }
 
 impl Located for Scene {
     fn spots(&self) -> Vec<[f32; 4]> {
-        let hand: Vec<[f32; 4]> = self.hand.iter().map(|v| v.at).collect();
-        if !hand.is_empty() {
-            return hand;
-        }
-        self.trump.iter().chain(&self.opp_slot).chain(&self.my_slot).map(|v| v.at).collect()
+        self.hand
+            .iter()
+            .chain(self.trump.iter())
+            .chain(self.opp_slot.iter())
+            .chain(self.my_slot.iter())
+            .map(|v| v.at)
+            .collect()
     }
 }
 
 impl Located for ScopaScene {
     fn spots(&self) -> Vec<[f32; 4]> {
-        let hand: Vec<[f32; 4]> = self.hand.iter().map(|v| v.at).collect();
-        if !hand.is_empty() {
-            return hand;
-        }
-        self.table.iter().map(|v| v.at).collect()
+        self.hand.iter().chain(self.table.iter()).map(|v| v.at).collect()
     }
 }
 
@@ -255,22 +254,24 @@ struct Spot {
     place: Option<Place>,
     template: Option<track::Template>,
     shift: [f32; 2],
+    cards: Vec<live::CardTrack>,
     /// Catture di fila in cui la zona delle carte non si ritrova: le carte non ci sono più (o lo
     /// schermo è cambiato) e non vanno più segnate finché un'analisi non le ritrova.
     misses: u32,
 }
 
-/// Dopo quante catture senza ritrovare le carte (un decimo di secondo l'una) non si segnano più.
+/// Dopo quante catture senza ritrovare le carte non si segnano più.
 const MISSES: u32 = 2;
 const SIGHT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// One immutable coordinate system for all cards in a displayed scene.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Placement {
     pub monitor: Option<capture::Geom>,
     pub hidden: bool,
     place: Option<Place>,
     shift: [f32; 2],
+    cards: Vec<([f32; 4], Option<[f32; 4]>)>,
 }
 
 impl Placement {
@@ -279,6 +280,11 @@ impl Placement {
             return None;
         }
         let (g, area) = self.place?;
+        if !self.cards.is_empty() {
+            let (_, current) =
+                self.cards.iter().find(|(source, _)| source.iter().zip(at).all(|(a, b)| (*a - b).abs() < 0.00001))?;
+            return Some(place_on_desktop((*current)?, g, area));
+        }
         let [dx, dy] = self.shift;
         Some(place_on_desktop([at[0] + dx, at[1] + dy, at[2] + dx, at[3] + dy], g, area))
     }
@@ -297,6 +303,7 @@ impl Spot {
                 || !fresh(self.tracked),
             place: self.place,
             shift: self.shift,
+            cards: self.cards.iter().map(|c| (c.source, c.current)).collect(),
         }
     }
 }
@@ -315,7 +322,7 @@ pub struct Reader<S> {
 /// Ogni quanto si cattura lo schermo: spesso, perché costa poco. Le schermate si analizzano poi
 /// tutte, in ordine, anche se l'analisi è più lenta: un sito che chiude una presa in mezzo secondo
 /// non deve far perdere nessuna carta.
-const CAPTURE_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+const CAPTURE_EVERY: std::time::Duration = std::time::Duration::from_millis(16);
 
 impl<S: Located + Send + 'static> Reader<S> {
     /// `read` trova e riconosce le carte di un gioco; `every` è l'intervallo massimo fra due letture
@@ -350,6 +357,7 @@ impl<S: Located + Send + 'static> Reader<S> {
         let monitors = Arc::new(AtomicUsize::new(1));
         let (err_tx, err_rx) = sync_channel::<String>(1);
         let spot: Arc<Mutex<Spot>> = Arc::new(Mutex::new(Spot::default()));
+        let latest = Arc::new(Mutex::new(None::<(Arc<Img>, Place, std::time::Instant)>));
 
         // Cattura: ogni CAPTURE_EVERY, e tiene le schermate in cui qualcosa è cambiato.
         {
@@ -357,6 +365,7 @@ impl<S: Located + Send + 'static> Reader<S> {
                 (stop.clone(), queue.clone(), monitor.clone(), monitors.clone(), card_px.clone());
             let spot = spot.clone();
             let ctx = ctx.clone();
+            let latest = latest.clone();
             std::thread::spawn(move || {
                 let mut chosen = None;
                 let mut frame_id = 0u64;
@@ -373,10 +382,13 @@ impl<S: Located + Send + 'static> Reader<S> {
                             let captured = std::time::Instant::now();
                             spot.lock().unwrap_or_else(|e| e.into_inner()).capture_ok = true;
                             monitors.store(count.max(1), Ordering::Relaxed);
-                            let table = screen::table(&img, &area);
+                            let table = Arc::new(screen::table(&img, &area));
+                            *latest.lock().unwrap_or_else(|e| e.into_inner()) =
+                                Some((table.clone(), (geom, area), captured));
+                            follow(&spot, &table, (geom, area), captured);
+                            ctx.request_repaint();
                             let k = shrink_factor(table.w, card_px.load(Ordering::Relaxed));
-                            let table = shrink_by(table, k);
-                            follow(&spot, &table, (geom, area));
+                            let table = shrink_by((*table).clone(), k);
                             let (lock, cv) = &*queue;
                             let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
                             frame_id += 1;
@@ -442,9 +454,18 @@ impl<S: Located + Send + 'static> Reader<S> {
                                 sp.captured = Some(captured);
                                 // Analysis may lag capture; never revive an old frame as fresh.
                                 sp.tracked = Some(captured);
-                                sp.template = track::union(&s.spots()).and_then(|u| track::Template::new(&table, u));
+                                let spots = s.spots();
+                                sp.cards = spots.iter().filter_map(|&r| live::CardTrack::new(&table, r)).collect();
+                                sp.template = track::union(&spots).and_then(|u| track::Template::new(&table, u));
                                 sp.shift = [0.0, 0.0];
                                 sp.misses = 0;
+                                drop(sp);
+                                // Catch up before publishing: a slow recognition result must not
+                                // rewind the contour to where the card was captured earlier.
+                                let live = latest.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                                if let Some((image, place, captured)) = live {
+                                    follow(&found, &image, place, captured);
+                                }
                                 Reading::Scene(s, frame_id)
                             }
                             Ok(None) => {
@@ -501,30 +522,43 @@ impl<S> Reader<S> {
 
 /// Nella cattura appena fatta ritrova la zona delle carte dell'ultima scena, se è dello stesso
 /// monitor e della stessa area: così le carte segnate seguono lo schermo che si sposta.
-fn follow(spot: &Mutex<Spot>, table: &Img, at: Place) {
-    let (template, hint) = {
+fn follow(spot: &Mutex<Spot>, table: &Img, at: Place, captured: std::time::Instant) {
+    let (frame_id, template, hint, mut cards) = {
         let sp = spot.lock().unwrap_or_else(|e| e.into_inner());
         if sp.place != Some(at) {
             drop(sp);
             spot.lock().unwrap_or_else(|e| e.into_inner()).misses = MISSES;
             return;
         }
-        match &sp.template {
-            Some(t) => (t.clone(), sp.shift),
-            None => return,
+        if sp.tracked.is_some_and(|at| at > captured) {
+            return;
         }
+        (sp.frame_id, sp.template.clone(), sp.shift, sp.cards.clone())
     };
-    let found = template.find(table, hint);
-    let mut sp = spot.lock().unwrap_or_else(|e| e.into_inner());
-    // Solo se nel frattempo non è arrivata una scena nuova.
-    if sp.place == Some(at) && sp.template.as_ref().is_some_and(|t| t.same(&template)) {
-        match found {
-            Some(shift) => {
-                sp.shift = shift;
-                sp.misses = 0;
-                sp.tracked = Some(std::time::Instant::now());
+    for card in &mut cards {
+        card.follow(table, hint);
+    }
+    let mut shift = hint;
+    let any = cards.iter().any(|c| c.current.is_some());
+    if !any {
+        // A large whole-window jump can exceed the per-card local search radius.
+        if let Some(found) = template.as_ref().and_then(|t| t.find(table, hint)) {
+            shift = found;
+            for card in &mut cards {
+                card.follow(table, shift);
             }
-            None => sp.misses += 1,
+        }
+    }
+    let mut sp = spot.lock().unwrap_or_else(|e| e.into_inner());
+    if sp.frame_id == frame_id && sp.place == Some(at) && !sp.tracked.is_some_and(|at| at > captured) {
+        let found = cards.iter().any(|c| c.current.is_some());
+        sp.cards = cards;
+        sp.shift = shift;
+        if found {
+            sp.misses = 0;
+            sp.tracked = Some(captured);
+        } else {
+            sp.misses += 1;
         }
     }
 }
@@ -776,6 +810,49 @@ mod tests {
         assert!(spot.placement(7, now + SIGHT_MAX_AGE + std::time::Duration::from_millis(1)).hidden);
         spot.capture_ok = false;
         assert!(spot.placement(7, now).on_desktop([0.0; 4]).is_none());
+    }
+
+    #[test]
+    fn placement_maps_independent_cards_and_rejects_older_live_frames() {
+        let image = site();
+        let scene = read(&image);
+        assert!(!scene.hand.is_empty());
+        let rect = scene.hand[0].at;
+        let mut moved = Img::new(image.w, image.h);
+        for y in 0..image.h - 7 {
+            let source = &image.px[y * image.w..(y + 1) * image.w - 13];
+            let start = (y + 7) * image.w + 13;
+            moved.px[start..start + source.len()].copy_from_slice(source);
+        }
+        let now = std::time::Instant::now();
+        let geom = capture::Geom { x: -1600.0, y: 0.0, w: image.w as f32, h: image.h as f32, scale: 1.25 };
+        let place = (geom, screen::Area::default());
+        let spot = Mutex::new(Spot {
+            frame_id: 42,
+            captured: Some(now),
+            tracked: Some(now),
+            capture_ok: true,
+            place: Some(place),
+            cards: scene.hand.iter().filter_map(|v| live::CardTrack::new(&image, v.at)).collect(),
+            ..Default::default()
+        });
+        let later = now + std::time::Duration::from_millis(16);
+        follow(&spot, &moved, place, later);
+        let measured = spot.lock().unwrap().placement(42, later).on_desktop(rect).unwrap();
+        let expected = place_on_desktop(
+            [
+                rect[0] + 13.0 / image.w as f32,
+                rect[1] + 7.0 / image.h as f32,
+                rect[2] + 13.0 / image.w as f32,
+                rect[3] + 7.0 / image.h as f32,
+            ],
+            geom,
+            place.1,
+        );
+        assert!(measured.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1.1), "{measured:?} vs {expected:?}");
+        // A delayed recognizer/capture worker cannot rewind a newer live position.
+        follow(&spot, &image, place, now);
+        assert_eq!(spot.lock().unwrap().placement(42, later).on_desktop(rect), Some(measured));
     }
 
     #[test]
@@ -1564,4 +1641,3 @@ mod other_sites {
         }
     }
 }
-

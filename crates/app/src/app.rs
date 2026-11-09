@@ -129,6 +129,7 @@ pub struct BrisApp {
     fly: Fly,
     /// Il gioco per cui la mosca ha già acceso la lettura dello schermo.
     fly_reading: Option<Gioco>,
+    active_game: Option<Gioco>,
 }
 
 impl BrisApp {
@@ -159,6 +160,7 @@ impl BrisApp {
             window: None,
             fly: Fly::default(),
             fly_reading: None,
+            active_game: None,
             settings,
         };
         if app.settings.auto_update {
@@ -217,6 +219,10 @@ impl BrisApp {
         self.fly.on = self.settings.psy_fly;
         if self.fly.switch(ui) {
             self.settings.psy_fly = self.fly.on;
+            if !self.fly.on {
+                self.assistant.vision_off(ui.ctx());
+                self.scopa.vision_off(ui.ctx());
+            }
         }
     }
 
@@ -361,6 +367,11 @@ impl eframe::App for BrisApp {
         self.poll_background();
 
         self.apply_window(&ui.ctx().clone());
+        if self.active_game != Some(self.settings.game) {
+            self.assistant.vision_active(self.settings.game == Gioco::Briscola, ui.ctx());
+            self.scopa.vision_active(self.settings.game == Gioco::Scopa, ui.ctx());
+            self.active_game = Some(self.settings.game);
+        }
         // La mosca accesa (anche dall'ultima volta) vede le carte con la lettura dello schermo:
         // si accende una volta per gioco, poi l'utente può spegnerla.
         if !self.settings.psy_fly {
@@ -371,6 +382,9 @@ impl eframe::App for BrisApp {
         }
         let ui_ctx = ui.ctx().clone();
         self.ui_main(ui, now);
+        if self.active_game != Some(self.settings.game) {
+            ui_ctx.request_repaint();
+        }
         self.show_fly(&ui_ctx);
     }
 

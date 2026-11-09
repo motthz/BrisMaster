@@ -34,4 +34,4 @@ xcap = "0.9.8"
 native-tls = "0.2"
 ureq = { version = "2", features = ["native-tls"] }
 # La finestra della Psy Fly: messa a pixel veri sul monitor del gioco e tolta dalle foto dello schermo.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }

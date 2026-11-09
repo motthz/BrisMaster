@@ -1,13 +1,13 @@
 //! Assistente: inserisci a mano briscola, carte in mano, pescate e giocate; il motore consiglia la mossa.
 
 use crate::cards_ui::{self, BEST, CARD_SIZE, GOLD};
-use crate::record::{self, Advice, CardRec, Event, Recorder};
 use crate::psyfly;
+use crate::record::{self, Advice, CardRec, Event, Recorder};
 use crate::vision::memory::{similarity, Memory};
 use crate::vision::{read_briscola, CardView, Img, Reader, Reading, Scene};
 use briscola_core::ai::{evaluate_with_log, MoveEval};
-use briscola_core::infer;
 use briscola_core::cards::{self, Card, CardSet};
+use briscola_core::infer;
 use briscola_core::{Observation, Trick};
 use eframe::egui::{self, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 use rand::rngs::SmallRng;
@@ -310,6 +310,7 @@ pub struct Assistant {
     tricks: Vec<Trick>,
     rec: Recorder,
     generation: u64,
+    pending_generation: u64,
     analysis: Option<Analysis>,
     pending: Option<Receiver<Analysis>>,
     analysis_started: Option<std::time::Instant>,
@@ -383,6 +384,8 @@ struct Vision {
     catching_up: bool,
     inconsistent: bool,
     restart_after: Option<std::time::Instant>,
+    frame_id: u64,
+    enabled: bool,
 }
 
 struct Confirm {
@@ -402,6 +405,7 @@ impl Default for Assistant {
             tricks: Vec::new(),
             rec: Recorder::default(),
             generation: 0,
+            pending_generation: 0,
             analysis: None,
             pending: None,
             analysis_started: None,
@@ -420,8 +424,8 @@ impl Assistant {
     fn changed(&mut self) {
         self.generation += 1;
         self.analysis = None;
-        self.pending = None;
-        self.analysis_started = None;
+        // Keep one in-flight calculation; its epoch will reject an obsolete result.
+        if self.pending.is_none() { self.analysis_started = None; }
         self.analysis_retry_at = None;
         self.analysis_failures = 0;
         self.analysis_error = None;
@@ -451,10 +455,7 @@ impl Assistant {
     /// rifacendo tutto quello che è venuto dopo. Falso (e niente cambia) se la partita non torna più,
     /// per esempio perché la carta sbagliata è già stata giocata.
     fn correct_draw(&mut self, wrong: Card, right: Card) -> bool {
-        self.correct_event(
-            |e| matches!(e, Event::Pescata { carta } if carta.id == wrong),
-            right,
-        )
+        self.correct_event(|e| matches!(e, Event::Pescata { carta } if carta.id == wrong), right)
     }
 
     /// Come `correct_draw`, per il primo evento della cronologia che soddisfa `is`.
@@ -479,7 +480,9 @@ impl Assistant {
             .iter()
             .map(|h| match &self.rec.events[h.2] {
                 Event::PrimoDiMano { chi } => Act::First(if *chi == record::who(ME) { ME } else { OPP }),
-                Event::Briscola { carta } | Event::Pescata { carta } | Event::Giocata { carta, .. } => Act::Card(carta.id, h.3),
+                Event::Briscola { carta } | Event::Pescata { carta } | Event::Giocata { carta, .. } => {
+                    Act::Card(carta.id, h.3)
+                }
             })
             .collect();
         let hint_step = match self.history[i].0.step() { Step::Draw(_) => Step::Draw(0), step => step };
@@ -575,8 +578,15 @@ impl Assistant {
 
     fn reset(&mut self) {
         let vision = std::mem::take(&mut self.vision);
+        let generation = self.generation.wrapping_add(1);
+        let pending = self.pending.take();
+        let pending_generation = self.pending_generation;
         *self = Assistant::default();
+        self.generation = generation;
+        self.pending = pending;
+        self.pending_generation = pending_generation;
         self.vision = Vision {
+            enabled: vision.enabled,
             reader: vision.reader,
             memory: vision.memory,
             status: vision.status,
@@ -686,6 +696,9 @@ impl Assistant {
         }
         if let Some(rx) = &self.pending {
             match rx.try_recv() {
+                Ok(_) if self.pending_generation != self.generation => {
+                    self.pending=None; self.analysis_started=None;
+                }
                 Ok(a) if !a.evals.is_empty() => {
                     let best = a.evals.first().map(|e| e.card);
                     self.analysis = Some(a);
@@ -726,6 +739,7 @@ impl Assistant {
                 let reasons = explain(&obs, &evals);
                 let _ = tx.send(Analysis { evals, reasons, samples });
             });
+            self.pending_generation = self.generation;
             self.pending = Some(rx);
             self.analysis_started = Some(std::time::Instant::now());
             ctx.request_repaint_after(std::time::Duration::from_millis(60));
@@ -839,6 +853,7 @@ impl Assistant {
 
     /// Accende o spegne la lettura dello schermo.
     fn set_vision(&mut self, on: bool, ctx: &egui::Context) {
+        self.vision.enabled = on;
         if on && self.vision.reader.is_none() {
             self.vision.memory = Memory::shared();
             let every = std::time::Duration::from_millis(350);
@@ -868,42 +883,88 @@ impl Assistant {
         self.set_vision(true, ctx);
     }
 
+    pub fn vision_active(&mut self, active: bool, ctx: &egui::Context) {
+        if active {
+            if self.vision.enabled {
+                self.set_vision(true, ctx);
+            }
+        } else {
+            self.vision.reader = None;
+            self.vision.lost = true;
+        }
+    }
+
+    pub fn vision_off(&mut self, ctx: &egui::Context) {
+        self.set_vision(false, ctx);
+        self.vision.lost = true;
+    }
+
     /// Cosa deve fare la Psy Fly: dove sono le tue carte sullo schermo e quale giocare.
     pub fn fly_sight(&self) -> psyfly::Sight {
         let Some(reader) = &self.vision.reader else {
             return psyfly::Sight::off();
         };
-        let monitor = reader.monitor();
+        let placement = reader.placement(self.vision.frame_id);
+        let monitor = placement.monitor;
         if self.screen_is_behind() {
-            return psyfly::Sight { monitor, hand: Vec::new(), guide: psyfly::Guide::Hidden };
+            return psyfly::Sight { monitor, hand: Vec::new(), guide: psyfly::Guide::Hidden, context:(0,self.generation), played_card:None };
         }
         // Le carte lette ma non più sullo schermo (sparite, coperte, schermo cambiato) non si
         // segnano: la mosca aspetta la prossima lettura invece di indicare un posto vuoto.
         let scene = self.vision.scene.as_ref().filter(|_| !self.vision.lost);
-        if scene.is_some() && reader.lost() {
-            return psyfly::Sight { monitor, hand: Vec::new(), guide: psyfly::Guide::Hidden };
+        if self.pos.step() != Step::Over && scene.is_some() && placement.hidden {
+            return psyfly::Sight {
+                monitor,
+                hand: Vec::new(),
+                guide: psyfly::Guide::Hidden,
+                context: (0, self.generation),
+                played_card: self.history.last().and_then(|(before, _, _, auto)| {
+                    if !*auto {
+                        before.hand.minus(self.pos.hand).iter().next()
+                    } else {
+                        None
+                    }
+                }),
+            };
         }
         let hand: Vec<[f32; 4]> =
-            scene.map_or(Vec::new(), |s| s.hand.iter().filter_map(|v| reader.on_desktop(v.at)).collect());
+            scene.map_or(Vec::new(), |s| s.hand.iter().filter_map(|v| placement.on_desktop(v.at)).collect());
         let guide = match self.pos.step() {
-            _ if scene.is_none() => psyfly::Guide::NoTable,
             Step::Over => match self.pos.points[ME as usize] {
                 p if p > 60 => psyfly::Guide::Won,
                 60 => psyfly::Guide::Tie,
                 _ => psyfly::Guide::Lost,
             },
+            _ if scene.is_none() => psyfly::Guide::NoTable,
             Step::MyMove => {
                 let best = self.analysis.as_ref().and_then(|a| a.evals.first()).map(|e| e.card);
                 // La carta consigliata fra quelle in mano sullo schermo.
                 let view = best.and_then(|c| crate::vision::locate(&scene?.hand, self.pos.hand, c));
-                match view.and_then(|v| reader.on_desktop(v.at)) {
-                    Some(card) => psyfly::Guide::Play { card, take: Vec::new() },
-                    None => psyfly::Guide::Thinking,
+                match view.and_then(|v| placement.on_desktop(v.at)) {
+                    Some(card) => psyfly::Guide::Play {
+                        id: psyfly::AdviceId { card: best.unwrap(), take: 0 },
+                        card,
+                        take: Vec::new(),
+                    },
+                    None if self.pending.is_some() => psyfly::Guide::Thinking,
+                    None => psyfly::Guide::Seeking,
                 }
             }
             _ => psyfly::Guide::Waiting,
         };
-        psyfly::Sight { monitor, hand, guide }
+        psyfly::Sight {
+            monitor,
+            hand,
+            guide,
+            context: (0, self.generation),
+            played_card: self.history.last().and_then(|(before, _, _, auto)| {
+                if !*auto {
+                    before.hand.minus(self.pos.hand).iter().next()
+                } else {
+                    None
+                }
+            }),
+        }
     }
 
     /// Recupera tutte le letture in ordine, senza occupare un intero fotogramma con la coda.
@@ -943,7 +1004,7 @@ impl Assistant {
     /// Una lettura dello schermo.
     fn take_reading(&mut self, latest: Reading<Scene>) {
         match Some(latest) {
-            Some(Reading::Scene(scene)) => {
+            Some(Reading::Scene(scene, frame_id)) => {
                 self.vision.status = format!(
                     "Vedo: briscola {} · {} carte in mano · {} in tavola",
                     if scene.trump.is_some() { "sì" } else { "no" },
@@ -952,6 +1013,7 @@ impl Assistant {
                 );
                 self.sync(&scene);
                 self.vision.scene = Some(scene);
+                self.vision.frame_id = frame_id;
                 self.vision.lost = false;
             }
             Some(Reading::NoTable) => {
@@ -1413,7 +1475,9 @@ impl Assistant {
         if self.vision.doubts.contains(&(step, card)) && !self.vision.sightings.clearly_seen(step, card) {
             self.vision.status = match step {
                 Step::Draw(_) => "Non riconosco la carta pescata: scrivila (per esempio 3c) e continuo da solo".into(),
-                Step::OppMove => "Non ho visto la carta giocata dall'avversario: scrivila (per esempio 3c) e continuo da solo".into(),
+                Step::OppMove => {
+                    "Non ho visto la carta giocata dall'avversario: scrivila (per esempio 3c) e continuo da solo".into()
+                }
                 _ => "Non riconosco la carta giocata: scrivila (per esempio 3c) e continuo da solo".into(),
             };
             return false;
@@ -1591,18 +1655,9 @@ impl Assistant {
         // partita in corso) e sullo schermo la briscola è stabilmente un'altra: era stata letta
         // male all'inizio. Si corregge e la partita si riscrive.
         if let (Some(c), Some(t)) = (trump, self.pos.trump_card) {
-            let free = !self.pos.played.contains(c)
-                && !self.pos.hand.contains(c)
-                && self.pos.table != Some(c);
-            if self.vision.mismatch >= 4
-                && self.pos.deck_len > 0
-                && free
-                && self.vision.sightings.in_hand(t)
-            {
-                if self.correct_event(
-                    |e| matches!(e, Event::Briscola { carta } if carta.id == t),
-                    c,
-                ) {
+            let free = !self.pos.played.contains(c) && !self.pos.hand.contains(c) && self.pos.table != Some(c);
+            if self.vision.mismatch >= 4 && self.pos.deck_len > 0 && free && self.vision.sightings.in_hand(t) {
+                if self.correct_event(|e| matches!(e, Event::Briscola { carta } if carta.id == t), c) {
                     if let Some(v) = &scene.trump {
                         self.vision
                             .memory
@@ -1691,6 +1746,10 @@ impl Assistant {
 
     /// Interruttore, stato e richiesta di conferma della lettura dello schermo.
     fn vision_ui(&mut self, ui: &mut egui::Ui) {
+        let save_error = self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).last_error().map(str::to_owned);
+        if let Some(error) = save_error {
+            ui.colored_label(Color32::LIGHT_RED, format!("Memoria carte non salvata: {error}"));
+        }
         let mut on = self.vision.reader.is_some();
         ui.horizontal(|ui| {
             if ui
@@ -2484,7 +2543,9 @@ impl Sightings {
     /// In mano c'è con sicurezza una carta che non ho ancora: ho già pescato dopo la presa in corso.
     fn drew_after(&self, pos: &Position) -> bool {
         let allowed = pos.allowed().union(CardSet::FULL.minus(pos.played).minus(pos.hand));
-        (0..40u8).any(|c| allowed.contains(c) && !pos.hand.contains(c) && Some(c) != pos.table && self.in_hand(c) && !self.on_table(c))
+        (0..40u8).any(|c| {
+            allowed.contains(c) && !pos.hand.contains(c) && Some(c) != pos.table && self.in_hand(c) && !self.on_table(c)
+        })
     }
 
     /// Una mia carta in mano è andata in tavola (senza tornare in mano) e la presa è già chiusa:
@@ -2619,9 +2680,9 @@ impl Sightings {
 
     /// La prima carta comparsa in tavola fra quelle non ancora giocate (anche letta male).
     fn first_table_card(&self, pos: &Position) -> Option<Card> {
-        (0..40u8)
-            .filter(|&c| Some(c) != pos.trump_card && self.glimpsed(c) && !pos.played.contains(c))
-            .min_by_key(|&c| (self.table[c as usize].first, std::cmp::Reverse((self.table[c as usize].margin * 10.0) as i32)))
+        (0..40u8).filter(|&c| Some(c) != pos.trump_card && self.glimpsed(c) && !pos.played.contains(c)).min_by_key(
+            |&c| (self.table[c as usize].first, std::cmp::Reverse((self.table[c as usize].margin * 10.0) as i32)),
+        )
     }
 
     /// La mia prossima giocata: una mia carta vista in tavola, o sparita dalla mano mentre al suo
@@ -2894,6 +2955,7 @@ mod tests {
             .map(|card| MoveEval { card, win_prob: 0.5, exp_points: 60.0 })
             .to_vec();
         tx.send(Analysis { evals, reasons: Vec::new(), samples: 7 }).unwrap();
+        a.pending_generation = a.generation;
         a.pending = Some(rx);
         a.poll(7, &egui::Context::default());
         assert_eq!(a.pos.table, Some(cards::make(2, 1)));
@@ -2905,6 +2967,39 @@ mod tests {
     }
 
     /// Una carta vista sullo schermo, riconosciuta come `c` con distacco `margin`.
+    #[test]
+    fn poll_vision_preserves_intermediate_sightings_and_errors() {
+        let c = cards::make(3, 2);
+        let transient = Scene { opp_slot: Some(seen(c, 4.0)), ..Default::default() };
+        let mut a = Assistant::default();
+        a.vision.seen = Some(vec![]);
+        a.vision.reader = Some(Reader::with_readings(
+            vec![
+                Reading::Scene(transient, 1),
+                Reading::Scene(Scene::default(), 2),
+                Reading::Error("lost capture".into()),
+            ],
+            2,
+        ));
+        a.poll_vision(&egui::Context::default());
+        assert_eq!(a.vision.sightings.frame, 2);
+        assert_eq!(a.vision.sightings.table[c as usize].count, 1);
+        assert!(a.vision.lost);
+        assert!(a.vision.status.contains("lost capture"));
+    }
+
+    #[test]
+    fn stale_analysis_is_discarded_without_starting_another_worker() {
+        let mut a = Assistant::default();
+        let (tx, rx) = channel();
+        a.pending = Some(rx);
+        a.changed();
+        assert!(a.pending.is_some());
+        tx.send(Analysis { evals: vec![], reasons: vec![], samples: 7 }).unwrap();
+        a.poll(7, &egui::Context::default());
+        assert!(a.pending.is_none() && a.analysis.is_none());
+    }
+
     fn seen(c: Card, margin: f32) -> CardView {
         let mut scores = [0.0; 40];
         scores[c as usize] = margin;
@@ -3182,7 +3277,7 @@ mod tests {
                     my_slot: slots[0].map(|c| seen(c, 4.0)),
                     opp_slot: slots[1].map(|c| seen(c, 4.0)),
                 };
-                for _ in 0..3 { readings.push(Reading::Scene(scene.clone())); }
+                for _ in 0..3 { readings.push(Reading::Scene(scene.clone(), 0)); }
             };
             frame(&hand, [None; 2], &g);
             while !g.is_over() {
@@ -3963,10 +4058,7 @@ mod tests {
                     .map(|idx| {
                         // Registrazioni a ogni cambiamento: se lo schermo resta fermo l'app lo
                         // rilegge ogni 600 ms (una lettura uguale in più ogni 600 ms, al più 3).
-                        let extra = match (
-                            log[idx]["t"].as_u64(),
-                            log.get(idx + 1).and_then(|n| n["t"].as_u64()),
-                        ) {
+                        let extra = match (log[idx]["t"].as_u64(), log.get(idx + 1).and_then(|n| n["t"].as_u64())) {
                             (Some(t), Some(next)) => (next.saturating_sub(t) / 600).min(3),
                             _ => 0,
                         };
@@ -3991,11 +4083,7 @@ mod tests {
                         if cur.0 != i {
                             cur = (i, Some(load(i)));
                         }
-                        q.offer_with(
-                            cur.1.clone().unwrap(),
-                            i,
-                            base + std::time::Duration::from_millis(tick),
-                        );
+                        q.offer_with(cur.1.clone().unwrap(), i, base + std::time::Duration::from_millis(tick));
                         if busy <= tick {
                             if let Some((_, i)) = q.next_with() {
                                 out.push((i, 0, tick + cost));
@@ -4145,8 +4233,23 @@ mod tests {
                 }
                 let truth_deck: u8 = e["deck"].as_str().unwrap_or("").trim_start_matches("Mazzo: ").parse().unwrap_or(0);
                 {
-                    let show = |v: &Option<CardView>| v.as_ref().and_then(|v| v.best(CardSet::FULL)).map(|(c, m)| format!("{}({m:.1})", cards::short(c))).unwrap_or("-".into());
-                    let line = scene.as_ref().map(|s| format!("A {} T {} M [{}]", show(&s.opp_slot), show(&s.my_slot), s.hand.iter().map(|v| show(&Some(v.clone()))).collect::<Vec<_>>().join(" "))).unwrap_or_default();
+                    let show = |v: &Option<CardView>| {
+                        v.as_ref()
+                            .and_then(|v| v.best(CardSet::FULL))
+                            .map(|(c, m)| format!("{}({m:.1})", cards::short(c)))
+                            .unwrap_or("-".into())
+                    };
+                    let line = scene
+                        .as_ref()
+                        .map(|s| {
+                            format!(
+                                "A {} T {} M [{}]",
+                                show(&s.opp_slot),
+                                show(&s.my_slot),
+                                s.hand.iter().map(|v| show(&Some(v.clone()))).collect::<Vec<_>>().join(" ")
+                            )
+                        })
+                        .unwrap_or_default();
                     recent.push(format!("{f} vero mazzo {truth_deck} M [{}] T [{}] | letto {line} | app {:?} mazzo {} mano [{}] tavolo {:?}",
                         truth_hand.iter().map(|&c| cards::short(c)).collect::<Vec<_>>().join(" "),
                         truth_trick.iter().map(|&(c, me)| format!("{}{}", cards::short(c), if me { "(tu)" } else { "" })).collect::<Vec<_>>().join(" "),
@@ -4158,7 +4261,12 @@ mod tests {
                     first_off = Some(recent.join("\n    "));
                 }
                 if verbose {
-                    let show = |v: &Option<CardView>| v.as_ref().and_then(|v| v.best(CardSet::FULL)).map(|(c, m)| format!("{}({m:.1})", cards::short(c))).unwrap_or("-".into());
+                    let show = |v: &Option<CardView>| {
+                        v.as_ref()
+                            .and_then(|v| v.best(CardSet::FULL))
+                            .map(|(c, m)| format!("{}({m:.1})", cards::short(c)))
+                            .unwrap_or("-".into())
+                    };
                     let line = scene.as_ref().map(|s| {
                         format!(
                             "B {} A {} T {} M [{}]",

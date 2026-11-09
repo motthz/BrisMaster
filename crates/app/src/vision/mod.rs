@@ -8,9 +8,9 @@ pub mod detect;
 pub mod memory;
 pub mod reference;
 pub mod screen;
-pub mod track;
 #[cfg(test)]
 pub(crate) mod synth;
+pub mod track;
 
 /// Immagine RGB.
 #[derive(Clone, Debug)]
@@ -131,7 +131,7 @@ use briscola_core::cards::{Card, CardSet};
 pub use detect::ScopaScene;
 use memory::Memory;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, sync_channel, Receiver, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 
 /// Punteggi della carta: somiglianza con le carte di riferimento, più quella con le immagini delle
@@ -182,7 +182,7 @@ const LOCATE_GAP: f32 = 1.5;
 
 /// Esito di una lettura dello schermo.
 pub enum Reading<S> {
-    Scene(S),
+    Scene(S, u64),
     /// Nessun tavolo con carte sullo schermo.
     NoTable,
     Error(String),
@@ -248,6 +248,10 @@ type Place = (capture::Geom, screen::Area);
 /// viste davvero, non quello che si sta provando) e di quanto si sono spostate da allora.
 #[derive(Default)]
 struct Spot {
+    capture_ok: bool,
+    frame_id: u64,
+    captured: Option<std::time::Instant>,
+    tracked: Option<std::time::Instant>,
     place: Option<Place>,
     template: Option<track::Template>,
     shift: [f32; 2],
@@ -258,6 +262,44 @@ struct Spot {
 
 /// Dopo quante catture senza ritrovare le carte (un decimo di secondo l'una) non si segnano più.
 const MISSES: u32 = 2;
+const SIGHT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// One immutable coordinate system for all cards in a displayed scene.
+#[derive(Clone, Copy)]
+pub struct Placement {
+    pub monitor: Option<capture::Geom>,
+    pub hidden: bool,
+    place: Option<Place>,
+    shift: [f32; 2],
+}
+
+impl Placement {
+    pub fn on_desktop(&self, at: [f32; 4]) -> Option<[f32; 4]> {
+        if self.hidden {
+            return None;
+        }
+        let (g, area) = self.place?;
+        let [dx, dy] = self.shift;
+        Some(place_on_desktop([at[0] + dx, at[1] + dy, at[2] + dx, at[3] + dy], g, area))
+    }
+}
+
+impl Spot {
+    fn placement(&self, frame_id: u64, now: std::time::Instant) -> Placement {
+        let fresh =
+            |at: Option<std::time::Instant>| at.is_some_and(|t| now.saturating_duration_since(t) < SIGHT_MAX_AGE);
+        Placement {
+            monitor: self.place.map(|p| p.0),
+            hidden: !self.capture_ok
+                || self.frame_id != frame_id
+                || self.misses >= MISSES
+                || !fresh(self.captured)
+                || !fresh(self.tracked),
+            place: self.place,
+            shift: self.shift,
+        }
+    }
+}
 
 /// Legge lo schermo in un thread a parte, qualche volta al secondo, finché non viene fermato.
 pub struct Reader<S> {
@@ -284,39 +326,40 @@ impl<S: Located + Send + 'static> Reader<S> {
         every: std::time::Duration,
         read: fn(&Img, &Mutex<Memory>) -> Option<S>,
     ) -> Reader<S> {
-        // Se la finestra è minimizzata, l'interfaccia può non raccogliere subito:
-        // la memoria resta limitata e l'analisi aspetta senza bloccare la UI.
-        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        Self::start_with_capture(mem, ctx, every, read, capture::grab_geom)
+    }
+
+    fn start_with_capture(
+        mem: Arc<Mutex<Memory>>,
+        ctx: eframe::egui::Context,
+        every: std::time::Duration,
+        read: fn(&Img, &Mutex<Memory>) -> Option<S>,
+        capture: fn(usize) -> Result<(Img, usize, capture::Geom), String>,
+    ) -> Reader<S> {
+        let (tx, rx) = sync_channel(16);
         let stop = Arc::new(AtomicBool::new(false));
         let lag_ms = Arc::new(AtomicU64::new(0));
         let last_result = Arc::new(Mutex::new(std::time::Instant::now()));
         let last = Arc::new(Mutex::new(None));
-        let queue: Arc<(Mutex<Frames<(usize, Option<Place>)>>, Condvar)> = Arc::new((
-            Mutex::new(Frames::new(
-                every.max(std::time::Duration::from_millis(600)),
-            )),
-            Condvar::new(),
-        ));
+        let queue: Arc<(Mutex<Frames<(usize, Option<Place>, u64, std::time::Instant)>>, Condvar)> =
+            Arc::new((Mutex::new(Frames::new(every)), Condvar::new()));
         // Quanto sono lunghe le carte sullo schermo, in pixel veri (0 se non si sa ancora).
         let card_px = Arc::new(std::sync::atomic::AtomicU32::new(0));
         // Monitor da catturare (l'analisi passa al successivo se non trova il tavolo) e errori.
         let monitor = Arc::new(AtomicUsize::new(screen::area().lock().unwrap().monitor));
         let monitors = Arc::new(AtomicUsize::new(1));
-        let (err_tx, err_rx) = channel::<String>();
+        let (err_tx, err_rx) = sync_channel::<String>(1);
         let spot: Arc<Mutex<Spot>> = Arc::new(Mutex::new(Spot::default()));
 
         // Cattura: ogni CAPTURE_EVERY, e tiene le schermate in cui qualcosa è cambiato.
         {
-            let (flag, queue, monitor, monitors, card_px) = (
-                stop.clone(),
-                queue.clone(),
-                monitor.clone(),
-                monitors.clone(),
-                card_px.clone(),
-            );
+            let (flag, queue, monitor, monitors, card_px) =
+                (stop.clone(), queue.clone(), monitor.clone(), monitors.clone(), card_px.clone());
             let spot = spot.clone();
+            let ctx = ctx.clone();
             std::thread::spawn(move || {
                 let mut chosen = None;
+                let mut frame_id = 0u64;
                 while !flag.load(Ordering::Relaxed) {
                     let t0 = std::time::Instant::now();
                     let area = *screen::area().lock().unwrap_or_else(|e| e.into_inner());
@@ -325,8 +368,10 @@ impl<S: Located + Send + 'static> Reader<S> {
                         monitor.store(area.monitor, Ordering::Relaxed);
                         chosen = Some(area);
                     }
-                    match capture::grab_geom(monitor.load(Ordering::Relaxed)) {
+                    match capture(monitor.load(Ordering::Relaxed)) {
                         Ok((img, count, geom)) => {
+                            let captured = std::time::Instant::now();
+                            spot.lock().unwrap_or_else(|e| e.into_inner()).capture_ok = true;
                             monitors.store(count.max(1), Ordering::Relaxed);
                             let table = screen::table(&img, &area);
                             let k = shrink_factor(table.w, card_px.load(Ordering::Relaxed));
@@ -334,12 +379,20 @@ impl<S: Located + Send + 'static> Reader<S> {
                             follow(&spot, &table, (geom, area));
                             let (lock, cv) = &*queue;
                             let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
-                            if q.offer_with(table, (k, Some((geom, area))), std::time::Instant::now()) {
+                            frame_id += 1;
+                            if q.offer_with(table, (k, Some((geom, area)), frame_id, captured), captured) {
                                 cv.notify_one();
                             }
                         }
                         Err(e) => {
-                            let _ = err_tx.send(e);
+                            {
+                                let mut sp = spot.lock().unwrap_or_else(|e| e.into_inner());
+                                sp.capture_ok = false;
+                                sp.misses = MISSES;
+                            }
+                            let _ = err_tx.try_send(e);
+                            queue.1.notify_one();
+                            ctx.request_repaint();
                             std::thread::sleep(std::time::Duration::from_millis(500));
                         }
                     }
@@ -360,7 +413,7 @@ impl<S: Located + Send + 'static> Reader<S> {
                 let reading = match wait_frame(&queue, &flag, &err_rx) {
                     Err(error) => Reading::Error(error),
                     Ok(None) => { flag.store(true, Ordering::Relaxed); break; }
-                    Ok(Some((table, (k, at), captured))) => {
+                    Ok(Some((table, (k, at, frame_id, _), captured))) => {
                         // Un errore nella lettura di una schermata non deve fermare le letture
                         // dopo: si mostra e si continua.
                         let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&table, &mem)));
@@ -370,6 +423,7 @@ impl<S: Located + Send + 'static> Reader<S> {
                         age.store(captured.elapsed().as_millis().min(u64::MAX as u128) as u64, Ordering::Relaxed);
                         match scene {
                             Err(e) => {
+                                found.lock().unwrap_or_else(|e| e.into_inner()).misses = MISSES;
                                 let why = e
                                     .downcast_ref::<&str>()
                                     .map(|s| s.to_string())
@@ -384,12 +438,17 @@ impl<S: Located + Send + 'static> Reader<S> {
                                 if at.is_some() {
                                     sp.place = at;
                                 }
+                                sp.frame_id = frame_id;
+                                sp.captured = Some(captured);
+                                // Analysis may lag capture; never revive an old frame as fresh.
+                                sp.tracked = Some(captured);
                                 sp.template = track::union(&s.spots()).and_then(|u| track::Template::new(&table, u));
                                 sp.shift = [0.0, 0.0];
                                 sp.misses = 0;
-                                Reading::Scene(s)
+                                Reading::Scene(s, frame_id)
                             }
                             Ok(None) => {
+                                found.lock().unwrap_or_else(|e| e.into_inner()).misses = MISSES;
                                 // Senza un'area scelta, prova il monitor successivo.
                                 if screen::area().lock().unwrap_or_else(|e| e.into_inner()).rect.is_none() {
                                     let n = monitors.load(Ordering::Relaxed).max(1);
@@ -400,10 +459,21 @@ impl<S: Located + Send + 'static> Reader<S> {
                         }
                     }
                 };
-                *completed.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
-                if tx.send(reading).is_err() {
-                    flag.store(true, Ordering::Relaxed);
-                    break;
+*completed.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+                // Bounded backpressure preserves event order without unbounded memory.
+                let mut message = reading;
+                loop {
+                    match tx.try_send(message) {
+                        Ok(()) => break,
+                        Err(TrySendError::Full(m)) if !flag.load(Ordering::Relaxed) => {
+                            message = m;
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(_) => {
+                            flag.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
                 }
                 ctx.request_repaint();
             }
@@ -419,24 +489,8 @@ impl<S> Reader<S> {
             + self.last_result.lock().unwrap_or_else(|e| e.into_inner()).elapsed()
     }
 
-    /// Il monitor dove sono state viste le carte (None finché non se ne vede nessuna).
-    pub fn monitor(&self) -> Option<capture::Geom> {
-        self.spot.lock().unwrap_or_else(|e| e.into_inner()).place.map(|p| p.0)
-    }
-
-    /// Vero se le carte dell'ultima scena non si vedono più sullo schermo (sparite, coperte, o lo
-    /// schermo è cambiato del tutto): finché un'analisi non le ritrova non vanno segnate.
-    pub fn lost(&self) -> bool {
-        self.spot.lock().unwrap_or_else(|e| e.into_inner()).misses >= MISSES
-    }
-
-    /// Dove sta adesso sul desktop, in pixel veri (sinistra, alto, destra, basso), una carta
-    /// dell'ultima scena letta (`CardView::at`), contando di quanto si è spostato lo schermo.
-    pub fn on_desktop(&self, at: [f32; 4]) -> Option<[f32; 4]> {
-        let sp = self.spot.lock().unwrap_or_else(|e| e.into_inner());
-        let (g, area) = sp.place?;
-        let [dx, dy] = sp.shift;
-        Some(place_on_desktop([at[0] + dx, at[1] + dy, at[2] + dx, at[3] + dy], g, area))
+    pub fn placement(&self, frame_id: u64) -> Placement {
+        self.spot.lock().unwrap_or_else(|e| e.into_inner()).placement(frame_id, std::time::Instant::now())
     }
 
     /// L'ultima schermata letta (già ritagliata sul tavolo), per la diagnosi.
@@ -451,6 +505,8 @@ fn follow(spot: &Mutex<Spot>, table: &Img, at: Place) {
     let (template, hint) = {
         let sp = spot.lock().unwrap_or_else(|e| e.into_inner());
         if sp.place != Some(at) {
+            drop(sp);
+            spot.lock().unwrap_or_else(|e| e.into_inner()).misses = MISSES;
             return;
         }
         match &sp.template {
@@ -466,6 +522,7 @@ fn follow(spot: &Mutex<Spot>, table: &Img, at: Place) {
             Some(shift) => {
                 sp.shift = shift;
                 sp.misses = 0;
+                sp.tracked = Some(std::time::Instant::now());
             }
             None => sp.misses += 1,
         }
@@ -511,12 +568,7 @@ impl Frames {
 
 impl<T> Frames<T> {
     pub fn new(every: std::time::Duration) -> Frames<T> {
-        Frames {
-            frames: Default::default(),
-            last: None,
-            pushed: None,
-            every,
-        }
+        Frames { frames: Default::default(), last: None, pushed: None, every }
     }
 
     /// Come `offer`, con un dato attaccato alla schermata.
@@ -667,6 +719,36 @@ impl<S> Reader<S> {
     }
 }
 
+#[cfg(test)]
+impl<S> Reader<S> {
+    pub fn with_readings(readings: Vec<Reading<S>>, frame_id: u64) -> Self {
+        let (tx, rx) = sync_channel(readings.len().max(1));
+        for r in readings {
+            tx.try_send(r).ok().unwrap();
+        }
+        let now = std::time::Instant::now();
+        let spot = Spot {
+            capture_ok: true,
+            frame_id,
+            captured: Some(now),
+            tracked: Some(now),
+            place: Some((
+                capture::Geom { x: -1600.0, y: 0.0, w: 1600.0, h: 900.0, scale: 1.25 },
+                screen::Area::default(),
+            )),
+            ..Default::default()
+        };
+        Self {
+            rx,
+            stop: Arc::new(AtomicBool::new(false)),
+            lag_ms: Arc::new(AtomicU64::new(0)),
+            last_result: Arc::new(Mutex::new(std::time::Instant::now())),
+            last: Arc::new(Mutex::new(None)),
+            spot: Arc::new(Mutex::new(spot)),
+        }
+    }
+}
+
 impl<S> Drop for Reader<S> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -677,6 +759,42 @@ impl<S> Drop for Reader<S> {
 mod tests {
     use super::*;
     use briscola_core::cards;
+
+    #[test]
+    fn placement_requires_matching_fresh_frame_and_healthy_capture() {
+        let now = std::time::Instant::now();
+        let reader = Reader::<Scene>::with_readings(vec![], 7);
+        let mut spot = reader.spot.lock().unwrap();
+        assert!(!spot.placement(7, now).hidden);
+        assert!(spot.placement(6, now).hidden);
+        let placement = spot.placement(7, now);
+        let card = placement.on_desktop([0.25, 0.25, 0.5, 0.5]).unwrap();
+        assert_eq!(card, [-1200.0, 225.0, -800.0, 450.0]);
+        spot.shift = [0.1, 0.0];
+        // Previously acquired placement stays immutable even while the worker advances.
+        assert_eq!(placement.on_desktop([0.25, 0.25, 0.5, 0.5]), Some(card));
+        assert!(spot.placement(7, now + SIGHT_MAX_AGE + std::time::Duration::from_millis(1)).hidden);
+        spot.capture_ok = false;
+        assert!(spot.placement(7, now).on_desktop([0.0; 4]).is_none());
+    }
+
+    #[test]
+    fn capture_errors_wake_the_reader_without_a_frame() {
+        fn failed(_: usize) -> Result<(Img, usize, capture::Geom), String> {
+            Err("capture disconnected".into())
+        }
+        let reader = Reader::start_with_capture(
+            Arc::new(Mutex::new(Memory::in_memory())),
+            eframe::egui::Context::default(),
+            std::time::Duration::from_millis(100),
+            read_briscola,
+            failed,
+        );
+        assert!(
+            matches!(reader.rx.recv_timeout(std::time::Duration::from_secs(3)), Ok(Reading::Error(e)) if e == "capture disconnected")
+        );
+        assert!(reader.placement(0).hidden);
+    }
 
     fn site() -> Img {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/sito_briscola.png");
@@ -1274,8 +1392,13 @@ mod other_sites {
             let look = &Look { writing, logo, ..*look };
             let pick = |i: usize| &deck[(k * 6 + i) % deck.len()];
             let (h0, h1, h2, o, m, t) = (pick(0), pick(1), pick(2), pick(3), pick(4), pick(5));
-            let deal =
-                Deal { hand: vec![&h0.1, &h1.1, &h2.1], opp: Some(&o.1), mine: Some(&m.1), trump: Some(&t.1), deck: true };
+            let deal = Deal {
+                hand: vec![&h0.1, &h1.1, &h2.1],
+                opp: Some(&o.1),
+                mine: Some(&m.1),
+                trump: Some(&t.1),
+                deck: true,
+            };
             let img = table(&deal, look);
             if verbose {
                 let dir = std::env::var("SALVA").ok();
@@ -1308,7 +1431,7 @@ mod other_sites {
 
     fn known_deck(style: usize) -> Vec<(Card, Img)> {
         // Un ordine che mescola semi e valori.
-        (0..40u8).map(|i| (i * 7) % 40).map(|c| (c, reference::card_image(style, c))).collect()
+        (0..40u8).map(|i| i.wrapping_mul(7) % 40).map(|c| (c, reference::card_image(style, c))).collect()
     }
 
     /// Stampa i tavoli uno per uno (con SALVA=cartella salva anche le immagini e la diagnosi).
@@ -1424,7 +1547,15 @@ mod other_sites {
                 // La seconda carta più probabile.
                 let mut sc: Vec<(Card, f32)> = (0..40u8).map(|c| (c, v.scores[c as usize])).collect();
                 sc.sort_by(|a, b| b.1.total_cmp(&a.1));
-                rows.push((m, format!("{:<20} -> {:<20} distacco {m:5.2}  seconda {}", cards::name(want), cards::name(got), cards::name(sc[1].0))));
+                rows.push((
+                    m,
+                    format!(
+                        "{:<20} -> {:<20} distacco {m:5.2}  seconda {}",
+                        cards::name(want),
+                        cards::name(got),
+                        cards::name(sc[1].0)
+                    ),
+                ));
             }
         }
         rows.sort_by(|a, b| a.0.total_cmp(&b.0));

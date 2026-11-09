@@ -1043,7 +1043,9 @@ impl Assistant {
                     self.vision.inconsistent = false;
                 } else {
                     self.vision.inconsistent = true;
-                    self.vision.status = "La lettura non coincide con la partita: controllo lo storico. Puoi correggere le carte o annullare l'ultima lettura.".into();
+                    if self.vision.mismatch < 8 {
+                        self.vision.status = "La lettura dello schermo non corrisponde alla partita: controllo lo storico. Puoi correggere le carte o annullare l'ultima lettura.".into();
+                    }
                 }
             }
         }

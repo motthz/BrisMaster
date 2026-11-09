@@ -381,6 +381,7 @@ struct Vision {
     gaps: Vec<usize>,
     /// La coda è elaborata a piccoli lotti per lasciare sempre rispondere l'interfaccia.
     catching_up: bool,
+    inconsistent: bool,
     restart_after: Option<std::time::Instant>,
 }
 
@@ -671,7 +672,7 @@ impl Assistant {
 
     fn screen_is_behind(&self) -> bool {
         self.vision.catching_up || self.vision.restart_after.is_some()
-            || self.vision.reader.as_ref().is_some_and(|r| (self.vision.lost && self.vision.gap) || r.lag() > std::time::Duration::from_millis(1500))
+            || self.vision.reader.as_ref().is_some_and(|r| self.vision.inconsistent || (self.vision.lost && self.vision.gap) || r.lag() > std::time::Duration::from_millis(1500))
     }
 
     /// Un canale chiuso o un calcolo troppo lungo non lasciano il consiglio in attesa per sempre.
@@ -841,6 +842,7 @@ impl Assistant {
             self.vision.reader = None;
             self.vision.restart_after = None;
             self.vision.catching_up = false;
+            self.vision.inconsistent = false;
             self.vision.confirm = None;
             self.vision.status.clear();
         }
@@ -1030,14 +1032,18 @@ impl Assistant {
             || seen_hand.iter().any(|&c| !self.pos.hand.contains(c))
             || self.pos.table.is_some_and(|t| !seen_table.contains(&t))
             || (self.pos.table.is_none() && !seen_table.is_empty());
+        if !differs { self.vision.inconsistent = false; }
         if self.history.len() != before || !differs {
             self.vision.stall = 0;
         } else if !matches!(self.pos.step(), Step::Trump | Step::Over) {
             self.vision.stall += 1;
             if self.vision.stall >= STALL {
                 self.vision.stall = 0;
-                if !self.rebuild(scene) {
-                    self.resync(scene);
+                if self.rebuild(scene) || self.resync(scene) {
+                    self.vision.inconsistent = false;
+                } else {
+                    self.vision.inconsistent = true;
+                    self.vision.status = "La lettura non coincide con la partita: controllo lo storico. Puoi correggere le carte o annullare l'ultima lettura.".into();
                 }
             }
         }
@@ -1596,6 +1602,7 @@ impl Assistant {
         }
         // Circa tre secondi di letture stabili.
         if self.vision.mismatch >= 8 {
+            self.vision.inconsistent = true;
             let why = match (trump, replayed) {
                 (Some(c), _) => format!("sullo schermo la briscola è {}", cards::name(c)),
                 (_, Some(c)) => format!("in mano vedo {}, già giocato", cards::name(c)),
@@ -1684,7 +1691,14 @@ impl Assistant {
         }
         if !on { return; }
         if self.screen_is_behind() {
-            ui.colored_label(GOLD, "Sto recuperando le letture precedenti. Il consiglio riprende appena il tavolo è aggiornato.");
+            let message = if self.vision.inconsistent {
+                "La lettura non coincide con la partita. Il consiglio è sospeso mentre controllo lo storico; puoi correggere le carte o annullare una lettura."
+            } else if self.vision.catching_up {
+                "Sto recuperando le letture precedenti. Il consiglio riprende appena il tavolo è aggiornato."
+            } else {
+                "Non ho una lettura aggiornata del tavolo. Il consiglio è sospeso."
+            };
+            ui.colored_label(GOLD, message);
             if self.vision.reader.as_ref().is_some_and(|r| r.lag() >= std::time::Duration::from_secs(5))
                 && ui.button("Riavvia lettura mantenendo la partita").clicked()
             {
@@ -1964,10 +1978,14 @@ impl Assistant {
                 }
                 Step::Over => {
                     let mine = self.pos.points[ME as usize];
-                    let (t, col) = match mine {
-                        p if p > 60 => (format!("Hai vinto {mine} a {}!", 120 - mine), BEST),
-                        60 => ("Pareggio 60 a 60".to_string(), Color32::YELLOW),
-                        _ => (format!("Hai perso {mine} a {}", 120 - mine), Color32::LIGHT_RED),
+                    let (t, col) = if self.vision.inconsistent || !self.vision.gaps.is_empty() {
+                        ("Partita terminata: punti da verificare".to_string(), GOLD)
+                    } else {
+                        match mine {
+                            p if p > 60 => (format!("Hai vinto {mine} a {}!", 120 - mine), BEST),
+                            60 => ("Pareggio 60 a 60".to_string(), Color32::YELLOW),
+                            _ => (format!("Hai perso {mine} a {}", 120 - mine), Color32::LIGHT_RED),
+                        }
                     };
                     ui.add_space(10.0);
                     ui.label(RichText::new(t).size(28.0).strong().color(col));
@@ -3313,6 +3331,21 @@ mod tests {
         assert!(a.analysis_error.as_ref().unwrap().contains("in tempo"));
         assert!(a.enter(10), "l'inserimento delle carte resta utilizzabile");
         assert_eq!(a.analysis_failures, 0);
+    }
+
+    #[test]
+    fn inconsistent_screen_suspends_advice_and_recovers_when_it_matches() {
+        let mut a = manual_turn();
+        a.vision.reader = Some(Reader::from_readings(Vec::<Reading<Scene>>::new()));
+        let wrong = Scene { trump: Some(seen(0, 4.0)), ..Default::default() };
+        for _ in 0..12 { a.sync(&wrong); }
+        assert!(a.vision.inconsistent);
+        a.poll(7, &egui::Context::default());
+        assert!(a.pending.is_none() && a.analysis.is_none());
+        let right = Scene { trump: Some(seen(0, 4.0)), hand: [10, 20, 30].map(|c| seen(c, 4.0)).to_vec(), ..Default::default() };
+        show(&mut a, &right);
+        assert!(!a.vision.inconsistent);
+        assert_eq!(a.pos.hand.len(), 3);
     }
 
     #[test]

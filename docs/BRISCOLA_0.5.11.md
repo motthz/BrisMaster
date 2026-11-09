@@ -126,6 +126,10 @@ riportati separatamente sotto.
 - Lo storico conserva anche le posizioni delle carte in mano: una carta salita
   verso il tavolo, mentre le altre restano ferme, viene trattata come giocata
   anche se lo zoom l'ha fatta sembrare una seconda riga della mano.
+- Se lo schermo continua a contraddire la partita e la ricostruzione non basta,
+  il consiglio resta sospeso; torna disponibile quando le letture sono coerenti.
+  A fine partita, un esito con dati non verificati non viene presentato come una
+  vittoria o una sconfitta certa.
 - Il salto di riallineamento non viene interpretato come una giocata avversaria:
   l'inferenza riparte dagli eventi osservati successivi al salto.
 - Le correzioni che richiedono di rigiocare carte mai viste vengono rifiutate;

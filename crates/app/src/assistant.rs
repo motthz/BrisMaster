@@ -3519,8 +3519,18 @@ mod tests {
                         true_plays.borrow()[who as usize].get(n).copied()
                     }
                     Step::Draw(_) => {
-                        let n = a.rec.events.iter().filter(|e| matches!(e, Event::Pescata { .. })).count();
-                        true_draws.borrow().get(n).copied()
+                        let draws = true_draws.borrow();
+                        if a.pos.tricks == 0 {
+                            // Le tre carte iniziali possono essere inserite in qualunque ordine.
+                            if draws[..3].contains(&c.card) && !a.pos.hand.contains(c.card) {
+                                Some(c.card)
+                            } else {
+                                draws[..3].iter().copied().find(|&card| !a.pos.hand.contains(card))
+                            }
+                        } else {
+                            let n = a.rec.events.iter().filter(|e| matches!(e, Event::Pescata { .. })).count();
+                            draws.get(n).copied()
+                        }
                     }
                     _ => None,
                 };
@@ -3548,8 +3558,13 @@ mod tests {
                 let step = a.pos.step();
                 let requested = match step {
                     Step::Draw(_) => {
-                        let n = a.rec.events.iter().filter(|e| matches!(e, Event::Pescata { .. })).count();
-                        true_draws.borrow().get(n).copied()
+                        let draws = true_draws.borrow();
+                        if a.pos.tricks == 0 {
+                            draws[..3].iter().copied().find(|&card| !a.pos.hand.contains(card))
+                        } else {
+                            let n = a.rec.events.iter().filter(|e| matches!(e, Event::Pescata { .. })).count();
+                            draws.get(n).copied()
+                        }
                     }
                     Step::MyMove | Step::OppMove => {
                         let who = if step == Step::MyMove { ME } else { OPP };

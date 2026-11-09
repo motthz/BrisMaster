@@ -113,6 +113,9 @@ riportati separatamente sotto.
 - La coda delle letture si svuota in lotti di massimo otto elementi e con un
   budget di circa 8 ms per aggiornamento. Nessuna lettura già analizzata viene
   scartata per fare spazio alla successiva; il recupero lascia rispondere la UI.
+- Il confronto delle immagini lavora su una copia della memoria, liberando
+  subito il mutex condiviso con l'interfaccia: il confronto non può tenerla
+  in attesa mentre riconosce tutte le carte.
 - Il ritardo delle schermate include cattura, attesa in coda e riconoscimento.
   Include anche il tempo trascorso senza nuovi risultati: un lettore silenzioso
   non lascia apparire attuale un consiglio vecchio. Durante il recupero, il

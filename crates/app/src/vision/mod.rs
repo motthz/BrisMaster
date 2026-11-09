@@ -196,7 +196,9 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
     if !found {
         return None;
     }
-    let mem = mem.lock().unwrap_or_else(|e| e.into_inner());
+    // Il confronto è costoso: lavora su una fotografia della memoria, senza
+    // trattenere il mutex usato anche dall'interfaccia per apprendere le carte.
+    let mem = mem.lock().unwrap_or_else(|e| e.into_inner()).isolated();
     for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
         recognize(v, &mem);
     }
@@ -206,7 +208,7 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
 /// Lettura per la scopa: mano e carte in tavola, riconosciute (None se il tavolo non si vede).
 pub fn read_scopa(img: &Img, mem: &Mutex<Memory>) -> Option<ScopaScene> {
     let mut scene = detect::scopa(img)?;
-    let mem = mem.lock().unwrap_or_else(|e| e.into_inner());
+    let mem = mem.lock().unwrap_or_else(|e| e.into_inner()).isolated();
     for v in scene.hand.iter_mut().chain(&mut scene.table) {
         recognize(v, &mem);
     }

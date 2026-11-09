@@ -312,6 +312,10 @@ pub struct Assistant {
     generation: u64,
     analysis: Option<Analysis>,
     pending: Option<Receiver<Analysis>>,
+    analysis_started: Option<std::time::Instant>,
+    analysis_retry_at: Option<std::time::Instant>,
+    analysis_failures: u8,
+    analysis_error: Option<String>,
     /// Tasti digitati finora per la carta in corso (es. "3" in attesa del seme).
     keys: String,
     entry_error: Option<String>,
@@ -375,6 +379,9 @@ struct Vision {
     gap: bool,
     /// Indici dei riallineamenti senza eventi completi: non sono giocate osservate.
     gaps: Vec<usize>,
+    /// La coda è elaborata a piccoli lotti per lasciare sempre rispondere l'interfaccia.
+    catching_up: bool,
+    restart_after: Option<std::time::Instant>,
 }
 
 struct Confirm {
@@ -396,6 +403,10 @@ impl Default for Assistant {
             generation: 0,
             analysis: None,
             pending: None,
+            analysis_started: None,
+            analysis_retry_at: None,
+            analysis_failures: 0,
+            analysis_error: None,
             keys: String::new(),
             entry_error: None,
             play_best_queued: false,
@@ -409,6 +420,10 @@ impl Assistant {
         self.generation += 1;
         self.analysis = None;
         self.pending = None;
+        self.analysis_started = None;
+        self.analysis_retry_at = None;
+        self.analysis_failures = 0;
+        self.analysis_error = None;
         self.keys.clear();
         self.entry_error = None;
         self.play_best_queued = false;
@@ -622,11 +637,11 @@ impl Assistant {
             let step = before.step();
             if step == Step::OppMove {
                 let card = match before.table {
-                    None => after.table.expect("carta aperta dall'avversario"),
+                    None => match after.table { Some(card) => card, None => return Vec::new() },
                     Some(lead) => {
                         let mut gone = after.played.minus(before.played);
                         gone.remove(lead);
-                        gone.iter().next().expect("carta giocata dall'avversario")
+                        match gone.iter().next() { Some(card) => card, None => return Vec::new() }
                     }
                 };
                 log.push(infer::Event::OppMove { seen: before.observation(), card });
@@ -640,28 +655,69 @@ impl Assistant {
         log
     }
 
-    /// Avvia o raccoglie l'analisi della posizione corrente.
+    fn analysis_failed(&mut self, why: &str, ctx: &egui::Context) {
+        self.pending = None;
+        self.analysis_started = None;
+        self.play_best_queued = false;
+        self.analysis_failures = (self.analysis_failures + 1).min(2);
+        self.analysis_retry_at = (self.analysis_failures < 2).then(|| std::time::Instant::now() + std::time::Duration::from_millis(750));
+        self.analysis_error = Some(format!("{why} {}", if self.analysis_failures < 2 {
+            "Riprovo il consiglio automaticamente. Puoi continuare a inserire le carte."
+        } else {
+            "Puoi continuare a inserire le carte o riprovare il consiglio."
+        }));
+        ctx.request_repaint_after(std::time::Duration::from_millis(750));
+    }
+
+    fn screen_is_behind(&self) -> bool {
+        self.vision.catching_up || self.vision.restart_after.is_some()
+            || self.vision.reader.as_ref().is_some_and(|r| (self.vision.lost && self.vision.gap) || r.lag() > std::time::Duration::from_millis(1500))
+    }
+
+    /// Un canale chiuso o un calcolo troppo lungo non lasciano il consiglio in attesa per sempre.
     fn poll(&mut self, samples: u32, ctx: &egui::Context) {
+        if self.screen_is_behind() {
+            self.analysis = None;
+            self.pending = None;
+            self.analysis_started = None;
+            self.play_best_queued = false;
+            return;
+        }
         if let Some(rx) = &self.pending {
-            if let Ok(a) = rx.try_recv() {
-                let best = a.evals.first().map(|e| e.card);
-                self.analysis = Some(a);
-                self.pending = None;
-                if std::mem::take(&mut self.play_best_queued) {
-                    if let Some(c) = best {
-                        self.enter(c);
-                        return;
+            match rx.try_recv() {
+                Ok(a) if !a.evals.is_empty() => {
+                    let best = a.evals.first().map(|e| e.card);
+                    self.analysis = Some(a);
+                    self.pending = None;
+                    self.analysis_started = None;
+                    self.analysis_retry_at = None;
+                    self.analysis_error = (self.analysis_failures > 0).then(|| "Consiglio recuperato dopo un errore di calcolo.".into());
+                    self.analysis_failures = 0;
+                    if std::mem::take(&mut self.play_best_queued) {
+                        if let Some(c) = best { self.enter(c); return; }
                     }
                 }
-            } else {
-                ctx.request_repaint_after(std::time::Duration::from_millis(60));
+                Ok(_) => self.analysis_failed("Il calcolo non ha restituito un consiglio.", ctx),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.analysis_failed("Il calcolo del consiglio si è interrotto.", ctx),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if self.analysis_started.is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(15)) {
+                        self.analysis_failed("Il consiglio non è arrivato in tempo.", ctx);
+                    } else {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(60));
+                    }
+                }
             }
         }
         let wants = self.pos.step() == Step::MyMove && self.pos.hand.len() > 1;
         let stale = self.analysis.as_ref().is_some_and(|a| a.samples != samples);
-        if wants && self.pending.is_none() && (self.analysis.is_none() || stale) {
+        if wants && self.pending.is_none() && self.analysis_failures < 2 && (self.analysis.is_none() || stale) {
+            if let Some(wait) = self.analysis_retry_at.and_then(|t| t.checked_duration_since(std::time::Instant::now())) {
+                ctx.request_repaint_after(wait);
+                return;
+            }
             let obs = self.pos.observation();
-            let log = self.opp_log();
+            // Un secondo tentativo non dipende dalla deduzione che potrebbe aver fatto fallire il primo.
+            let log = if self.analysis_failures > 0 { Vec::new() } else { self.opp_log() };
             let (tx, rx) = channel();
             std::thread::spawn(move || {
                 let mut rng = SmallRng::from_entropy();
@@ -670,6 +726,7 @@ impl Assistant {
                 let _ = tx.send(Analysis { evals, reasons, samples });
             });
             self.pending = Some(rx);
+            self.analysis_started = Some(std::time::Instant::now());
             ctx.request_repaint_after(std::time::Duration::from_millis(60));
         }
     }
@@ -782,9 +839,20 @@ impl Assistant {
             self.vision.status = "Cerco il tavolo sullo schermo...".into();
         } else if !on {
             self.vision.reader = None;
+            self.vision.restart_after = None;
+            self.vision.catching_up = false;
             self.vision.confirm = None;
             self.vision.status.clear();
         }
+    }
+
+    fn restart_vision(&mut self, ctx: &egui::Context) {
+        self.vision.reader = None;
+        self.vision.catching_up = false;
+        self.vision.restart_after = None;
+        self.vision.gap = true;
+        self.vision.lost = true;
+        self.set_vision(true, ctx);
     }
 
     /// Accende la lettura dello schermo (la Psy Fly ne ha bisogno per vedere le carte).
@@ -798,6 +866,9 @@ impl Assistant {
             return psyfly::Sight::off();
         };
         let monitor = reader.monitor();
+        if self.screen_is_behind() {
+            return psyfly::Sight { monitor, hand: Vec::new(), guide: psyfly::Guide::Hidden };
+        }
         // Le carte lette ma non più sullo schermo (sparite, coperte, schermo cambiato) non si
         // segnano: la mosca aspetta la prossima lettura invece di indicare un posto vuoto.
         let scene = self.vision.scene.as_ref().filter(|_| !self.vision.lost);
@@ -827,18 +898,38 @@ impl Assistant {
         psyfly::Sight { monitor, hand, guide }
     }
 
-    /// Raccoglie l'ultima lettura dello schermo e la confronta con la partita.
-    fn poll_vision(&mut self) {
-        // Tutte le letture arrivate, in ordine: quando l'app non è in primo piano (si guarda il
-        // gioco) l'interfaccia si aggiorna di rado, e tenere solo l'ultima lettura perdeva le
-        // giocate di mezzo.
-        let readings: Vec<Reading<Scene>> = match &self.vision.reader {
-            Some(reader) => std::iter::from_fn(|| reader.rx.try_recv().ok()).collect(),
-            None => return,
-        };
-        for r in readings {
-            self.take_reading(r);
+    /// Recupera tutte le letture in ordine, senza occupare un intero fotogramma con la coda.
+    fn poll_vision(&mut self, ctx: &egui::Context) -> usize {
+        let started = std::time::Instant::now();
+        let mut processed = 0;
+        self.vision.catching_up = false;
+        while processed < 8 {
+            let next = match &self.vision.reader {
+                Some(reader) => reader.rx.try_recv(),
+                None => break,
+            };
+            match next {
+                Ok(reading) => {
+                    self.take_reading(reading);
+                    processed += 1;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.vision.lost = true;
+                    self.vision.gap = true;
+                    self.vision.status = "Lettura dello schermo interrotta: la riavvio conservando la partita.".into();
+                    self.vision.restart_after.get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_secs(1));
+                    ctx.request_repaint_after(std::time::Duration::from_secs(1));
+                    break;
+                }
+            }
+            if processed == 8 || started.elapsed() >= std::time::Duration::from_millis(8) {
+                self.vision.catching_up = true;
+                ctx.request_repaint();
+                break;
+            }
         }
+        processed
     }
 
     /// Una lettura dello schermo.
@@ -860,7 +951,11 @@ impl Assistant {
                 self.vision.lost = true;
                 self.vision.status = "Non vedo il tavolo: tieni la partita aperta e visibile sullo schermo".into()
             }
-            Some(Reading::Error(e)) => self.vision.status = format!("Lettura dello schermo non riuscita: {e}"),
+            Some(Reading::Error(e)) => {
+                self.lost_table();
+                self.vision.lost = true;
+                self.vision.status = format!("Lettura dello schermo non riuscita: {e}. Continuo dalla prossima schermata.");
+            }
             None => {}
         }
     }
@@ -1149,6 +1244,35 @@ impl Assistant {
     /// dov'è cosa (succede con la mano a ventaglio coperta da una scritta e il tavolo vuoto): la
     /// briscola è quella, e le altre carte fuori dalla mano sono in mano.
     fn fix_layout(&self, scene: &Scene) -> Option<Scene> {
+        // Con lo zoom alto la carta giocata può essere scambiata per una seconda
+        // riga della mano. Conta il movimento rispetto alle letture precedenti:
+        // una sola carta sale, le altre restano dove stavano.
+        let opening = self.pos.step() == Step::First;
+        let expected = if opening { 3 } else { self.pos.hand.len() as usize };
+        if (opening || self.pos.step() == Step::MyMove) && scene.my_slot.is_none()
+            && scene.hand.len() == expected && scene.hand.len() >= 2
+        {
+            let mut moved = Vec::new();
+            let mut stationary = 0;
+            for (i, view) in scene.hand.iter().enumerate() {
+                let Some((card, margin)) = view.best(CardSet::FULL).filter(|b| b.1 >= SIGHT_MARGIN) else { continue };
+                let _ = margin;
+                if !opening && !self.pos.hand.contains(card) { continue; }
+                let Some(old) = self.vision.sightings.hand_places.get(card as usize).copied().flatten() else { continue };
+                let height = (view.at[3] - view.at[1]).abs().max((old[3] - old[1]).abs());
+                if height <= 0.001 { continue; }
+                let dy = (view.at[1] + view.at[3] - old[1] - old[3]) / 2.0;
+                if dy < -0.45 * height { moved.push(i); }
+                else if dy.abs() < 0.15 * height { stationary += 1; }
+            }
+            if let [i] = moved.as_slice() {
+                if stationary + 1 == scene.hand.len() {
+                    let mut corrected = scene.clone();
+                    corrected.my_slot = Some(corrected.hand.remove(*i));
+                    return Some(corrected);
+                }
+            }
+        }
         let t = self.pos.trump_card?;
         if self.pos.deck_len < 2 {
             return None;
@@ -1555,13 +1679,19 @@ impl Assistant {
                     .on_hover_text("Le carte già riconosciute si ricordano da sole e la volta dopo si riconoscono al primo colpo");
             }
         });
-        if !on {
-            return;
-        }
-        ui.label(RichText::new(&self.vision.status).small().weak());
         if !self.vision.gaps.is_empty() {
             ui.colored_label(GOLD, "Partita ripresa con prese non viste: i punti e le carte mancanti non sono verificati. Puoi annullare il recupero con Ctrl+Z.");
         }
+        if !on { return; }
+        if self.screen_is_behind() {
+            ui.colored_label(GOLD, "Sto recuperando le letture precedenti. Il consiglio riprende appena il tavolo è aggiornato.");
+            if self.vision.reader.as_ref().is_some_and(|r| r.lag() >= std::time::Duration::from_secs(5))
+                && ui.button("Riavvia lettura mantenendo la partita").clicked()
+            {
+                self.restart_vision(ui.ctx());
+            }
+        }
+        ui.label(RichText::new(&self.vision.status).small().weak());
         let last = self.vision.reader.as_ref().and_then(|r| r.last_frame());
         let summary = self.vision_summary();
         self.vision.picker.controls(ui, last, &summary);
@@ -1592,6 +1722,10 @@ impl Assistant {
 
     /// Gioca la carta consigliata, o la prenota se il motore sta ancora calcolando.
     fn play_best(&mut self) {
+        if self.screen_is_behind() {
+            self.entry_error = Some("Sto recuperando le letture: il consiglio riprende quando il tavolo è aggiornato.".into());
+            return;
+        }
         match self.analysis.as_ref().and_then(|a| a.evals.first()) {
             Some(e) => {
                 let c = e.card;
@@ -1762,8 +1896,11 @@ impl Assistant {
     /// sostituisce il tavolo: in cima c'è un riepilogo con la tua mano, niente elenco delle uscite.
     pub fn side_ui(&mut self, ui: &mut egui::Ui, samples: &mut u32, compact: bool) {
         let ctx = ui.ctx().clone();
+        self.poll_vision(&ctx);
+        if self.vision.restart_after.is_some_and(|t| t <= std::time::Instant::now()) {
+            self.restart_vision(&ctx);
+        }
         self.keyboard(&ctx);
-        self.poll_vision();
         self.poll(*samples, &ctx);
         let step = self.pos.step();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -1772,6 +1909,15 @@ impl Assistant {
                 ui.separator();
             }
             self.vision_ui(ui);
+            if let Some(message) = self.analysis_error.clone() {
+                ui.colored_label(GOLD, message);
+                if self.pending.is_none() && ui.button("Riprova il consiglio").clicked() {
+                    self.analysis_error = None;
+                    self.analysis_failures = 0;
+                    self.analysis_retry_at = None;
+                    ctx.request_repaint();
+                }
+            }
             match step {
                 Step::Trump => {
                     title(ui, "Qual è la briscola?", "Indica la carta scoperta sotto il mazzo.");
@@ -1976,16 +2122,26 @@ impl Assistant {
                     .on_hover_text("Quanto calcola il motore: Veloce e Normale simulano distribuzioni delle carte coperte, Massima usa la ricerca ad albero (la più forte, circa un decimo di secondo)");
             });
         });
+        if self.screen_is_behind() {
+            ui.label("Consiglio sospeso mentre recupero il tavolo attuale.");
+            return;
+        }
         if self.pos.hand.len() == 1 {
             let c = self.pos.hand.iter().next().unwrap();
             ui.label(RichText::new(format!("Hai solo {}: giocala.", cards::name(c))).size(18.0));
             return;
         }
         let Some(a) = &self.analysis else {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Il motore sta simulando le possibili mani dell'avversario...");
-            });
+            if self.pending.is_some() {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Il motore sta simulando le possibili mani dell'avversario...");
+                });
+            } else if self.analysis_retry_at.is_some() && self.analysis_failures < 2 {
+                ui.label("Sto riavviando il calcolo del consiglio...");
+            } else {
+                ui.label("Consiglio non disponibile. Puoi inserire la carta giocata o riprovare il calcolo.");
+            }
             return;
         };
         let best = a.evals[0];
@@ -2216,6 +2372,9 @@ struct Sightings {
     /// Solo carte dalla parte dell'avversario: una mia carta letta male non
     /// deve diventare una giocata avversaria nello storico.
     opponents: Vec<Sighting>,
+    /// Posizioni precedenti della mano: una carta salita verso il tavolo non
+    /// resta in mano soltanto perché lo zoom l'ha avvicinata alle altre.
+    hand_places: Vec<Option<[f32; 4]>>,
     /// L'ultima immagine (e fascia visibile) di ogni carta, per ricordarla.
     views: Vec<Option<(Img, [f32; 2])>>,
     /// Le letture della mano tutte riconosciute con sicurezza: (lettura, carte).
@@ -2233,6 +2392,7 @@ impl Sightings {
             self.hand = vec![Sighting::default(); 40];
             self.table = vec![Sighting::default(); 40];
             self.opponents = vec![Sighting::default(); 40];
+            self.hand_places = vec![None; 40];
             self.views = vec![None; 40];
         }
         self.frame += 1;
@@ -2243,6 +2403,7 @@ impl Sightings {
             match v.best(CardSet::FULL) {
                 Some((c, m)) if m >= SIGHT_MARGIN => {
                     self.hand[c as usize].bump(f, m);
+                    self.hand_places[c as usize] = Some(v.at);
                     self.views[c as usize] = Some((v.img.clone(), v.vis));
                     all_sure &= m >= AUTO_MARGIN;
                     full.push(c);
@@ -3008,7 +3169,16 @@ mod tests {
             a.rec.off = true;
             a.vision.memory = Arc::new(Mutex::new(Memory::in_memory()));
             a.vision.reader = Some(Reader::from_readings(readings));
-            a.poll_vision();
+            let ctx = egui::Context::default();
+            let mut batches = 0;
+            loop {
+                let n = a.poll_vision(&ctx);
+                assert!(n <= 8, "la coda non deve monopolizzare l'interfaccia");
+                if n == 0 { break; }
+                batches += 1;
+                assert!(batches < 1000);
+            }
+            assert!(batches > 1);
             assert_eq!(a.pos.tricks, 20, "seed {seed}, {:?}", a.pos.step());
             assert_eq!(a.pos.points, g.points, "seed {seed}");
             assert_eq!(a.pos.played, g.played, "seed {seed}");
@@ -3080,6 +3250,92 @@ mod tests {
         a.vision.sightings.update(&opp);
         a.vision.sightings.update(&opp);
         assert_eq!(a.vision.sightings.next_opp_play(&a.pos, &opp), Some((13, true)));
+    }
+
+    #[test]
+    fn moving_a_card_up_is_a_play_not_a_second_hand_row() {
+        let mut a = manual_turn();
+        let mut initial = Scene { hand: [10, 20, 30].map(|c| seen(c, 4.0)).to_vec(), ..Default::default() };
+        for (i, view) in initial.hand.iter_mut().enumerate() {
+            view.at = [0.3 + i as f32 * 0.15, 0.7, 0.4 + i as f32 * 0.15, 0.9];
+        }
+        a.vision.sightings.update(&initial);
+        let mut played = initial.clone();
+        played.hand[0].at = [0.45, 0.4, 0.55, 0.6];
+        let fixed = a.fix_layout(&played).unwrap();
+        assert_eq!(fixed.hand.len(), 2);
+        assert_eq!(fixed.my_slot.unwrap().best(CardSet::FULL).unwrap().0, 10);
+        // Una finestra spostata non deve produrre una giocata.
+        for view in &mut initial.hand { view.at[1] -= 0.3; view.at[3] -= 0.3; }
+        assert!(a.fix_layout(&initial).is_none());
+    }
+
+    fn manual_turn() -> Assistant {
+        let mut a = Assistant::default();
+        a.rec.off = true;
+        a.enter(0);
+        a.set_first(ME);
+        for c in [10, 20, 30] { a.enter(c); }
+        a
+    }
+
+    #[test]
+    fn disconnected_calculation_does_not_wait_forever() {
+        let mut a = manual_turn();
+        let (tx, rx) = channel();
+        drop(tx);
+        a.pending = Some(rx);
+        a.analysis_started = Some(std::time::Instant::now());
+        let ctx = egui::Context::default();
+        a.poll(7, &ctx);
+        assert!(a.pending.is_none());
+        assert_eq!(a.analysis_failures, 1);
+        assert!(a.analysis_error.as_ref().unwrap().contains("interrotto"));
+        a.analysis_retry_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        a.poll(7, &ctx);
+        assert!(a.pending.is_some(), "il consiglio riparte senza riavviare l'app");
+    }
+
+    #[test]
+    fn stalled_calculations_have_a_bounded_retry() {
+        let mut a = manual_turn();
+        let ctx = egui::Context::default();
+        for expected in [1, 2] {
+            let (_tx, rx) = channel();
+            a.pending = Some(rx);
+            a.analysis_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(16));
+            a.poll(7, &ctx);
+            assert!(a.pending.is_none());
+            assert_eq!(a.analysis_failures, expected);
+        }
+        a.poll(7, &ctx);
+        assert!(a.pending.is_none(), "nessuna cascata infinita di nuovi calcoli");
+        assert!(a.analysis_error.as_ref().unwrap().contains("in tempo"));
+        assert!(a.enter(10), "l'inserimento delle carte resta utilizzabile");
+        assert_eq!(a.analysis_failures, 0);
+    }
+
+    #[test]
+    fn stale_screen_never_plays_the_old_advice() {
+        let mut a = manual_turn();
+        a.analysis = Some(Analysis { evals: vec![MoveEval { card: 10, win_prob: 0.5, exp_points: 60.0 }], reasons: Vec::new(), samples: 7 });
+        a.vision.catching_up = true;
+        a.play_best();
+        assert_eq!(a.pos.hand.len(), 3);
+        assert!(!a.play_best_queued);
+        a.poll(7, &egui::Context::default());
+        assert!(a.analysis.is_none() && a.pending.is_none());
+    }
+
+    #[test]
+    fn disconnected_reader_requests_recovery_without_erasing_the_game() {
+        let mut a = manual_turn();
+        a.vision.reader = Some(Reader::from_readings(Vec::<Reading<Scene>>::new()));
+        assert_eq!(a.poll_vision(&egui::Context::default()), 0);
+        assert!(a.vision.restart_after.is_some());
+        assert!(a.screen_is_behind());
+        assert_eq!(a.pos.hand.len(), 3);
+        assert_eq!(a.pos.trump_card, Some(0));
     }
 
     /// Il recupero dopo una scheda nascosta non è una giocata osservata: il motore

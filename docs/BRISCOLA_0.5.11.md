@@ -110,6 +110,22 @@ riportati separatamente sotto.
 
 ## Correzioni aggiuntive
 
+- La coda delle letture si svuota in lotti di massimo otto elementi e con un
+  budget di circa 8 ms per aggiornamento. Nessuna lettura già analizzata viene
+  scartata per fare spazio alla successiva; il recupero lascia rispondere la UI.
+- Il ritardo delle schermate include cattura, attesa in coda e riconoscimento.
+  Include anche il tempo trascorso senza nuovi risultati: un lettore silenzioso
+  non lascia apparire attuale un consiglio vecchio. Durante il recupero, il
+  vecchio consiglio e la Psy Fly vengono sospesi. Dopo un ritardo prolungato è
+  disponibile «Riavvia lettura mantenendo la partita».
+- Un canale del calcolo chiuso, un risultato vuoto o un'attesa oltre 15 secondi
+  non producono un indicatore di caricamento infinito: c'è un nuovo tentativo
+  automatico, poi una ripresa esplicita, mantenendo utilizzabile l'inserimento.
+- Gli errori della cattura arrivano all'interfaccia anche se non esiste alcun
+  fotogramma. Se il lettore termina, viene riavviato conservando la partita.
+- Lo storico conserva anche le posizioni delle carte in mano: una carta salita
+  verso il tavolo, mentre le altre restano ferme, viene trattata come giocata
+  anche se lo zoom l'ha fatta sembrare una seconda riga della mano.
 - Il salto di riallineamento non viene interpretato come una giocata avversaria:
   l'inferenza riparte dagli eventi osservati successivi al salto.
 - Le correzioni che richiedono di rigiocare carte mai viste vengono rifiutate;
@@ -159,3 +175,17 @@ costruire l'eseguibile e pubblicare l'installatore.
 ## Risultati della sessione
 
 In corso: aggiornare questa sezione con gli esiti effettivi prima del rilascio.
+
+La prima matrice completa di sviluppo ha superato tutte le 17 condizioni.
+Nella successiva validazione con semi 104000 e 104001, un caso su 24 ha raggiunto
+20 prese con punti errati: la carta giocata era stata classificata come seconda
+riga della mano. Quel caso (`riserva-freddo`, seme 104508) è stato corretto e
+riprodotto con 20 prese, punti corretti e zero interventi manuali.
+La validazione conclusiva usa altri semi e comprende anche le protezioni contro
+attese e letture arretrate descritte sopra.
+
+Le soglie temporali sono meccanismi di recupero, non una garanzia di assenza di
+qualunque blocco di sistema. Il budget della UI viene verificato fra le letture;
+una singola ricostruzione può superarlo. Un thread di calcolo già avviato non
+viene terminato forzatamente: il suo risultato scaduto non viene adottato e i
+tentativi automatici sono limitati per evitare una cascata di nuovi lavori.

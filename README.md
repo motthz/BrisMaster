@@ -22,7 +22,9 @@ Gli aggiornamenti sono automatici: all'avvio l'app controlla le release di quest
 
 Nella 0.5.11 la lettura elabora in ordine anche gli aggiornamenti accumulati quando
 BrisMaster è in secondo piano e usa lo storico delle carte viste per recuperare
-le partite ferme. Dopo un tratto giocato a tavolo nascosto, l'app indica se punti
+le partite ferme. Se le letture sono arretrate sospende il consiglio finché il
+tavolo è aggiornato; errori e calcoli interrotti hanno percorsi di ripresa.
+Dopo un tratto giocato a tavolo nascosto, l'app indica se punti
 e carte mancanti non sono verificati; il recupero si può annullare con Ctrl+Z.
 Variabili, prove e limiti sono descritti in [verifica della briscola 0.5.11](docs/BRISCOLA_0.5.11.md).
 

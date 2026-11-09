@@ -83,11 +83,16 @@ fn screenshot(name: &str) -> Img {
 
 /// Sfondo ripetuto a specchio (senza cuciture) da un pezzo di screenshot senza carte.
 fn texture(bg: Bg) -> Option<Img> {
+    // Le fixture sono immutabili: decodificare lo stesso screenshot a ogni
+    // fotogramma rallenta il banco senza mettere alla prova il riconoscitore.
+    static WOOD: std::sync::OnceLock<Img> = std::sync::OnceLock::new();
+    static SEA: std::sync::OnceLock<Img> = std::sync::OnceLock::new();
+    static SKY: std::sync::OnceLock<Img> = std::sync::OnceLock::new();
     match bg {
         Bg::Felt(_) => None,
-        Bg::Wood => Some(screenshot("solitalian_briscola.png").crop(950, 200, 1450, 950)),
-        Bg::Sea => Some(screenshot("solitalian_mare.jpg").crop(880, 600, 1440, 1000)),
-        Bg::Sky => Some(screenshot("solitalian_mare.jpg").crop(330, 250, 1280, 470)),
+        Bg::Wood => Some(WOOD.get_or_init(|| screenshot("solitalian_briscola.png").crop(950, 200, 1450, 950)).clone()),
+        Bg::Sea => Some(SEA.get_or_init(|| screenshot("solitalian_mare.jpg").crop(880, 600, 1440, 1000)).clone()),
+        Bg::Sky => Some(SKY.get_or_init(|| screenshot("solitalian_mare.jpg").crop(330, 250, 1280, 470)).clone()),
     }
 }
 
@@ -178,7 +183,9 @@ const WRITING: [(&str, f32, f32); 11] = [
 
 /// Una scritta di testdata/scritte.
 pub fn writing(name: &str) -> Img {
-    screenshot(&format!("scritte/{name}.png"))
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Img>>> = std::sync::OnceLock::new();
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    cache.entry(name.to_owned()).or_insert_with(|| screenshot(&format!("scritte/{name}.png"))).clone()
 }
 
 /// I loghi stampati sul tavolo, col centro in (frazioni dello schermo): lo stemma sotto le carte

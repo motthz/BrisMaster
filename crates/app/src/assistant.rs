@@ -407,6 +407,8 @@ struct Vision {
     backs_ok: u32,
     /// Letture di fila in cui quello che si vede torna con la partita.
     calm: u32,
+    /// Letture di fila senza la briscola al suo posto (col mazzo ancora pieno).
+    no_trump_seen: u32,
     restart_after: Option<std::time::Instant>,
 }
 
@@ -1135,6 +1137,16 @@ impl Assistant {
                 }
             }
         }
+        // La briscola sparita dal suo posto per molte letture col mazzo ancora pieno: o il mazzo è
+        // finito (e la partita è indietro), o la lettura sbaglia. In ogni caso si controlla.
+        if scene.trump.is_none() && pos.deck_len >= 4 && !hand.is_empty() {
+            self.vision.no_trump_seen += 1;
+            if self.vision.no_trump_seen == 6 {
+                return true;
+            }
+        } else {
+            self.vision.no_trump_seen = 0;
+        }
         // I dorsi dell'avversario, se si contano, uguali per tre letture di fila: devono essere
         // le carte che ha in mano.
         // (Il conteggio vale solo se su questo sito ha già dato il numero giusto più volte.)
@@ -1256,6 +1268,10 @@ impl Assistant {
             }
             let o = &s.opponents[c as usize];
             if o.sure() && mine.contains(c) && !opp.contains(c) {
+                bad += 1.0;
+            }
+            // Vista dalla mia parte del tavolo, ma nella storia l'ha giocata l'avversario.
+            if s.mine_side.get(c as usize).is_some_and(|m| m.sure()) && opp.contains(c) {
                 bad += 1.0;
             }
             if s.on_table(c) && !gone(c) {
@@ -2656,6 +2672,8 @@ struct Sightings {
     /// Solo carte dalla parte dell'avversario: una mia carta letta male non
     /// deve diventare una giocata avversaria nello storico.
     opponents: Vec<Sighting>,
+    /// Solo carte dalla mia parte del tavolo.
+    mine_side: Vec<Sighting>,
     /// Posizioni precedenti della mano: una carta salita verso il tavolo non
     /// resta in mano soltanto perché lo zoom l'ha avvicinata alle altre.
     hand_places: Vec<Option<[f32; 4]>>,
@@ -2679,6 +2697,7 @@ impl Sightings {
             self.hand = vec![Sighting::default(); 40];
             self.table = vec![Sighting::default(); 40];
             self.opponents = vec![Sighting::default(); 40];
+            self.mine_side = vec![Sighting::default(); 40];
             self.hand_places = vec![None; 40];
             self.views = vec![None; 40];
             self.alt = vec![[0; 40]; 40];
@@ -2737,6 +2756,9 @@ impl Sightings {
         }
         if let Some((c, m)) = scene.opp_slot.as_ref().and_then(|v| v.best(CardSet::FULL)).filter(|b| b.1 >= 0.3) {
             self.opponents[c as usize].bump(f, m);
+        }
+        if let Some((c, m)) = scene.my_slot.as_ref().and_then(|v| v.best(CardSet::FULL)).filter(|b| b.1 >= 0.3) {
+            self.mine_side[c as usize].bump(f, m);
         }
     }
 

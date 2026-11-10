@@ -99,14 +99,43 @@ fn straight_high(mask: u32) -> Option<u32> {
 
 /// Punteggio di una mano da 5 a 7 carte: più alto è meglio. Due mani pari hanno lo stesso punteggio.
 pub fn eval(cards: &[Card]) -> u32 {
-    let mut suits = [0u32; 4];
-    let mut counts = [0u8; 13];
-    let mut all = 0u32;
+    let mut state = Evaluator::default();
     for &c in cards {
-        suits[suit(c) as usize] |= 1 << rank(c);
-        counts[rank(c) as usize] += 1;
-        all |= 1 << rank(c);
+        state.add(c);
     }
+    state.value()
+}
+
+/// Reusable board state: evaluating opponents no longer rebuilds the common cards.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Evaluator {
+    suits: [u32; 4],
+    counts: [u8; 13],
+    all: u32,
+}
+
+impl Evaluator {
+    pub(crate) fn board(cards: &[Card]) -> Self {
+        let mut state = Self::default();
+        for &c in cards { state.add(c); }
+        state
+    }
+
+    fn add(&mut self, c: Card) {
+        let r = rank(c) as usize;
+        self.suits[suit(c) as usize] |= 1 << r;
+        self.counts[r] += 1;
+        self.all |= 1 << r;
+    }
+
+    pub(crate) fn with_hole(mut self, hole: [Card; 2]) -> u32 {
+        self.add(hole[0]);
+        self.add(hole[1]);
+        self.value()
+    }
+
+    fn value(self) -> u32 {
+    let Self { suits, counts, all } = self;
     for &sm in &suits {
         if sm.count_ones() >= 5 {
             if let Some(h) = straight_high(sm) {
@@ -153,6 +182,7 @@ pub fn eval(cards: &[Card]) -> u32 {
         return 1 << 20 | p << 16 | top_bits(all & !(1 << p), 3) >> 4;
     }
     top_bits(all, 5)
+    }
 }
 
 /// Le 169 classi di mani iniziali: coppie, combinazioni dello stesso seme e di semi diversi.

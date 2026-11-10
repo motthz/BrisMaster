@@ -120,10 +120,18 @@ const EXACT_BONUS: f32 = 1.0;
 /// Punteggi delle 40 carte dalla somiglianza con le carte di riferimento.
 fn reference_scores(sim: &[f32; 40]) -> [f32; 40] {
     let mut s = sim.map(|v| v * SCALE);
-    let mut order: Vec<usize> = (0..40).collect();
-    order.sort_by(|&a, &b| sim[b].total_cmp(&sim[a]));
-    if sim[order[0]] >= EXACT && sim[order[1]] <= EXACT_GAP {
-        s[order[0]] += EXACT_BONUS;
+    let mut first = 0;
+    let mut second = f32::NEG_INFINITY;
+    for i in 1..sim.len() {
+        if sim[i] > sim[first] {
+            second = second.max(sim[first]);
+            first = i;
+        } else {
+            second = second.max(sim[i]);
+        }
+    }
+    if sim[first] >= EXACT && second <= EXACT_GAP {
+        s[first] += EXACT_BONUS;
     }
     s
 }
@@ -156,11 +164,26 @@ impl CardView {
 
     /// La carta più probabile fra `among`, e quanto stacca la seconda.
     pub fn best(&self, among: CardSet) -> Option<(Card, f32)> {
-        let mut v: Vec<(Card, f32)> = among.iter().map(|c| (c, self.scores[c as usize])).collect();
-        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        let first = *v.first()?;
-        let margin = v.get(1).map_or(f32::INFINITY, |s| first.1 - s.1);
-        Some((first.0, margin))
+        if self.scores.iter().any(|s| !s.is_finite()) { return None; }
+        let mut first = None;
+        let mut second = f32::NEG_INFINITY;
+        for c in among.iter() {
+            let score = self.scores[c as usize];
+            // Invalid evidence must never become a confident card or panic in sorting.
+            if !score.is_finite() {
+                continue;
+            }
+            match first {
+                Some((_, best)) if score <= best => second = second.max(score),
+                old => {
+                    if let Some((_, best)) = old {
+                        second = second.max(best);
+                    }
+                    first = Some((c, score));
+                }
+            }
+        }
+        first.map(|(card, score)| (card, score - second))
     }
 }
 

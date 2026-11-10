@@ -134,21 +134,35 @@ fn sample(g: &Game, cands: &[Action2], cfg: &EngineConfig, seed: u64) -> Vec<(f6
 
 /// Valuta le scelte date con le simulazioni, dalla migliore alla peggiore.
 pub fn evaluate_choices(g: &Game, cands: &[Action2], cfg: &EngineConfig, rng: &mut SmallRng) -> Vec<ChoiceEval> {
-    let seeds: Vec<u64> = (0..cfg.samples).map(|_| rng.gen()).collect();
-    let results: Vec<Vec<(f64, f64)>> = if cfg.parallel {
-        use rayon::prelude::*;
-        seeds.par_iter().map(|&s| sample(g, cands, cfg, s)).collect()
-    } else {
-        seeds.iter().map(|&s| sample(g, cands, cfg, s)).collect()
+    if cands.is_empty() { return Vec::new(); }
+    let samples = cfg.samples.max(1);
+    let seeds: Vec<u64> = (0..samples).map(|_| rng.gen()).collect();
+    let empty = || vec![(0.0, 0.0); cands.len()];
+    let add = |mut sums: Vec<(f64, f64)>, values: Vec<(f64, f64)>| {
+        for (sum, value) in sums.iter_mut().zip(values) {
+            sum.0 += value.0;
+            sum.1 += value.1;
+        }
+        sums
     };
-    let n = cfg.samples.max(1) as f64;
+    // Keep only per-worker totals, rather than one allocated result per world.
+    // Both components are integers/half-integers: merging is exact at these budgets.
+    let totals = if cfg.parallel {
+        use rayon::prelude::*;
+        seeds.par_iter()
+            .fold(empty, |sum, &seed| add(sum, sample(g, cands, cfg, seed)))
+            .reduce(empty, add)
+    } else {
+        seeds.iter().fold(empty(), |sum, &seed| add(sum, sample(g, cands, cfg, seed)))
+    };
+    let n = samples as f64;
     let mut evals: Vec<ChoiceEval> = cands
         .iter()
         .enumerate()
         .map(|(i, &a)| ChoiceEval {
             action: a,
-            win_prob: results.iter().map(|r| r[i].0).sum::<f64>() / n,
-            margin: results.iter().map(|r| r[i].1).sum::<f64>() / n,
+            win_prob: totals[i].0 / n,
+            margin: totals[i].1 / n,
         })
         .collect();
     let key = |e: &ChoiceEval| e.win_prob + cfg.margin_w * e.margin / 1000.0;

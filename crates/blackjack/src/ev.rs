@@ -226,15 +226,12 @@ impl Analyzer {
 
     /// Valore della mano giocata al meglio tra stare e chiedere carta.
     fn play(&mut self, c: &Counts, h: Hand) -> f64 {
-        let s = self.stand(c, h);
-        if h.total() == 21 {
-            return s;
-        }
         let k = key(c, h);
         if let Some(&v) = self.play_memo.get(&k) {
             return v;
         }
-        let v = s.max(self.hit(c, h));
+        let s = self.stand(c, h);
+        let v = if h.total() == 21 { s } else { s.max(self.hit(c, h)) };
         self.play_memo.insert(k, v);
         v
     }

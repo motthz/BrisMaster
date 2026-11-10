@@ -14,8 +14,8 @@ const PAPER: Color32 = Color32::from_rgb(252, 252, 250);
 const INK: Color32 = Color32::from_rgb(45, 40, 35);
 pub const GOLD: Color32 = Color32::from_rgb(222, 178, 70);
 pub const BEST: Color32 = Color32::from_rgb(120, 230, 140);
-const FELT_TOP: Color32 = Color32::from_rgb(22, 92, 62);
-const FELT_BOTTOM: Color32 = Color32::from_rgb(10, 58, 40);
+const FELT_TOP: Color32 = Color32::from_rgb(24, 78, 67);
+const FELT_BOTTOM: Color32 = Color32::from_rgb(12, 42, 39);
 
 /// Versione chiara del colore del seme, leggibile su sfondo scuro.
 pub fn suit_color_light(s: u8) -> Color32 {
@@ -258,7 +258,11 @@ pub fn paint_felt(p: &Painter, rect: Rect) {
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(1, 2, 3);
     p.add(mesh);
-    p.rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::from_rgb(40, 120, 85)), StrokeKind::Inside);
+    p.rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::from_rgb(54, 102, 88)), StrokeKind::Inside);
+    let inset = rect.shrink(12.0);
+    if inset.is_positive() {
+        p.rect_stroke(inset, 18.0, Stroke::new(1.0, Color32::from_white_alpha(16)), StrokeKind::Inside);
+    }
 }
 
 /// Riconosce una carta scritta a tastiera: "3c", "AD", "R s", "asso di coppe", "cavallo bastoni".

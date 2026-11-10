@@ -135,18 +135,7 @@ pub struct BrisApp {
 impl BrisApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, "settings")).unwrap_or_default();
-        let mut style = (*cc.egui_ctx.global_style()).clone();
-        style.visuals = egui::Visuals::dark();
-        style.visuals.panel_fill = Color32::from_rgb(20, 24, 22);
-        for (ts, size) in
-            [(TextStyle::Body, 15.0), (TextStyle::Button, 15.0), (TextStyle::Heading, 20.0), (TextStyle::Small, 12.0)]
-        {
-            if let Some(f) = style.text_styles.get_mut(&ts) {
-                *f = FontId::proportional(size);
-            }
-        }
-        style.spacing.button_padding = egui::vec2(10.0, 5.0);
-        cc.egui_ctx.set_global_style(style);
+        install_theme(&cc.egui_ctx);
         let mut app = BrisApp {
             update: UpdateState::Idle,
             assistant: Assistant::default(),
@@ -261,43 +250,41 @@ impl BrisApp {
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.heading(RichText::new("BrisMaster").strong().color(cards_ui::GOLD));
+            ui.label(RichText::new("IL TUO TAVOLO, LA TUA STRATEGIA").size(10.0).weak());
             ui.separator();
             egui::ComboBox::from_id_salt("game")
+                .width(180.0)
                 .selected_text(RichText::new(self.settings.game.label()).size(16.0).strong())
                 .show_ui(ui, |ui| {
                     for g in Gioco::ALL {
                         ui.selectable_value(&mut self.settings.game, g, g.label());
                     }
                 });
-            ui.separator();
+            if matches!(self.settings.game, Gioco::Briscola | Gioco::Scopa) {
+                ui.separator();
+                if ui.button("Finestra compatta")
+                    .on_hover_text("Consiglio e carte accanto al browser").clicked() {
+                    self.settings.compact = true;
+                }
+                self.fly_switch(ui);
+            }
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
             match self.settings.game {
                 Gioco::Briscola | Gioco::Scopa => {
-                    if ui
-                        .button("Finestra compatta")
-                        .on_hover_text("Solo il consiglio e l'inserimento, da tenere accanto al browser")
-                        .clicked()
-                    {
-                        self.settings.compact = true;
-                    }
-                    self.fly_switch(ui);
-                    ui.separator();
-                    ui.label(
-                        RichText::new("Assistente: inserisci le carte, il motore ti dice cosa giocare").size(16.0),
-                    );
+                    ui.label(RichText::new("Inserisci le carte o attiva la lettura dello schermo. Il consiglio segue la partita.").weak());
                 }
                 Gioco::Scala40 => self.scala40.top_controls(ui),
                 Gioco::SetteMezzo => self.settemezzo.top_controls(ui, &mut self.settings.settemezzo),
                 Gioco::Blackjack => self.blackjack.top_controls(ui),
                 Gioco::PokerIt => self.poker_it.top_controls(ui),
                 Gioco::Burraco | Gioco::Holdem => {
-                    ui.label(RichText::new("Assistente: descrivi la partita, il motore ti dice cosa fare").weak());
+                    ui.label(RichText::new("Descrivi la partita per confrontare le mosse disponibili.").weak());
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                self.update_widget(ui);
-            });
         });
     }
 
@@ -334,10 +321,10 @@ impl BrisApp {
                     action = Some(0);
                 }
                 // Il motivo si vede subito (non solo passando col mouse), con la pagina per scaricare a mano.
-                let short: String = e.chars().take(90).collect();
+                let short = "Controllo aggiornamenti non disponibile";
                 ui.hyperlink_to("Scarica a mano", format!("https://github.com/{}/releases/latest", update::REPO));
                 ui.label(
-                    RichText::new(format!("Aggiornamento non riuscito: {short}")).color(Color32::LIGHT_RED).small(),
+                    RichText::new(short).color(Color32::LIGHT_RED).small(),
                 )
                 .on_hover_text(e);
             }
@@ -420,6 +407,13 @@ impl BrisApp {
             self.top_bar(ui);
             ui.add_space(6.0);
         });
+        egui::Panel::bottom("status").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("{} · v{}", self.settings.game.label(), update::CURRENT)).small().color(cards_ui::GOLD));
+                ui.separator();
+                self.update_widget(ui);
+            });
+        });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
             // Questi giochi disegnano da soli tutta l'area centrale.
             match self.settings.game {
@@ -464,4 +458,32 @@ impl BrisApp {
         });
     }
 
+}
+
+/// One palette and control hierarchy shared by all eight game assistants.
+fn install_theme(ctx: &egui::Context) {
+    let mut style = (*ctx.global_style()).clone();
+    style.visuals = egui::Visuals::dark();
+    style.visuals.panel_fill = Color32::from_rgb(15, 24, 28);
+    style.visuals.window_fill = Color32::from_rgb(22, 34, 39);
+    style.visuals.extreme_bg_color = Color32::from_rgb(10, 18, 22);
+    style.visuals.faint_bg_color = Color32::from_rgb(28, 42, 46);
+    style.visuals.selection.bg_fill = Color32::from_rgb(45, 93, 84);
+    style.visuals.selection.stroke = Stroke::new(1.0, Color32::from_rgb(238, 222, 170));
+    style.visuals.hyperlink_color = Color32::from_rgb(129, 211, 203);
+    style.visuals.window_corner_radius = egui::CornerRadius::same(12);
+    style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(32, 47, 52);
+    style.visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(27, 40, 45);
+    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(48, 71, 73);
+    style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(40, 62, 65);
+    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, cards_ui::GOLD);
+    style.visuals.widgets.active.bg_fill = Color32::from_rgb(51, 90, 80);
+    for (ts, size) in [(TextStyle::Body, 15.0), (TextStyle::Button, 15.0),
+        (TextStyle::Heading, 21.0), (TextStyle::Small, 12.0)] {
+        style.text_styles.insert(ts, FontId::proportional(size));
+    }
+    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.spacing.item_spacing = egui::vec2(9.0, 8.0);
+    style.spacing.combo_width = 160.0;
+    ctx.set_global_style(style);
 }

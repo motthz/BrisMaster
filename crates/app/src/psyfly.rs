@@ -51,6 +51,24 @@ pub struct Sight {
 }
 
 impl Sight {
+    /// Reject invalid capture/tracking geometry before constructing a native viewport.
+    fn validated(mut self) -> Self {
+        let Some(g) = self.monitor.filter(|g| {
+            [g.x, g.y, g.w, g.h, g.scale].iter().all(|n| n.is_finite())
+                && g.w > 1.0 && g.h > 1.0 && g.scale > 0.0
+        }) else { return Self::off(); };
+        let valid = |r: &[f32; 4]| {
+            r.iter().all(|v| v.is_finite()) && r[2] > r[0] && r[3] > r[1]
+                && r[0] < g.x + g.w && r[2] > g.x
+                && r[1] < g.y + g.h && r[3] > g.y
+        };
+        self.hand.retain(valid);
+        if let Guide::Play { card, take, .. } = &self.guide {
+            if !valid(card) || !take.iter().all(valid) { self.guide = Guide::Seeking; }
+        }
+        self
+    }
+
     /// Niente da indicare: la lettura dello schermo è spenta.
     pub fn off() -> Sight {
         Sight { monitor: None, hand: Vec::new(), guide: Guide::NoTable, context: (0, 0), played_card: None }
@@ -358,6 +376,7 @@ impl Fly {
 
     /// Disegna la mosca nella sua finestra sopra il monitor del gioco (se è accesa e il monitor è noto).
     pub fn show(&mut self, ctx: &egui::Context, sight: Sight) {
+        let sight = sight.validated();
         if !self.on {
             *self = Fly::default();
             return;
@@ -367,6 +386,10 @@ impl Fly {
             self.shown.clear();
             self.advice = None;
             self.placed = None;
+            self.target = None;
+            self.monitor = None;
+            self.context = None;
+            self.played_confirmed = false;
             return;
         };
         self.played_confirmed = sight.played_card.is_some_and(|c| self.advice.is_some_and(|a| a.card == c));
@@ -542,7 +565,7 @@ impl Fly {
             if click && card.contains(m) {
                 // La stai giocando!
                 let at = self.pos;
-                self.burst(at, 10, Kind::Heart, 200.0);
+                self.burst(at, 5, Kind::Spark, 120.0);
                 self.say("Bzz! Aspetto la giocata…", 1.4);
                 self.boing = 1.0;
                 return;

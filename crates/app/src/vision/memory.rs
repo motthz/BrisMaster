@@ -44,6 +44,12 @@ pub struct Memory {
     save_error: Option<String>,
 }
 
+fn valid_view(img: &Img, vis: [f32; 2]) -> bool {
+    img.w == CARD_W && img.h == CARD_H && img.px.len() == CARD_W * CARD_H
+        && vis.iter().all(|x| x.is_finite())
+        && 0.0 <= vis[0] && vis[0] < vis[1] && vis[1] <= 1.0
+}
+
 /// Spostamenti (in pixel della carta raddrizzata) provati nel confronto: le carte viste in parte
 /// non sono mai raddrizzate al pixel.
 const SHIFTS: [(f32, f32); 9] =
@@ -101,20 +107,22 @@ fn ncc(a: &[u8], b: &[u8], (r0, r1): (usize, usize)) -> f32 {
         return 0.0;
     }
     let (a, b) = (&a[r0 * TW * 3..r1 * TW * 3], &b[r0 * TW * 3..r1 * TW * 3]);
-    let n = a.len();
-    let ma = a.iter().map(|&v| v as f32).sum::<f32>() / n as f32;
-    let mb = b.iter().map(|&v| v as f32).sum::<f32>() / n as f32;
-    let (mut num, mut da, mut db) = (0.0, 0.0, 0.0);
-    for i in 0..n {
-        let (x, y) = (a[i] as f32 - ma, b[i] as f32 - mb);
-        num += x * y;
-        da += x * x;
-        db += y * y;
+    // Integer moments need one pass and avoid cancellation for near-constant images.
+    let (mut sa, mut sb, mut aa, mut bb, mut ab) = (0i64, 0i64, 0i64, 0i64, 0i64);
+    for (&a, &b) in a.iter().zip(b) {
+        let (a, b) = (i64::from(a), i64::from(b));
+        sa += a;
+        sb += b;
+        aa += a * a;
+        bb += b * b;
+        ab += a * b;
     }
-    if da == 0.0 || db == 0.0 {
+    let n = a.len() as i64;
+    let (da, db) = (n * aa - sa * sa, n * bb - sb * sb);
+    if da <= 0 || db <= 0 {
         0.0
     } else {
-        num / (da * db).sqrt()
+        ((n * ab - sa * sb) as f64 / ((da as f64) * (db as f64)).sqrt()) as f32
     }
 }
 
@@ -142,12 +150,26 @@ impl Memory {
         let path = Memory::path();
         let mut m: Memory =
             std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        // Memory is editable/importable JSON: validate before any pixel slicing/indexing.
+        let before = m.templates.len();
+        m.templates.retain(|t| {
+            t.card < 40
+                && t.px.len() == TW * TH * 3
+                && t.vis.iter().all(|x| x.is_finite())
+                && 0.0 <= t.vis[0]
+                && t.vis[0] < t.vis[1]
+                && t.vis[1] <= 1.0
+        });
+        let rejected = before - m.templates.len();
         if m.version != VERSION {
             // Immagini di una versione precedente: si mettono da parte e si ricomincia.
             if !m.templates.is_empty() {
                 let _ = std::fs::rename(&path, path.with_extension("vecchio.json"));
             }
             m = Memory { version: VERSION, ..Default::default() };
+        }
+        if rejected > 0 {
+            m.save_error = Some(format!("Ignorati {rejected} esempi di carte danneggiati nella memoria"));
         }
         m.path = Some(path);
         m
@@ -170,7 +192,7 @@ impl Memory {
     /// sulla fascia visibile `vis` (e su quella che si vedeva nell'immagine ricordata).
     pub fn similarity(&self, img: &Img, vis: [f32; 2]) -> [Option<f32>; 40] {
         let mut out = [None; 40];
-        if self.templates.is_empty() {
+        if self.templates.is_empty() || !valid_view(img, vis) {
             return out;
         }
         let thumbs: Vec<Vec<u8>> = SHIFTS.iter().map(|&o| thumb_at(img, o)).collect();
@@ -188,6 +210,10 @@ impl Memory {
     /// Ricorda una carta, vista nella fascia `vis`. Tiene al massimo 4 immagini per carta (luci,
     /// rotazioni e parti viste diverse).
     pub fn remember(&mut self, img: &Img, vis: [f32; 2], card: Card) {
+        if card >= 40 || !valid_view(img, vis) {
+            self.save_error = Some("Esempio di carta non valido: memoria invariata".into());
+            return;
+        }
         let t = thumb(img);
         let same: Vec<usize> = (0..self.templates.len()).filter(|&i| self.templates[i].card == card).collect();
         let covered = |i: usize| {

@@ -947,9 +947,11 @@ fn evaluate_tree(obs: &Observation, legal: &[Move], cfg: &EngineConfig, rng: &mu
         std::thread::scope(|s| {
             let hs: Vec<_> = seeds
                 .iter()
-                .map(|&seed| {
+                .enumerate()
+                .map(|(t, &seed)| {
+                    let share = cfg.samples / threads + u32::from((t as u32) < cfg.samples % threads);
                     s.spawn(move || {
-                        tree_search(obs, cfg, legal, cfg.samples / threads, &mut SmallRng::seed_from_u64(seed))
+                        tree_search(obs, cfg, legal, share, &mut SmallRng::seed_from_u64(seed))
                     })
                 })
                 .collect();

@@ -1,6 +1,6 @@
 //! Forza della mano: equità contro una mano casuale, E[HS²] per le astrazioni, tabelle preflop.
 
-use crate::cards::{eval, preflop_class, Card, CardSet};
+use crate::cards::{preflop_class, Card, CardSet, Evaluator};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use std::sync::OnceLock;
@@ -36,16 +36,12 @@ impl Rest {
     }
 }
 
-fn score(hole: [Card; 2], board: &[Card]) -> u32 {
-    let mut a = [0u8; 7];
-    a[..board.len()].copy_from_slice(board);
-    a[board.len()] = hole[0];
-    a[board.len() + 1] = hole[1];
-    eval(&a[..board.len() + 2])
-}
-
 /// Equità contro una mano a caso, con le carte comuni mancanti estratte a caso (Monte Carlo).
 pub fn equity_vs_random<R: Rng>(hole: [Card; 2], board: &[Card], samples: u32, rng: &mut R) -> f64 {
+    // Only 990 opponent combinations remain on the river: exact and cheaper than
+    // the app's 4,000 Monte Carlo samples, with no random advice fluctuations.
+    if board.len() == 5 { return river_hs(hole, board); }
+    let samples = samples.max(1);
     let mut used = CardSet::of(board);
     used.add(hole[0]);
     used.add(hole[1]);
@@ -57,7 +53,8 @@ pub fn equity_vs_random<R: Rng>(hole: [Card; 2], board: &[Card], samples: u32, r
     for _ in 0..samples {
         let d = rest.draw(rng, need + 2);
         full[board.len()..].copy_from_slice(&d[2..]);
-        let (me, op) = (score(hole, &full), score([d[0], d[1]], &full));
+        let state = Evaluator::board(&full);
+        let (me, op) = (state.with_hole(hole), state.with_hole([d[0], d[1]]));
         tot += if me > op { 1.0 } else if me == op { 0.5 } else { 0.0 };
     }
     tot / samples as f64
@@ -71,12 +68,13 @@ pub fn river_hs(hole: [Card; 2], board: &[Card]) -> f64 {
     used.add(hole[1]);
     let rest = Rest::without(used);
     let r = rest.all();
-    let me = score(hole, board);
+    let state = Evaluator::board(board);
+    let me = state.with_hole(hole);
     // Il board è comune: si valuta una sola volta per mano avversaria.
     let (mut tot, mut n) = (0.0, 0u32);
     for i in 0..r.len() {
         for j in i + 1..r.len() {
-            let op = score([r[i], r[j]], board);
+            let op = state.with_hole([r[i], r[j]]);
             tot += if me > op { 1.0 } else if me == op { 0.5 } else { 0.0 };
             n += 1;
         }
@@ -94,14 +92,17 @@ pub fn hs2<R: Rng>(hole: [Card; 2], board: &[Card], runouts: u32, opps: u32, rng
     let need = 5 - board.len();
     let mut full = [0u8; 5];
     full[..board.len()].copy_from_slice(board);
+    let runouts = runouts.max(1);
+    let opps = opps.max(1).min(((rest.n - need) / 2) as u32);
     let mut tot = 0.0;
     for _ in 0..runouts {
         let d = rest.draw(rng, need + 2 * opps as usize);
         full[board.len()..].copy_from_slice(&d[..need]);
-        let me = score(hole, &full);
+        let state = Evaluator::board(&full);
+        let me = state.with_hole(hole);
         let mut hs = 0.0;
         for k in 0..opps as usize {
-            let op = score([d[need + 2 * k], d[need + 2 * k + 1]], &full);
+            let op = state.with_hole([d[need + 2 * k], d[need + 2 * k + 1]]);
             hs += if me > op { 1.0 } else if me == op { 0.5 } else { 0.0 };
         }
         let hs = hs / opps as f64;

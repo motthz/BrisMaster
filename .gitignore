@@ -1,2 +1,4 @@
 /target
 /dist
+/crates/rl-py/target
+__pycache__/

@@ -103,6 +103,30 @@ Motore attuale, livello Difficile, 4.000 partite per avversario, tra parentesi l
 
 Un limite importante: la briscola dipende molto dalle carte che arrivano. Contro avversari deboli o medi il motore vince nettamente più della metà delle partite, ma contro un giocatore forte quanto lui nessun algoritmo può garantire più del 50%: due copie dello stesso motore vincono per forza il 50% a testa.
 
+### Risultati della 0.6.0 (motore Massima)
+
+La 0.6.0 tiene lo stesso motore di gioco della 0.5.0 (Massima): in due settimane abbiamo provato 71 idee e un motore
+auto-allenato con reti neurali, e nessuno lo batte in modo misurabile. Tutti i tentativi, con numeri, reti e istruzioni
+per riprenderli, sono in [bench/0.6.0/README.md](bench/0.6.0/README.md). Percentuali della Massima 0.5.0/0.6.0,
+1.000 partite in duplicato per avversario (due semi):
+
+| Avversario | Seme 20261101 | Seme 20261106 |
+|---|---:|---:|
+| Stile circolo | 71,1% | 68,8% |
+| Memoria perfetta | 70,1% | 67,8% |
+| Domenica | 79,2% | 77,5% |
+| Nonno | 77,7% | 75,6% |
+| Circolo con il tempo che stringe | 76,7% | 78,9% |
+| Spavaldo in tilt | 76,2% | 76,7% |
+| Personaggio 162 | 71,4% | 69,9% |
+| Counter | 73,7% | 73,8% |
+| ISMCTS potenziato 2.000 | 58,2% | 55,9% |
+| Avversari costruiti per battere la Massima (modello al 50% / 100%) | 51,1% / 48,4% | |
+
+I migliori tentativi contro la Massima stessa (50% = pari): rete auto-allenata che guida la ricerca 50,4% su 15.500
+partite, 80.000 iterazioni invece di 20.000 48,8%, rete auto-allenata da sola 44,9–48,4%.
+
+
 ## Scopa
 
 Nell'app scegli **Scopa** dal menu in alto. C'è solo l'assistente: indichi chi gioca per primo (tasti 1 e 2)

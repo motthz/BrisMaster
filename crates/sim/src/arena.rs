@@ -139,6 +139,102 @@ pub fn run_deals(player: &str, opponent: &str, deals: std::ops::Range<u64>, seed
         .collect())
 }
 
+/// Una partita vista dal giocatore: com'era la sua mano iniziale e come è finita.
+#[derive(Clone, Copy, Debug)]
+pub struct GameRec {
+    /// 0 se ha aperto la prima presa, 1 se ha risposto.
+    pub seat: u8,
+    /// Briscole e punti nelle sue prime tre carte.
+    pub trumps: u8,
+    pub hand_points: u8,
+    /// Punti finali del giocatore (l'avversario ne ha 120 meno questi).
+    pub points: u8,
+}
+
+/// Come `run_deals` (stessi mazzi, stesse partite), ma restituisce ogni partita con la mano iniziale.
+pub fn run_games(player: &str, opponent: &str, deals: std::ops::Range<u64>, seed: u64) -> Result<Vec<GameRec>, String> {
+    make_agent(player)?;
+    make_agent(opponent)?;
+    Ok(deals
+        .into_par_iter()
+        .flat_map_iter(|d| {
+            let mut deal_rng = SmallRng::seed_from_u64(seed ^ d.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut order: Vec<Card> = (0..NUM_CARDS as u8).collect();
+            order.shuffle(&mut deal_rng);
+            let start = Game::from_order(&order, 0);
+            (0..2usize)
+                .map(|seat| {
+                    let me = make_agent(player).unwrap();
+                    let opp = make_agent(opponent).unwrap();
+                    let mut agents = if seat == 0 { [me, opp] } else { [opp, me] };
+                    let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(d * 2 + seat as u64));
+                    let hand = start.hands[seat];
+                    GameRec {
+                        seat: seat as u8,
+                        trumps: hand.iter().filter(|&c| briscola_core::cards::suit(c) == start.trump).count() as u8,
+                        hand_points: hand.iter().map(briscola_core::cards::points).sum(),
+                        points: play(&order, &mut agents, &mut rng)[seat],
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect())
+}
+
+/// Dati per le reti (stesso formato di `selfplay`). Politica: per ogni decisione di entrambi
+/// i giocatori con più di una carta in mano, ciò che vedeva chi muoveva e la carta scelta.
+/// Valutazione onesta: per ogni decisione col mazzo ancora lungo, ciò che vedeva chi muoveva,
+/// l'esito per lui in mezzi punti e i suoi punti finali.
+/// Ogni partita ha un mazzo a caso e chi apre a turno.
+pub fn policy_records(player: &str, opponent: &str, games: std::ops::Range<u64>, seed: u64) -> Result<(Vec<u8>, Vec<u8>), String> {
+    use briscola_core::net::{canon_index, Position};
+    use briscola_core::Observation;
+    make_agent(player)?;
+    make_agent(opponent)?;
+    let parts: Vec<(Vec<u8>, Vec<u8>)> = games
+        .into_par_iter()
+        .map(|i| {
+            let mut rng = SmallRng::seed_from_u64(seed ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut order: Vec<Card> = (0..NUM_CARDS as u8).collect();
+            order.shuffle(&mut rng);
+            let first = (i % 2) as u8;
+            let mut agents = [make_agent(player).unwrap(), make_agent(opponent).unwrap()];
+            let mut g = Game::from_order(&order, first);
+            for a in agents.iter_mut() {
+                a.start(&order, first);
+            }
+            let mut out = Vec::new();
+            let mut seen: Vec<(Position, u8)> = Vec::new();
+            while !g.is_over() {
+                let p = g.to_move();
+                let c = agents[p as usize].choose(&g, p, &mut rng);
+                let obs = Observation::of(&g, p);
+                if obs.hand.len() > 1 {
+                    Position::of_obs(&obs).write(&mut out);
+                    out.push(canon_index(c, g.trump) as u8);
+                }
+                if g.deck_len > 2 {
+                    seen.push((Position::of_obs(&obs), p));
+                }
+                g.play(c);
+                for a in agents.iter_mut() {
+                    a.observe(c);
+                }
+            }
+            let mut values = Vec::with_capacity(seen.len() * (Position::BYTES + 2));
+            for (pos, p) in seen {
+                pos.write(&mut values);
+                let pts = g.points[p as usize];
+                values.push(if pts > 60 { 2 } else if pts == 60 { 1 } else { 0 });
+                values.push(pts);
+            }
+            (out, values)
+        })
+        .collect();
+    let (pol, val): (Vec<Vec<u8>>, Vec<Vec<u8>>) = parts.into_iter().unzip();
+    Ok((pol.concat(), val.concat()))
+}
+
 /// Statistiche cumulative sui primi `n` mazzi, per ogni `n` in `checkpoints`.
 pub fn prefixes(per_deal: &[MatchStats], checkpoints: &[u64]) -> Vec<MatchStats> {
     checkpoints

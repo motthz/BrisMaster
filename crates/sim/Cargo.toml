@@ -9,6 +9,7 @@ default-run = "briscola-sim"
 briscola-core = { path = "../core" }
 rand = { version = "0.8", features = ["small_rng"] }
 rayon = "1.10"
+serde_json = "1"
 
 # Versioni rilasciate del motore, per i confronti con le versioni precedenti.
 # Per aggiungerne una: nuova riga con il tag e la macro `legacy!` in `src/agents.rs`.

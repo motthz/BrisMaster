@@ -46,6 +46,20 @@ Non sono stati sostituiti i modelli allenati, né attribuiti nuovi rating o
 percentuali di vittoria. Le prove della 0.6.0 mostrano che aumentare le iterazioni
 non rende automaticamente più forte la Briscola.
 
+## Verifiche eseguite
+
+- Suite del workspace in release: **215 passati, 0 falliti, 10 ignorati**; build
+  dell'app completata. Log e metadati in `bench/quality-0.6.0/validation.log` e
+  `validation.json`. I due avvisi di compilazione preesistenti non bloccano la build.
+- Test di conversione dei mazzi, conferma nei sei nuovi giochi, jolly, doppie copie,
+  memoria danneggiata, ruolo della mano e coordinate obsolete superati.
+- Prova GUI con immagine di riferimento: tre carte francesi rilevate, confermate
+  nel Blackjack, EV mostrati e Psy Fly con consiglio «Stai». È una prova della
+  catena software, non della cattura nativa Windows o di un sito reale.
+- Riferimenti ricostruiti da revisione fissata, con verifica dei 54 checksum.
+- Backup Git bundle verificato e clonato senza accesso a GitHub; integrità Git
+  controllata con `git fsck --full`.
+
 ## Verifiche da riprendere
 
 - Eseguire `scripts/validate.sh` dopo ogni modifica, conservando il risultato.

@@ -1,0 +1,22 @@
+{
+  "base_tag": "v0.6.0",
+  "base_commit": "c1e83b751d87b02e83dcbb7921b85ec2afdea372",
+  "code_commit": "79acbffaf35aa3374cdac5a4e5feb91c814b1d20",
+  "platform": "Linux x86_64",
+  "rust": "1.99.1",
+  "command": "bash scripts/validate.sh",
+  "passed": 215,
+  "failed": 0,
+  "ignored": 10,
+  "release_build": "passed",
+  "gui_smoke": "Release app: three reference French cards detected and confirmed into Blackjack, EV table rendered, Psy Fly displayed Stai.",
+  "reference_assets": "54 source PNG checksums verified; regenerated sheet identical to committed asset.",
+  "backup": "Git bundle verified; cloned locally without GitHub; git fsck --full passed.",
+  "not_verified": [
+    "Native Windows capture and overlay transparency/click-through",
+    "Multi-monitor DPI behavior on Windows",
+    "Unseen real-site deck artwork",
+    "Full automatic state reconstruction in the six newly connected games",
+    "Statistical strength improvements"
+  ]
+}

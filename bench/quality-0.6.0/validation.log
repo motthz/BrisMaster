@@ -1,0 +1,425 @@
+   Compiling brismaster v0.6.0 (/workspace/BrisMaster/crates/app)
+    Finished `release` profile [optimized] target(s) in 55.24s
+     Running unittests src/lib.rs (target/release/deps/blackjack_core-d02261d2996c462b)
+
+running 10 tests
+test ev::tests::dealer_dist_sums_to_one ... ok
+test ev::tests::dealer_bust_rates ... ok
+test cards::tests::hand_totals ... ok
+test cards::tests::full_counts ... ok
+test ev::tests::hard_16_vs_10_is_close_call ... ok
+test sim::tests::basic_strategy_matches_exact_ev ... ok
+test strategy::tests::house_edge_in_known_range ... ok
+test strategy::tests::h17_and_surrender_change_the_chart ... ok
+test sim::tests::naive_strategies_lose_more ... ok
+test strategy::tests::matches_published_chart ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.73s
+
+     Running unittests src/bin/blackjack-sim.rs (target/release/deps/blackjack_sim-b0fc8c43333fd76d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/release/deps/briscola_core-80a836d7e6e73c45)
+
+running 14 tests
+test ai::tests::engine_takes_free_points ... ok
+test ai::tests::open_hand_policy_basics ... ok
+test ai::tests::threaded_evaluation_is_complete ... ok
+test cards::tests::total_points_is_120 ... ok
+test cards::tests::trick_rules ... ok
+test game::tests::determinization_is_consistent ... ok
+test game::tests::full_random_game_sums_to_120 ... ok
+test ai::tests::ismcts_evaluation_is_complete ... ok
+test net::tests::position_roundtrip_and_symmetry ... ok
+test rl::tests::encode_one_location_per_card ... ok
+test rl::tests::uncanon_inverts_canon ... ok
+test ai::tests::solver_matches_minimax ... ok
+test infer::tests::reconstructed_histories_are_consistent ... ok
+test ai::tests::table_solver_matches_plain_solver ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.85s
+
+     Running unittests src/bin/bench.rs (target/release/deps/bench-b8f78d3d65d45cb8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/release/deps/briscola_sim-3cdbee5e4fbf9c2f)
+
+running 9 tests
+test agents::tests::specs_parse ... ok
+test banco::tests::families_parse ... ok
+test banco::tests::sequential_stops_early_when_clear ... ok
+test arena::tests::stronger_player_scores_more ... ok
+test opponents::tests::styles_play_legal_games ... ok
+test persona::tests::personas_play_legal_and_differ ... ok
+test persona::tests::perfect_memory_style_beats_short_memory ... ok
+test arena::tests::duplicate_cancels_luck_and_legacy_stays_in_sync ... ok
+test banco::tests::exam_positions_are_decisive_and_the_solver_passes ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.26s
+
+     Running unittests src/bin/reali.rs (target/release/deps/reali-62f15d40f58fe8b1)
+
+running 3 tests
+test tests::rejects_inconsistent_games ... ok
+test tests::accepts_unfinished_games_and_bundles ... ok
+test tests::reconstructs_real_games_and_scores_the_net ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/bin/selfplay.rs (target/release/deps/selfplay-4cc50479a916826e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/train.rs (target/release/deps/train-bbeeb7f02ca370ad)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/release/deps/brismaster-d5f2be0f1a2b1ace)
+
+running 112 tests
+test assistant::tests::a_misread_own_card_is_not_an_opponent_play ... ok
+test assistant::tests::a_rejected_draw_does_not_overwrite_the_manual_recovery ... ok
+test assistant::tests::asks_when_unsure ... ok
+test assistant::tests::banco_partite ... ignored
+test assistant::tests::briscola_extreme_games ... ignored
+test assistant::tests::a_flickering_trump_does_not_restart_the_game ... ok
+test assistant::tests::disconnected_calculation_does_not_wait_forever ... ok
+test assistant::tests::disconnected_reader_requests_recovery_without_erasing_the_game ... ok
+test assistant::tests::corrects_a_wrong_draw_from_the_screen ... ok
+test assistant::tests::explains_advice ... ok
+test assistant::tests::follows_the_screen ... ok
+test app::visual_integration_tests::confirmed_input_reaches_each_new_game_and_rejects_wrong_decks ... ok
+test assistant::tests::inconsistent_screen_suspends_advice_and_recovers_when_it_matches ... ok
+test assistant::tests::inference_survives_a_gap_in_the_game ... ok
+test assistant::tests::keeps_the_game_when_the_background_changes ... ok
+test assistant::tests::last_trump_draw_recovers_an_occluded_response ... ok
+test assistant::tests::moving_a_card_up_is_a_play_not_a_second_hand_row ... ok
+test assistant::tests::notices_new_deal_mid_game ... ok
+test assistant::tests::opponent_log_matches_real_game ... ok
+test assistant::tests::partite_registrate ... ignored
+test assistant::tests::poll_vision_preserves_intermediate_sightings_and_errors ... ok
+test assistant::tests::follows_a_new_game_after_a_background_change ... ok
+test assistant::tests::recording_is_chosen_by_the_user ... ok
+test assistant::tests::records_games ... ok
+test assistant::tests::rejected_rebuild_does_not_teach_card_memory ... ok
+test assistant::tests::rejects_impossible_cards ... ok
+test assistant::tests::space_plays_advice ... ok
+test assistant::tests::stale_analysis_is_discarded_without_starting_another_worker ... ok
+test assistant::tests::stale_screen_never_plays_the_old_advice ... ok
+test assistant::tests::stalled_calculations_have_a_bounded_retry ... ok
+test assistant::tests::tracks_real_games ... ok
+test assistant::tests::types_cards_without_enter ... ok
+test assistant::tests::typing_a_historical_card_does_not_relabel_the_current_image ... ok
+test assistant::tests::undone_cards_are_not_replayed ... ok
+test assistant::tests::warns_when_the_screen_is_another_game ... ok
+test burraco_ui::tests::advice_is_legal ... ok
+test burraco_ui::tests::tracks_a_described_hand ... ok
+test cards_ui::tests::parses_cards ... ok
+test psyfly::tests::cheers_when_played ... ok
+test psyfly::tests::complete_motion_stays_consistent_at_30_60_and_120_hz ... ok
+test psyfly::tests::every_mood_stays_on_screen ... ok
+test psyfly::tests::every_new_gesture_finishes_and_paints_finite_geometry ... ok
+test psyfly::tests::exact_spring_is_independent_of_render_frame_rate ... ok
+test psyfly::tests::export_animation_preview ... ignored, manual animation preview export
+test psyfly::tests::flies_to_the_card ... ok
+test psyfly::tests::hidden_cards_are_not_marked ... ok
+test psyfly::tests::invalid_geometry_never_reaches_the_overlay ... ok
+test psyfly::tests::keeps_the_card_marked ... ok
+test psyfly::tests::outlines_always_use_latest_geometry_without_lag ... ok
+test psyfly::tests::reacts_to_the_mouse ... ok
+test psyfly::tests::swats_enemy_shots ... ok
+test psyfly::tests::waiting_without_a_confirmed_play_does_not_celebrate ... ok
+test scopa_ui::tests::asks_when_unsure ... ok
+test scopa_ui::tests::capture_without_the_card ... ok
+test scopa_ui::tests::final_scopa_result_survives_a_hidden_table ... ok
+test scopa_ui::tests::follows_the_screen ... ok
+test scopa_ui::tests::keyboard_flow ... ok
+test scopa_ui::tests::reads_the_capture ... ok
+test scopa_ui::tests::scopa_never_displays_a_partial_capture ... ok
+test scopa_ui::tests::stopping_a_reader_preserves_the_users_resume_preference ... ok
+test scopa_ui::tests::tracks_real_games ... ok
+test settemezzo_ui::tests::inserimento_e_consiglio ... ok
+test update::tests::versions_compare ... ok
+test vision::bench::banco ... ignored
+test vision::bench::diagnosi_immagine ... ignored
+test vision::confidence_tests::ranked_cards_keep_ties_ambiguous_and_reject_nonfinite_evidence ... ok
+test vision::live::tests::cards_follow_independent_odd_pixel_motion_and_stop_immediately ... ok
+test vision::live::tests::follows_a_small_resize ... ok
+test vision::live::tests::hidden_card_does_not_leave_a_stale_outline_or_hide_its_neighbour ... ok
+test vision::memory::persistence_tests::atomic_save_replaces_existing_json_and_reports_errors ... ok
+test vision::memory::persistence_tests::correlation_is_stable_under_brightness_changes ... ok
+test vision::memory::persistence_tests::corrupt_templates_are_rejected_without_losing_valid_examples ... ok
+test vision::memory::persistence_tests::french_memory_preserves_jokers_separately_from_naples ... ok
+test vision::memory::persistence_tests::invalid_images_never_enter_memory ... ok
+test vision::other_sites::banco_siti ... ignored
+test vision::other_sites::distacco_carte ... ignored
+test assistant::tests::reads_a_large_play_behind_the_hand ... ok
+test vision::other_sites::misure_scritte ... ignored
+test assistant::tests::background_queue_preserves_complete_games ... ok
+test vision::other_sites::unknown_deck_on_many_tables ... ok
+test vision::reference::tests::sheet_cards_recognize_themselves ... ok
+test vision::screen::tests::finds_the_table_on_a_busy_screen ... ok
+test vision::tests::brief_states_are_never_dropped ... ok
+test vision::tests::capture_error_is_delivered_without_a_frame ... ok
+test vision::tests::capture_errors_wake_the_reader_without_a_frame ... ok
+test vision::tests::dark_screen_fallback_never_panics ... ok
+test vision::tests::empty_scopa_table ... ok
+test vision::tests::ignores_what_is_not_a_card ... ok
+test vision::tests::memory_decides_figures ... ok
+test vision::tests::memory_recognizes_a_covered_trump ... ok
+test vision::tests::placement_maps_independent_cards_and_rejects_older_live_frames ... ok
+test vision::tests::placement_requires_matching_fresh_frame_and_healthy_capture ... ok
+test vision::tests::queued_frames_keep_the_capture_time ... ok
+test vision::tests::reads_a_dim_warm_screen ... ok
+test vision::tests::reads_a_wooden_table ... ok
+test vision::tests::reads_cards_under_writing_and_upside_down ... ok
+test vision::tests::reads_real_screenshot ... ok
+test vision::tests::reads_scopa_table ... ok
+test vision::tests::reads_solitalian ... ok
+test vision::tests::silent_reader_becomes_stale_even_without_new_messages ... ok
+test vision::tests::small_cards_are_never_shrunk ... ok
+test vision::tests::small_changes_are_kept ... ok
+test vision::track::tests::follows_the_cards ... ok
+test vision::universal::tests::deck_conversions_preserve_ranks_suits_and_duplicates ... ok
+test vision::other_sites::known_decks_redrawn ... ok
+test vision::universal::tests::full_screen_detection_preserves_two_copies_of_the_same_card ... ok
+test visual_reader::tests::corrections_follow_the_same_card_but_not_replaced_artwork ... ok
+test visual_reader::tests::fly_only_selects_cards_explicitly_marked_as_our_hand ... ok
+test visual_reader::tests::pending_label_and_hand_role_survive_a_fresh_read_of_the_same_artwork ... ok
+test vision::universal::tests::every_french_card_and_joker_is_distinguished ... ok
+test assistant::tests::follows_whole_games_on_screen has been running for over 60 seconds
+test vision::other_sites::writing_is_not_a_card has been running for over 60 seconds
+test vision::other_sites::writing_is_not_a_card ... ok
+test assistant::tests::follows_whole_games_on_screen ... ok
+
+test result: ok. 103 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 124.80s
+
+     Running unittests src/lib.rs (target/release/deps/burraco-6378b840f6b35059)
+
+running 12 tests
+test cards::tests::codes_round_trip ... ok
+test ai::tests::plans_naturals ... ok
+test cards::tests::deck_values ... ok
+test game::tests::cannot_close_without_burraco ... ok
+test game::tests::deal_and_conservation ... ok
+test game::tests::pozzetto_in_hand_and_on_the_fly ... ok
+test game::tests::take_pile_and_determinize ... ok
+test melds::tests::fast_natural_matches_general ... ok
+test melds::tests::groups_and_burraco ... ok
+test melds::tests::sequences ... ok
+test engine::evaluation_tests::streaming_parallel_evaluation_preserves_results ... ok
+test ai::tests::full_games_are_legal ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running unittests src/bin/burraco-sim.rs (target/release/deps/burraco_sim-ba23f249176e1a17)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/release/deps/poker_core-70adbecd5bcced31)
+
+running 18 tests
+test abstraction::size::print_size ... ignored
+test cards::tests::all_hands_classes ... ok
+test cards::tests::categories ... ok
+test cards::tests::ordering ... ok
+test cards::tests::board_state_matches_direct_evaluation_and_best_five ... ok
+test engine::tests::pseudo_harmonic_endpoints ... ok
+test abstraction::tests::tree_is_sane ... ok
+test cards::tests::category_frequencies_7_cards ... ok
+test equity::tests::river_equity_is_exact_and_independent_of_seed_and_budget ... ok
+test equity::tests::river_nuts ... ok
+test game::tests::allin_preflop_goes_to_showdown ... ok
+test game::tests::blinds_and_order ... ok
+test game::tests::checks_through_to_river ... ok
+test game::tests::deals_are_random ... ok
+test game::tests::short_allin_call ... ok
+test engine::tests::strategy_roundtrip ... ok
+test equity::tests::known_preflop_equities ... ok
+test engine::tests::engine_follows_real_hands_and_plays_legal ... ok
+
+test result: ok. 17 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running unittests src/lib.rs (target/release/deps/poker_it-7a169566aa321061)
+
+running 14 tests
+test cards::tests::parse_names ... ok
+test cards::tests::index_is_a_bijection ... ok
+test draw::tests::sensible_draws ... ok
+test eval::tests::categories_and_order ... ok
+test draw::tests::optimized_draw_preserves_every_mask_and_custom_callback_order ... ok
+test eval::tests::suit_breaks_ties ... ok
+test game::tests::check_check_then_draw_then_showdown ... ok
+test game::tests::fold_gives_pot ... ok
+test opponent::tests::contexts_follow_the_betting ... ok
+test opponent::tests::saved_and_loaded ... ok
+test strategy::tests::saved_and_loaded ... ok
+test eval::tests::no_ties_and_counts ... ok
+test adaptive::tests::profiles_round_trip ... ok
+test adaptive::tests::recognises_the_styles ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.96s
+
+     Running unittests src/main.rs (target/release/deps/poker_it_sim-1206112ee086c35d)
+
+running 1 test
+test arena::tests::duplicate_is_fair_for_identical_deterministic_players ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running unittests src/main.rs (target/release/deps/poker_sim-1dea21bab7606cad)
+
+running 1 test
+test arena::tests::duplicate_is_fair_for_identical_deterministic_players ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/release/deps/scala40_core-edd8ef48b8190391)
+
+running 9 tests
+test game::tests::match_ends_at_101 ... ok
+test cards::tests::deck_composition ... ok
+test game::tests::opening_needs_forty_and_discard_must_be_used ... ok
+test meld::tests::attach_and_swap ... ok
+test meld::tests::sets_and_runs ... ok
+test solver::tests::ace_high_and_low ... ok
+test solver::tests::opening_value ... ok
+test solver::tests::forced_card ... ok
+test ai::tests::players_play_legal_deals ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+     Running unittests src/main.rs (target/release/deps/scala40_sim-4a3732554e863b08)
+
+running 1 test
+test arena::tests::duplicate_is_symmetric_for_identical_players ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/release/deps/scopa_core-35086e62a706bf53)
+
+running 11 tests
+test ai::tests::inference_doubts_a_missed_scopa ... ok
+test ai::tests::solver_matches_minimax ... ok
+test game::tests::capture_rules ... ok
+test game::tests::determinization_is_consistent ... ok
+test game::tests::match_end ... ok
+test game::tests::observation_follows_the_game ... ok
+test game::tests::primiera_and_score ... ok
+test game::tests::random_hands_are_consistent ... ok
+test ai::tests::match_table_is_sane ... ok
+test ai::tests::threaded_evaluation_is_complete ... ok
+test ai::tests::takes_the_scopa ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running unittests src/main.rs (target/release/deps/scopa_sim-502bef4c82d847cf)
+
+running 3 tests
+test agents::tests::specs_parse ... ok
+test arena::tests::duplicate_is_fair ... ok
+test arena::tests::stronger_player_scores_more ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/release/deps/settemezzo-023df354cb00aa28)
+
+running 7 tests
+test banco::tests::soglia ... ok
+test banco::tests::esperto_insegue_e_si_ferma ... ok
+test tests::deck_composition ... ok
+test tests::totals_and_matta ... ok
+test solver::tests::non_si_chiede_con_sette_e_mezzo ... ok
+test solver::tests::dist_sums_to_one_and_optimal_dominates ... ok
+test sim::tests::simulazione_coerente_con_il_calcolo_esatto ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
+
+     Running unittests src/bin/settemezzo-sim.rs (target/release/deps/settemezzo_sim-227681210460c919)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests blackjack_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests briscola_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests burraco
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests poker_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests poker_it
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests scala40_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests scopa_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests settemezzo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling brismaster v0.6.0 (/workspace/BrisMaster/crates/app)
+warning: unused import: `channel`
+   --> crates/app/src/vision/mod.rs:144:23
+    |
+144 | use std::sync::mpsc::{channel, sync_channel, Receiver, TrySendError};
+    |                       ^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `next_with` is never used
+   --> crates/app/src/vision/mod.rs:662:12
+    |
+627 | impl<T> Frames<T> {
+    | ----------------- method in this implementation
+...
+662 |     pub fn next_with(&mut self) -> Option<(Img, T)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `brismaster` (bin "brismaster") generated 2 warnings (run `cargo fix --bin "brismaster" -p brismaster` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 44.16s

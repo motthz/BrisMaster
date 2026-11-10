@@ -1,0 +1,24 @@
+[package]
+name = "briscola-rl"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Fuori dal workspace: è un modulo Python (pyo3) usato solo per allenare la rete in cloud,
+# non entra né nei test né nella build dell'app.
+[workspace]
+
+[lib]
+name = "briscola_rl"
+crate-type = ["cdylib"]
+
+[dependencies]
+briscola-core = { path = "../core" }
+rand = { version = "0.8", features = ["small_rng"] }
+pyo3 = { version = "0.23", features = ["extension-module"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

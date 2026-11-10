@@ -1,0 +1,8 @@
+  Rete auto-allenata grande_49M.brl (temperatura 0) contro ISMCTS potenziato (20000 iterazioni) · deduce le carte avversarie (temperatura 1, minimo 25%): 44,9%  (1947s)
+Rete auto-allenata grande_49M.brl (temperatura 0) contro ISMCTS potenziato (20000 iterazioni) · deduce le carte avversarie (temperatura 1, minimo 25%)
+Partite: 2000 (1000 mazzi in duplicato), seme 20261105
+Vittorie 866 | Pareggi 62 | Sconfitte 1072
+Percentuale vittorie: 43.30%  (IC 95%: 41.14% - 45.48%)
+Punteggio (pareggio = ½): 44.85%  (IC 95% sui mazzi: 42.84% - 46.86%, Elo -36)
+Punti medi del giocatore: 58.69 / 120
+Tempo: 1946.7s

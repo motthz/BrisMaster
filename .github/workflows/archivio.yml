@@ -1,0 +1,60 @@
+name: Archivio 0.6.0
+
+# Pubblica come release (non è una versione dell'app) le reti e gli stati di allenamento
+# dei tentativi della 0.6.0. I file grandi sono divisi in parti sotto i 100 MB e qui si ricompongono.
+
+on:
+  push:
+    branches: ["archivio/0.6.0"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  archivio:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/rl-stato
+          path: rl-stato
+      - name: Ricompone i file
+        run: |
+          mkdir out
+          cd file
+          for f in stato_grande_cloud.pt stato_rete_piccola_90M.pt stato_cloud.pt; do
+            cat "$f".parte* > ../out/"$f"
+            rm "$f".parte*
+          done
+          cp * ../out/
+          cp ../rl-stato/stato_grande.pt ../out/stato_grande_pc_88M.pt
+          cp ../rl-stato/stato_ridotto.pt ../out/stato_ridotto_81M.pt
+          cp ../rl-stato/rete_grande_finale.brl ../out/grande_88M.brl
+          cd ../out
+          sha256sum * > SHA256SUMS.txt
+          ls -la
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: archivio-0.6.0
+          target_commitish: 3de7a91205affefe2c54bedc8d806958fa96e888
+          name: Archivio 0.6.0 - reti e tentativi del motore (non è una versione dell'app)
+          prerelease: true
+          make_latest: false
+          files: out/*
+          body: |
+            **Non è una versione dell'app**: per installare BrisMaster usa l'ultima release `vX.Y.Z`.
+
+            Qui ci sono le reti e gli stati di allenamento dei tentativi fatti per la 0.6.0, perché si possano riprendere.
+            Numeri e istruzioni: [bench/0.6.0/README.md](https://github.com/motthz/BrisMaster/blob/main/bench/0.6.0/README.md).
+
+            - `rete_17M` … `rete_81M.brl`: rete auto-allenata piccola a 17, 28, 35, 38, 51 e 81 milioni di partite.
+            - `grande_49M.brl`, `grande_88M.brl`: rete auto-allenata grande (hidden 1024) a 49 e 88 milioni di partite.
+            - `stato_*.pt`: stati di allenamento completi per `crates/rl-py/python/allena.py`
+              (`stato_rete_piccola_90M.pt` rete piccola a ~90M; `stato_cloud.pt` rete piccola del 7/11;
+              `stato_grande_cloud.pt` rete grande dal cloud; `stato_grande_pc_88M.pt` e `stato_ridotto_81M.pt` stati ridotti).
+            - `run1.tgz`: cartella della prima corsa della rete piccola; `log_*`: log di allenamento.
+            - `prove_massima.tgz`, `vs_massima_49M.txt`: risultati delle prove contro la Massima 0.5.0.
+            - `briscola-060-banco.tgz`: rapporti del banco, tabelle, reti di politica/valutazione e cache delle prove 0.6.0.
+            - `LEGGIMI.md`: riepilogo. `SHA256SUMS.txt`: impronte dei file.

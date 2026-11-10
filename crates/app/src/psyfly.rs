@@ -16,8 +16,11 @@ pub enum Guide {
     Waiting,
     /// Tocca a te e il motore sta pensando.
     Thinking,
+    /// The engine has a move, but its complete visual location is unavailable.
+    Seeking,
     /// La carta da giocare e, nella scopa, le carte da prendere (pixel del desktop).
     Play {
+        id: AdviceId,
         card: [f32; 4],
         take: Vec<[f32; 4]>,
     },
@@ -29,6 +32,13 @@ pub enum Guide {
     Hidden,
 }
 
+/// Semantic identity: changing monitor position must not change the advised move.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AdviceId {
+    pub card: u8,
+    pub take: u64,
+}
+
 /// Quello che la mosca sa del tavolo.
 pub struct Sight {
     /// Il monitor dove si gioca (None finché la lettura non lo trova).
@@ -36,12 +46,14 @@ pub struct Sight {
     /// Le tue carte sullo schermo (pixel del desktop): ci gironzola sopra.
     pub hand: Vec<[f32; 4]>,
     pub guide: Guide,
+    pub context: (u8, u64),
+    pub played_card: Option<u8>,
 }
 
 impl Sight {
     /// Niente da indicare: la lettura dello schermo è spenta.
     pub fn off() -> Sight {
-        Sight { monitor: None, hand: Vec::new(), guide: Guide::NoTable }
+        Sight { monitor: None, hand: Vec::new(), guide: Guide::NoTable, context: (0, 0), played_card: None }
     }
 }
 
@@ -109,6 +121,30 @@ enum Mood {
     Sad,
 }
 
+/// Small performances have their own clocks, separate from the game state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Gesture {
+    Wave,
+    Stretch,
+    Groom,
+    Scan,
+    Bow,
+    Dance,
+}
+
+impl Gesture {
+    fn duration(self) -> f32 {
+        match self {
+            Self::Wave => 1.8,
+            Self::Stretch => 2.4,
+            Self::Groom => 2.6,
+            Self::Scan => 2.8,
+            Self::Bow => 2.0,
+            Self::Dance => 3.4,
+        }
+    }
+}
+
 pub struct Fly {
     pub on: bool,
     pos: Pos2,
@@ -123,6 +159,7 @@ pub struct Fly {
     blink: f32,
     mood: Mood,
     mood_t: f32,
+    seeking: bool,
     /// La carta indicata l'ultima volta (per accorgersi che è cambiata o è stata giocata).
     target: Option<[f32; 4]>,
     /// Quale carta del percorso (carta da giocare, poi quelle da prendere) sta indicando.
@@ -171,12 +208,21 @@ pub struct Fly {
     placed: Option<Geom>,
     /// L'ultima carta da giocare indicata e quando: se la lettura la perde per un attimo (la carta
     /// coperta dal mouse o da un'animazione del sito) resta segnata.
-    last_play: Option<(Guide, f32)>,
+    last_play: Option<(Guide, std::time::Instant)>,
     /// Il monitor delle carte, per accorgersi che sono passate su un altro.
     monitor: Option<Geom>,
     /// Le carte segnate come sono disegnate adesso (scivolano verso la posizione letta).
     shown: Vec<Rect>,
     retarget: bool,
+    played_confirmed: bool,
+    advice: Option<AdviceId>,
+    context: Option<(u8, u64)>,
+    gesture: Option<(Gesture, f32)>,
+    next_gesture: f32,
+    bank: f32,
+    wing_phase: f32,
+    native_retry: f64,
+    native_error: Option<String>,
 }
 
 impl Default for Fly {
@@ -193,6 +239,7 @@ impl Default for Fly {
             blink: 0.0,
             mood: Mood::Lost,
             mood_t: 0.0,
+            seeking: false,
             target: None,
             hop: 0,
             hop_t: 0.0,
@@ -226,6 +273,15 @@ impl Default for Fly {
             monitor: None,
             shown: Vec::new(),
             retarget: false,
+            played_confirmed: false,
+            advice: None,
+            context: None,
+            gesture: Some((Gesture::Wave, 0.0)),
+            next_gesture: 4.0,
+            bank: 0.0,
+            wing_phase: 0.0,
+            native_retry: 0.0,
+            native_error: None,
         }
     }
 }
@@ -271,7 +327,7 @@ impl Fly {
             let t = ui.input(|i| i.time) as f32;
             let r = 10.0 + 1.5 * (t * 4.0).sin();
             p.circle_stroke(c, r, Stroke::new(1.5, PSY.gamma_multiply(0.7 * k)));
-            ui.ctx().request_repaint();
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
         }
         let flap = if self.on { ((ui.input(|i| i.time) * 20.0) as i32) % 3 } else { 1 };
         let mut pose = Pose::new(1.6);
@@ -294,31 +350,50 @@ impl Fly {
         );
         let _ =
             ui.label(egui::RichText::new("Psy Fly").strong().color(if self.on { BODY_LIGHT } else { Color32::GRAY }));
+        if let Some(error) = &self.native_error {
+            ui.colored_label(Color32::LIGHT_RED, "Psy Fly: overlay non pronto").on_hover_text(error);
+        }
         resp.changed()
     }
 
     /// Disegna la mosca nella sua finestra sopra il monitor del gioco (se è accesa e il monitor è noto).
     pub fn show(&mut self, ctx: &egui::Context, sight: Sight) {
         if !self.on {
-            self.placed = None;
+            *self = Fly::default();
             return;
         }
-        let Some(g) = sight.monitor else { return };
+        let Some(g) = sight.monitor else {
+            self.last_play = None;
+            self.shown.clear();
+            self.advice = None;
+            self.placed = None;
+            return;
+        };
+        self.played_confirmed = sight.played_card.is_some_and(|c| self.advice.is_some_and(|a| a.card == c));
+        if self.context != Some(sight.context) {
+            self.last_play = None;
+            self.advice = None;
+            if !self.played_confirmed {
+                self.target = None;
+            }
+            self.shown.clear();
+            self.hop = 0;
+            self.hop_t = 0.0;
+            self.context = Some(sight.context);
+        }
         if self.monitor.is_some_and(|m| m != g) {
             // Le carte sono passate su un altro monitor: la mosca ci rientra volando dal bordo,
             // invece di comparire di colpo da un'altra parte.
-            self.started = false;
-            self.parts.clear();
-            self.bubble = None;
-            self.shown.clear();
+            *self = Fly { on: true, context: Some(sight.context), ..Fly::default() };
         }
         self.monitor = Some(g);
         let guide = self.sticky(sight.guide.clone());
         let sight = Sight { guide, ..sight };
         // La finestra copre il monitor (un pixel in meno in basso: una finestra grande quanto lo
         // schermo Windows la tratterebbe da schermo intero e nasconderebbe la barra).
+        let title = format!("{TITLE} ({})", std::process::id());
         let builder = egui::ViewportBuilder::default()
-            .with_title(TITLE)
+            .with_title(&title)
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top()
@@ -329,8 +404,22 @@ impl Fly {
             .with_position(pos2(g.x / g.scale, g.y / g.scale))
             .with_inner_size(vec2(g.w / g.scale, (g.h - 1.0) / g.scale));
         ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("psy_fly"), builder, |ui, _| {
-            if self.placed != Some(g) && native::place(TITLE, g) {
-                self.placed = Some(g);
+            let now = ui.input(|i| i.time);
+            if self.placed != Some(g) && now >= self.native_retry {
+                match native::place(&title, g) {
+                    Ok(()) => {
+                        self.placed = Some(g);
+                        self.native_error = None;
+                    }
+                    Err(e) => {
+                        self.native_error = Some(e);
+                        self.native_retry = now + 1.0;
+                    }
+                }
+            }
+            // Do not draw an overlay that could contaminate its own screen capture.
+            if cfg!(windows) && self.placed != Some(g) {
+                return;
             }
             let ppp = ui.ctx().pixels_per_point();
             let to_local = |r: [f32; 4]| {
@@ -341,26 +430,33 @@ impl Fly {
             };
             let screen = Rect::from_min_size(Pos2::ZERO, vec2(g.w / ppp, g.h / ppp));
             let hand: Vec<Rect> = sight.hand.iter().map(|&r| to_local(r)).collect();
-            let dt = ui.input(|i| i.stable_dt).clamp(0.001, 0.05);
-            let guide = match &sight.guide {
-                Guide::Play { card, take } => {
-                    let all: Vec<Rect> = std::iter::once(*card).chain(take.iter().copied()).map(to_local).collect();
-                    let all = self.glide(all, dt);
-                    Some((all[0], all[1..].to_vec()))
-                }
-                _ => {
-                    self.shown.clear();
-                    None
-                }
-            };
+            let dt = ui.input(|i| i.unstable_dt).clamp(0.001, 0.1);
+            let guide = self.visual_play(&sight.guide, to_local, dt);
             let painter = ui.painter().clone();
             // Il mouse lo legge da Windows: la finestra della mosca lascia passare i clic.
             let mouse = native::cursor().map(|(x, y, down)| (pos2((x - g.x) / ppp, (y - g.y) / ppp), down));
-            self.step(dt, screen, &hand, &sight.guide, guide.as_ref());
+            self.advance(dt, screen, &hand, &sight.guide, guide.as_ref());
             self.interact(dt, &hand, guide.as_ref(), mouse);
             self.paint(&painter, guide.as_ref());
         });
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    }
+
+    fn visual_play(&mut self, guide: &Guide, map: impl Fn([f32; 4]) -> Rect, dt: f32) -> Option<(Rect, Vec<Rect>)> {
+        match guide {
+            Guide::Play { id, card, take } => {
+                let all = std::iter::once(*card).chain(take.iter().copied()).map(map).collect();
+                let all = self.glide(*id, all, dt);
+                Some((all[0], all[1..].to_vec()))
+            }
+            _ => {
+                if *guide != Guide::Hidden {
+                    self.shown.clear();
+                    self.advice = None;
+                }
+                None
+            }
+        }
     }
 
     /// Reazioni al mouse: lo guarda, si spaventa se arriva di corsa, fa le fusa se ci resta
@@ -372,6 +468,7 @@ impl Fly {
         self.shake = (self.shake - dt).max(0.0);
         self.nod = (self.nod - dt).max(0.0);
         if std::mem::take(&mut self.greet) {
+            self.gesture = Some((Gesture::Wave, 0.0));
             let s = self.pick(&HELLO);
             self.say(s, 1.6);
             self.boing = 0.8;
@@ -389,7 +486,7 @@ impl Fly {
         // Lo sguardo segue il mouse quando è vicino (se non sta indicando una carta).
         if d < 320.0 && self.mood != Mood::Pointing {
             let want = (m - self.pos) / 120.0;
-            self.look += (want.clamp(vec2(-1.0, -1.0), vec2(1.0, 1.0)) - self.look) * (dt * 10.0).min(1.0);
+            self.look += (want.clamp(vec2(-1.0, -1.0), vec2(1.0, 1.0)) - self.look) * (1.0 - (-10.0 * dt).exp());
         }
         // Un colpetto: le gira la testa.
         if click && d < 14.0 * PX {
@@ -446,7 +543,7 @@ impl Fly {
                 // La stai giocando!
                 let at = self.pos;
                 self.burst(at, 10, Kind::Heart, 200.0);
-                self.say("Sì! Ottima scelta!", 1.4);
+                self.say("Bzz! Aspetto la giocata…", 1.4);
                 self.boing = 1.0;
                 return;
             }
@@ -475,13 +572,17 @@ impl Fly {
     /// La carta da giocare resta indicata per un po' anche se una lettura non la ritrova (tocca
     /// ancora a te ma la carta non si vede bene), finché la partita non va avanti.
     fn sticky(&mut self, guide: Guide) -> Guide {
+        self.sticky_at(guide, std::time::Instant::now())
+    }
+
+    fn sticky_at(&mut self, guide: Guide, now: std::time::Instant) -> Guide {
         match guide {
             Guide::Play { .. } => {
-                self.last_play = Some((guide.clone(), self.t));
+                self.last_play = Some((guide.clone(), now));
                 guide
             }
             Guide::Thinking => match &self.last_play {
-                Some((g, at)) if self.t - at < STICKY => g.clone(),
+                Some((g, at)) if now.saturating_duration_since(*at).as_secs_f32() < STICKY => g.clone(),
                 _ => guide,
             },
             _ => {
@@ -491,21 +592,11 @@ impl Fly {
         }
     }
 
-    /// Le carte segnate scivolano verso la posizione nuova (lo schermo che si sposta arriva a
-    /// scatti, dieci volte al secondo) invece di saltare; una carta diversa si segna subito.
-    fn glide(&mut self, want: Vec<Rect>, dt: f32) -> Vec<Rect> {
-        let near = self.shown.len() == want.len()
-            && self.shown.iter().zip(&want).all(|(a, b)| (a.center() - b.center()).length() < 700.0);
-        if !near {
-            // Un'altra carta (o la prima): la mosca la annuncia.
-            self.retarget = true;
-            self.shown = want;
-            return self.shown.clone();
-        }
-        let k = (dt * 18.0).min(1.0);
-        for (a, b) in self.shown.iter_mut().zip(&want) {
-            *a = Rect::from_min_max(a.min.lerp(b.min, k), a.max.lerp(b.max, k));
-        }
+    /// The outline uses the newest measured box directly. Only the fly has inertia.
+    fn glide(&mut self, id: AdviceId, want: Vec<Rect>, _dt: f32) -> Vec<Rect> {
+        self.retarget = self.advice != Some(id);
+        self.advice = Some(id);
+        self.shown = want;
         self.shown.clone()
     }
 
@@ -553,6 +644,14 @@ impl Fly {
     }
 
     /// Fa avanzare l'animazione di `dt` secondi.
+    fn advance(&mut self, dt: f32, screen: Rect, hand: &[Rect], guide: &Guide, play: Option<&(Rect, Vec<Rect>)>) {
+        // Fixed upper bound on simulation steps keeps motion consistent at 30/60/120 Hz.
+        let steps = (dt / (1.0 / 120.0)).ceil().max(1.0) as u32;
+        for _ in 0..steps {
+            self.step(dt / steps as f32, screen, hand, guide, play);
+        }
+    }
+
     fn step(&mut self, dt: f32, screen: Rect, hand: &[Rect], guide: &Guide, play: Option<&(Rect, Vec<Rect>)>) {
         self.t += dt;
         let t = self.t;
@@ -577,7 +676,7 @@ impl Fly {
                     Mood::Bored
                 }
             }
-            Guide::Thinking => Mood::Thinking,
+            Guide::Thinking | Guide::Seeking => Mood::Thinking,
             Guide::Play { .. } => Mood::Pointing,
             Guide::Won | Guide::Tie => Mood::Party,
             Guide::Lost => Mood::Sad,
@@ -592,7 +691,11 @@ impl Fly {
             (Some(_), Some(_)) => std::mem::take(&mut self.retarget),
             (a, b) => a.is_some() != b.is_some(),
         };
-        if mood != self.mood || moved {
+        let source_changed = !hidden && self.seeking != (*guide == Guide::Seeking);
+        if !hidden {
+            self.seeking = *guide == Guide::Seeking;
+        }
+        if mood != self.mood || moved || source_changed {
             let was = self.mood;
             self.mood_t = 0.0;
             self.hop = 0;
@@ -601,6 +704,7 @@ impl Fly {
                 Mood::Pointing => {
                     self.alert = 0.7;
                     self.next_dive = 0.9;
+                    self.gesture = Some((Gesture::Bow, 0.0));
                     let text =
                         if play.is_some_and(|p| !p.1.is_empty()) { self.pick(&PLAY_TAKE) } else { self.pick(&PLAY) };
                     self.say(text, 2.6);
@@ -613,15 +717,20 @@ impl Fly {
                     let at = self.pos;
                     self.burst(at, 40, Kind::Confetti, 420.0);
                     self.burst(at, 8, Kind::Heart, 160.0);
+                    self.gesture = Some((Gesture::Dance, 0.0));
                 }
                 Mood::Sad => self.say("Uffa... la prossima la vinciamo!", 4.0),
                 Mood::Thinking => {
-                    self.bubble = Some(Bubble { text: String::new(), age: 0.0, life: 60.0, thought: true });
+                    if *guide == Guide::Seeking {
+                        self.say("Bzz… cerco tutte le carte!", 3.0);
+                    } else {
+                        self.bubble = Some(Bubble { text: String::new(), age: 0.0, life: 60.0, thought: true });
+                    }
                 }
                 Mood::Lost => self.say("Dove sono le carte?", 2.5),
                 Mood::Sleepy => self.say("Zzz...", 2.0),
                 Mood::Bored => {
-                    if was == Mood::Pointing && self.target.is_some() {
+                    if was == Mood::Pointing && self.target.is_some() && self.played_confirmed {
                         // La carta indicata è sparita dalla mano: giocata!
                         let text = self.pick(&PLAYED);
                         self.say(text, 2.0);
@@ -648,6 +757,7 @@ impl Fly {
         }
         self.target = new_target;
         self.mood_t += dt;
+        self.animate(dt, hidden);
 
         // Dove andare.
         let mt = self.mood_t;
@@ -680,6 +790,24 @@ impl Fly {
             Mood::Party => home + vec2((t * 3.0).cos() * 130.0, (t * 3.0).sin() * 70.0 - 40.0),
             Mood::Sad => home + vec2((t * 0.5).sin() * 30.0, 20.0 + (t * 0.9).sin() * 6.0),
         };
+
+        // Each performance eases in and out without moving the advice border.
+        if let Some((gesture, age)) = self.gesture {
+            let u = (age / gesture.duration()).clamp(0.0, 1.0);
+            let envelope = (std::f32::consts::PI * u).sin().powi(2);
+            match gesture {
+                Gesture::Dance => {
+                    goal += vec2(
+                        (u * std::f32::consts::TAU * 2.0).sin() * 65.0,
+                        -(u * std::f32::consts::TAU * 4.0).sin().abs() * 35.0,
+                    ) * envelope
+                }
+                Gesture::Stretch => goal.y -= envelope * 12.0,
+                Gesture::Scan => goal.x += (u * std::f32::consts::TAU).sin() * 25.0 * envelope,
+                Gesture::Bow if self.mood == Mood::Pointing => goal.y += envelope * 12.0,
+                _ => {}
+            }
+        }
 
         // Danza a otto, ogni tanto, quando si annoia.
         if let Some(e) = self.eight {
@@ -745,26 +873,30 @@ impl Fly {
         };
         let buzz = vec2((t * 9.0).sin() + (t * 23.0).cos() * 0.5, (t * 11.0).cos() + (t * 19.0).sin() * 0.5) * 60.0;
         let buzz = if self.mood == Mood::Sleepy && mt > 2.0 { Vec2::ZERO } else { buzz };
-        let acc = (goal - self.pos) * k - self.vel * damp + buzz;
-        self.vel += acc * dt;
+        (self.pos, self.vel) = spring(self.pos, self.vel, goal + buzz / k, k, damp, dt);
         let max = 1600.0;
         if self.vel.length() > max {
             self.vel = self.vel.normalized() * max;
         }
-        self.pos += self.vel * dt;
         self.pos = self.pos.clamp(screen.min + vec2(30.0, 30.0), screen.max - vec2(30.0, 30.0));
+
+        // Bank into turns with damping; wings accelerate naturally with flight speed.
+        let desired_bank = (self.vel.x / 2800.0).clamp(-0.28, 0.28);
+        self.bank += (desired_bank - self.bank) * (1.0 - (-7.0 * dt).exp());
+        let wing_hz = if self.mood == Mood::Sleepy { 1.0 } else { 8.0 + self.vel.length().min(1200.0) / 240.0 };
+        self.wing_phase = (self.wing_phase + dt * wing_hz * std::f32::consts::TAU).rem_euclid(std::f32::consts::TAU);
 
         // Verso e sguardo.
         // Si gira solo quando vola davvero da quella parte, non per ogni ronzio sul posto.
         if self.vel.x.abs() > 260.0 {
             self.facing = self.vel.x.signum();
         }
-        self.face += (self.facing - self.face) * (dt * 14.0).min(1.0);
+        self.face += (self.facing - self.face) * (1.0 - (-14.0 * dt).exp());
         let look_at = match (self.mood, play) {
             (Mood::Pointing, Some((card, _))) => (card.center() - self.pos).normalized(),
             _ => (self.vel / 400.0).clamp(vec2(-1.0, -1.0), vec2(1.0, 1.0)),
         };
-        self.look += (look_at - self.look) * (dt * 8.0).min(1.0);
+        self.look += (look_at - self.look) * (1.0 - (-8.0 * dt).exp());
 
         // Palpebre.
         self.next_blink -= dt;
@@ -855,7 +987,7 @@ impl Fly {
 
         // Scie, cuori, zeta, lacrime.
         let speed = self.vel.length();
-        if speed > 500.0 && self.rng.gen_bool((speed / 2500.0).min(0.9) as f64) {
+        if speed > 500.0 && self.rng.gen_bool((1.0 - (1.0 - (speed / 2500.0).min(0.9)).powf(dt * 60.0)) as f64) {
             let p = self.pos - self.vel.normalized() * 22.0
                 + vec2(self.rng.gen_range(-6.0..6.0), self.rng.gen_range(-6.0..6.0));
             let c = if self.rng.gen_bool(0.5) { PSY } else { PSY_PINK };
@@ -935,6 +1067,30 @@ impl Fly {
         }
     }
 
+    fn animate(&mut self, dt: f32, hidden: bool) {
+        if hidden {
+            self.gesture = None;
+            return;
+        }
+        if let Some((g, age)) = &mut self.gesture {
+            *age += dt;
+            if *age >= g.duration() {
+                self.gesture = None;
+            }
+        }
+        self.next_gesture -= dt;
+        if self.gesture.is_none() && self.next_gesture <= 0.0 {
+            self.next_gesture = self.rng.gen_range(5.0..9.0);
+            let gesture = match self.mood {
+                Mood::Bored => Some(if self.rng.gen_bool(0.5) { Gesture::Stretch } else { Gesture::Groom }),
+                Mood::Thinking | Mood::Lost => Some(Gesture::Scan),
+                Mood::Party => Some(Gesture::Dance),
+                _ => None,
+            };
+            self.gesture = gesture.map(|g| (g, 0.0));
+        }
+    }
+
     fn paint(&self, p: &Painter, play: Option<&(Rect, Vec<Rect>)>) {
         let t = self.t;
         // Le carte indicate.
@@ -959,7 +1115,7 @@ impl Fly {
 
         // La mosca.
         let mut at =
-            self.pos + vec2((t * 37.0).sin(), (t * 41.0).cos()) * if self.mood == Mood::Sleepy { 0.0 } else { 1.2 };
+            self.pos + vec2((t * 13.0).sin(), (t * 17.0).cos()) * if self.mood == Mood::Sleepy { 0.0 } else { 0.65 };
         let mut sx = 1.0;
         if let Some(s) = self.spin {
             // Giravolta: un giro della morte piccolo, la mosca si schiaccia e si gira.
@@ -978,7 +1134,7 @@ impl Fly {
             at.y += (self.nod * 25.0).sin() * 5.0 * self.nod;
         }
         if self.shake > 0.0 {
-            sx *= (self.shake * 30.0).cos().signum();
+            sx *= 1.0 - 0.18 * (self.shake * 20.0).sin();
         }
         // Ombra sul tavolo, più piccola e chiara quando vola alta.
         let ground = (at.y + 70.0).min(p.clip_rect().bottom() - 10.0);
@@ -1021,6 +1177,40 @@ impl Fly {
         let mut pose = Pose::new(PX * sxx);
         pose.face = self.face * sx;
         pose.sy = syy;
+        pose.tilt = self.bank;
+        pose.wing = if self.mood == Mood::Sleepy && self.mood_t > 2.0 { None } else { Some(self.wing_phase.sin()) };
+        pose.antenna = (t * 5.0).sin() * 0.45;
+        if let Some((gesture, age)) = self.gesture {
+            let u = (age / gesture.duration()).clamp(0.0, 1.0);
+            let e = (std::f32::consts::PI * u).sin().powi(2);
+            match gesture {
+                Gesture::Wave => {
+                    pose.wave = Some(age * 13.0);
+                    pose.tilt += (age * 7.0).sin() * 0.12 * e;
+                }
+                Gesture::Stretch => {
+                    pose.sy *= 1.0 + 0.22 * e;
+                    pose.s *= 1.0 - 0.08 * e;
+                    pose.wave = Some(0.0);
+                }
+                Gesture::Groom => {
+                    pose.rub = Some(age * 7.0);
+                    pose.tilt -= 0.18 * e;
+                }
+                Gesture::Scan => {
+                    pose.eyes = Eyes::Open(vec2((age * 3.0).sin(), -0.2));
+                    pose.antenna *= 3.0;
+                }
+                Gesture::Bow => {
+                    pose.tilt += 0.3 * e * self.face;
+                    pose.sy *= 1.0 - 0.12 * e;
+                }
+                Gesture::Dance => {
+                    pose.wave = Some(age * 12.0);
+                    pose.tilt += (age * 8.0).sin() * 0.25 * e;
+                }
+            }
+        }
         pose.flap = if asleep { 1 } else { ((t * 28.0) as i32).rem_euclid(3) };
         pose.eyes = if self.dizzy > 0.0 {
             Eyes::Dizzy
@@ -1050,7 +1240,12 @@ impl Fly {
             Mood::Sleepy if self.mood_t > 1.0 => Hat::Night,
             _ => Hat::None,
         };
-        pose.rub = (self.mood == Mood::Thinking).then_some(t * 5.0);
+        if self.mood == Mood::Thinking {
+            pose.rub = Some(t * 5.0);
+        }
+        if let Some((Gesture::Scan, age)) = self.gesture {
+            pose.eyes = Eyes::Open(vec2((age * 3.0).sin(), -0.2));
+        }
         draw_fly(p, at, pose);
         if self.mood == Mood::Sad {
             // Nuvoletta che le piove in testa.
@@ -1191,6 +1386,10 @@ struct Pose {
     sy: f32,
     /// Fotogramma delle ali (0, 1, 2).
     flap: i32,
+    wing: Option<f32>,
+    tilt: f32,
+    antenna: f32,
+    wave: Option<f32>,
     eyes: Eyes,
     mouth: Mouth,
     hat: Hat,
@@ -1207,6 +1406,10 @@ impl Pose {
             face: 1.0,
             sy: 1.0,
             flap: 1,
+            wing: None,
+            tilt: 0.0,
+            antenna: 0.0,
+            wave: None,
             eyes: Eyes::Open(vec2(1.0, 0.0)),
             mouth: Mouth::Smile,
             hat: Hat::None,
@@ -1225,7 +1428,11 @@ fn px_rect(p: &Painter, c: Pos2, s: f32, color: Color32) {
 fn draw_fly(p: &Painter, c: Pos2, pose: Pose) {
     let (w, h) = (pose.s * pose.face.abs().max(0.15), pose.s * pose.sy);
     let dir = if pose.face < 0.0 { -1.0 } else { 1.0 };
-    let at = |x: f32, y: f32| c + vec2((x - 0.5) * w * dir, y * h);
+    let at = |x: f32, y: f32| {
+        let v = vec2((x - 0.5) * w * dir, y * h);
+        let (sin, cos) = pose.tilt.sin_cos();
+        c + vec2(v.x * cos - v.y * sin, v.x * sin + v.y * cos)
+    };
     let dot = |x: f32, y: f32, color: Color32| {
         let color = match pose.ghost {
             Some(g) if color.a() > 0 => g,
@@ -1246,22 +1453,56 @@ fn draw_fly(p: &Painter, c: Pos2, pose: Pose) {
             }
         }
     };
-    // Ali sul dorso, tre fotogrammi: alzate, a metà, abbassate all'indietro.
-    let (wx, wy, wrx, wry) = match pose.flap {
-        0 => (-1.0, -9.0, 2.2, 3.6),
-        1 => (-2.5, -8.0, 3.0, 2.6),
-        _ => (-4.0, -6.5, 3.4, 1.8),
+    let wing = |cx: f32, cy: f32, rx: f32, ry: f32, fill: Color32, edge: Color32| {
+        if pose.wing.is_none() {
+            blob(cx, cy, rx, ry, fill, edge);
+            return;
+        }
+        let points = (0..24)
+            .map(|i| {
+                let phase = i as f32 / 24.0 * std::f32::consts::TAU;
+                at(cx + rx * phase.cos(), cy + ry * phase.sin())
+            })
+            .collect();
+        p.add(egui::Shape::convex_polygon(
+            points,
+            pose.ghost.unwrap_or(fill),
+            Stroke::new(1.0, pose.ghost.unwrap_or(edge)),
+        ));
     };
+    // Ali sul dorso, tre fotogrammi: alzate, a metà, abbassate all'indietro.
+    let (wx, wy, wrx, wry) = if let Some(wing) = pose.wing {
+        let u = (wing + 1.0) * 0.5;
+        (-4.0 + 3.0 * u, -6.0 - 3.5 * u, 3.5 - 1.3 * u, 1.6 + 2.4 * u)
+    } else {
+        match pose.flap {
+            0 => (-1.0, -9.0, 2.2, 3.6),
+            1 => (-2.5, -8.0, 3.0, 2.6),
+            _ => (-4.0, -6.5, 3.4, 1.8),
+        }
+    };
+    // Flexible antennae communicate curiosity independently of the wing beat.
+    for (x, sign) in [(2.0, -1.0), (6.0, 1.0)] {
+        for j in 0..4 {
+            dot(x + sign * j as f32 * 0.35 + pose.antenna * j as f32 * 0.25, -7.0 - j as f32, OUTLINE);
+        }
+        dot(x + sign + pose.antenna, -11.0, PSY_PINK);
+    }
     let wing_back =
         (Color32::from_rgba_unmultiplied(160, 190, 255, 120), Color32::from_rgba_unmultiplied(70, 90, 190, 210));
     let wing_front =
         (Color32::from_rgba_unmultiplied(225, 240, 255, 165), Color32::from_rgba_unmultiplied(100, 130, 225, 235));
-    blob(wx - 2.0, wy + 0.5, wrx, wry, wing_back.0, wing_back.1);
+    wing(wx - 2.0, wy + 0.5, wrx, wry, wing_back.0, wing_back.1);
     // Zampette: dondolano, o quelle davanti si sfregano mentre pensa.
     for (i, x) in [-3.0f32, -0.5, 2.0].iter().enumerate() {
         let swing = if (pose.flap + i as i32) % 2 == 0 { 0.0 } else { 1.0 };
-        match pose.rub {
-            Some(ph) if i == 2 => {
+        match (pose.wave, pose.rub) {
+            (Some(ph), _) if i == 2 => {
+                for j in 0..4 {
+                    dot(7.0 + j as f32 * 1.1, 5.0 - j as f32 * 2.0 + (ph.sin() * j as f32 * 0.55), OUTLINE);
+                }
+            }
+            (_, Some(ph)) if i == 2 => {
                 let up = if (ph * 2.0) as i32 % 2 == 0 { 0.0 } else { 1.0 };
                 dot(3.0, 5.0 - up, OUTLINE);
                 dot(4.0, 4.0 - up, OUTLINE);
@@ -1418,7 +1659,7 @@ fn draw_fly(p: &Painter, c: Pos2, pose: Pose) {
         }
     }
     // Ala davanti, col riflesso che brilla.
-    blob(wx, wy, wrx, wry, wing_front.0, wing_front.1);
+    wing(wx, wy, wrx, wry, wing_front.0, wing_front.1);
     dot(wx - 1.0, wy - (wry - 1.5).max(0.0), Color32::from_rgba_unmultiplied(255, 255, 255, 220));
     // Cappellini.
     match pose.hat {
@@ -1512,12 +1753,13 @@ fn pixel_ring(p: &Painter, c: Pos2, r: f32, color: Color32, s: f32) {
 /// Si disegna in due strati: `over` falso il bagliore e la tinta (sotto la mosca), vero il bordo
 /// e le staffe (sopra la mosca e le particelle: la carta resta segnata qualunque cosa le passi sopra).
 #[allow(clippy::too_many_arguments)]
-fn highlight(p: &Painter, card: Rect, t: f32, color: Color32, pop: f32, active: bool, over: bool) {
+fn highlight(p: &Painter, card: Rect, t: f32, color: Color32, _pop: f32, active: bool, over: bool) {
     let pulse = 0.5 + 0.5 * (t * 5.0).sin();
-    let grow = 6.0 + pulse * 3.0;
-    let r = card.expand(grow * pop.max(0.4));
+    // Geometry follows the measured card; pulse affects brightness, never its bounds.
+    let r = card;
     let strength = if active { 1.0 } else { 0.55 };
     if over {
+        p.rect_stroke(r, 6.0, Stroke::new(1.5, color.gamma_multiply(strength)), StrokeKind::Inside);
         highlight_border(p, r, t, color, pulse, strength);
         return;
     }
@@ -1656,6 +1898,17 @@ fn outlined_text(p: &Painter, at: Pos2, text: &str, size: f32, color: Color32, o
     p.text(at, Align2::CENTER_CENTER, text, font, color);
 }
 
+fn spring(pos: Pos2, vel: Vec2, goal: Pos2, stiffness: f32, damping: f32, dt: f32) -> (Pos2, Vec2) {
+    let alpha = damping * 0.5;
+    let omega = (stiffness - alpha * alpha).max(0.001).sqrt();
+    let decay = (-alpha * dt).exp();
+    let (sin, cos) = (omega * dt).sin_cos();
+    let offset = pos - goal;
+    let next = (offset * cos + (vel + offset * alpha) * (sin / omega)) * decay;
+    let velocity = (vel * cos - (vel * alpha + offset * stiffness) * (sin / omega)) * decay;
+    (goal + next, velocity)
+}
+
 fn ease_out_back(x: f32) -> f32 {
     let (c1, c3) = (1.70158, 2.70158);
     1.0 + c3 * (x - 1.0).powi(3) + c1 * (x - 1.0).powi(2)
@@ -1676,17 +1929,22 @@ mod native {
     };
 
     /// Vero quando la finestra è stata trovata e sistemata.
-    pub fn place(title: &str, g: Geom) -> bool {
+    pub fn place(title: &str, g: Geom) -> Result<(), String> {
         let wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
         unsafe {
             let hwnd = FindWindowW(std::ptr::null(), wide.as_ptr());
             if hwnd.is_null() {
-                return false;
+                return Err("Finestra overlay non ancora disponibile".into());
             }
-            SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
-            SetWindowPos(hwnd, HWND_TOPMOST, g.x as i32, g.y as i32, g.w as i32, g.h as i32 - 1, SWP_NOACTIVATE);
+            if SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) == 0 {
+                return Err(format!("Esclusione cattura: {}", std::io::Error::last_os_error()));
+            }
+            if SetWindowPos(hwnd, HWND_TOPMOST, g.x as i32, g.y as i32, g.w as i32, g.h as i32 - 1, SWP_NOACTIVATE) == 0
+            {
+                return Err(format!("Posizionamento overlay: {}", std::io::Error::last_os_error()));
+            }
         }
-        true
+        Ok(())
     }
 
     /// Dove sta il mouse sul desktop (pixel veri) e se il tasto sinistro è premuto.
@@ -1708,8 +1966,8 @@ mod native {
 #[cfg(not(windows))]
 mod native {
     use super::Geom;
-    pub fn place(_title: &str, _g: Geom) -> bool {
-        true
+    pub fn place(_title: &str, _g: Geom) -> Result<(), String> {
+        Ok(())
     }
 
     /// Fuori da Windows la mosca non vede il mouse.
@@ -1739,7 +1997,7 @@ mod tests {
         let mut fly = Fly::default();
         let card = hand[2];
         let play = (card, Vec::new());
-        let guide = Guide::Play { card: [0.0; 4], take: vec![] };
+        let guide = Guide::Play { id: AdviceId::default(), card: [0.0; 4], take: vec![] };
         let mut near = 0;
         for i in 0..600 {
             fly.step(1.0 / 60.0, screen, &hand, &guide, Some(&play));
@@ -1803,7 +2061,7 @@ mod tests {
         assert!(fly.parts.iter().any(|p| p.kind == Kind::Heart));
         let mut fly = Fly::default();
         let play = (hand[1], Vec::new());
-        let guide = Guide::Play { card: [0.0; 4], take: vec![] };
+        let guide = Guide::Play { id: AdviceId::default(), card: [0.0; 4], take: vec![] };
         for _ in 0..60 {
             fly.step(dt, screen, &hand, &guide, Some(&play));
         }
@@ -1818,12 +2076,12 @@ mod tests {
     #[test]
     fn keeps_the_card_marked() {
         let mut fly = Fly::default();
-        let play = Guide::Play { card: [1.0, 2.0, 3.0, 4.0], take: vec![] };
+        let play = Guide::Play { id: AdviceId::default(), card: [1.0, 2.0, 3.0, 4.0], take: vec![] };
         assert_eq!(fly.sticky(play.clone()), play);
         fly.t += 1.0;
         assert_eq!(fly.sticky(Guide::Thinking), play);
-        fly.t += STICKY;
-        assert_eq!(fly.sticky(Guide::Thinking), Guide::Thinking);
+        let expired = fly.last_play.as_ref().unwrap().1 + std::time::Duration::from_secs_f32(STICKY);
+        assert_eq!(fly.sticky_at(Guide::Thinking, expired), Guide::Thinking);
         // Carte sparite dallo schermo: niente segno appiccicato.
         assert_eq!(fly.sticky(play.clone()), play);
         assert_eq!(fly.sticky(Guide::Hidden), Guide::Hidden);
@@ -1842,18 +2100,22 @@ mod tests {
     fn hidden_cards_are_not_marked() {
         let (screen, hand, _) = sight(Guide::Thinking);
         let mut fly = Fly::default();
-        let play = (hand[0], Vec::new());
-        let guide = Guide::Play { card: [0.0; 4], take: vec![] };
+        let play = (hand[0], Vec::<Rect>::new());
+        let guide = Guide::Play { id: AdviceId::default(), card: [0.0; 4], take: vec![] };
         for _ in 0..120 {
-            fly.step(1.0 / 60.0, screen, &hand, &guide, Some(&play));
+            let local = |_: [f32; 4]| play.0;
+            let visual = fly.visual_play(&guide, local, 1.0 / 60.0);
+            fly.step(1.0 / 60.0, screen, &hand, &guide, visual.as_ref());
         }
         fly.bubble = None;
         for _ in 0..30 {
+            assert!(fly.visual_play(&Guide::Hidden, |_| play.0, 1.0 / 60.0).is_none());
             fly.step(1.0 / 60.0, screen, &hand, &Guide::Hidden, None);
         }
         assert_eq!(fly.mood, Mood::Pointing);
         assert!(fly.spin.is_none() && fly.bubble.is_none());
-        fly.step(1.0 / 60.0, screen, &hand, &guide, Some(&play));
+        let visual = fly.visual_play(&guide, |_| play.0, 1.0 / 60.0);
+        fly.step(1.0 / 60.0, screen, &hand, &guide, visual.as_ref());
         assert!(fly.bubble.is_none(), "la stessa carta non si riannuncia");
     }
 
@@ -1862,13 +2124,209 @@ mod tests {
     fn cheers_when_played() {
         let (screen, hand, _) = sight(Guide::Thinking);
         let mut fly = Fly::default();
-        let play = (hand[0], Vec::new());
-        let guide = Guide::Play { card: [0.0; 4], take: vec![] };
+        let play = (hand[0], Vec::<Rect>::new());
+        let guide = Guide::Play { id: AdviceId::default(), card: [0.0; 4], take: vec![] };
         for _ in 0..120 {
             fly.step(1.0 / 60.0, screen, &hand, &guide, Some(&play));
         }
+        fly.played_confirmed = true;
         fly.step(1.0 / 60.0, screen, &hand, &Guide::Waiting, None);
         assert!(fly.spin.is_some());
         assert!(fly.bubble.as_ref().is_some_and(|b| PLAYED.contains(&b.text.as_str())));
+    }
+    #[test]
+    fn outlines_always_use_latest_geometry_without_lag() {
+        let mut fly = Fly::default();
+        let a = Rect::from_min_size(pos2(100.0, 100.0), vec2(80.0, 120.0));
+        let b = a.translate(vec2(110.0, 0.0));
+        let first = AdviceId { card: 1, take: 0 };
+        fly.glide(first, vec![a], 0.016);
+        fly.retarget = false;
+        let moving = fly.glide(first, vec![b], 0.016)[0];
+        assert_eq!(moving, b);
+        assert!(!fly.retarget);
+        assert_eq!(fly.glide(AdviceId { card: 2, take: 0 }, vec![b], 0.016), vec![b]);
+        assert!(fly.retarget);
+    }
+
+    #[test]
+    fn waiting_without_a_confirmed_play_does_not_celebrate() {
+        let (screen, hand, _) = sight(Guide::Thinking);
+        let mut fly = Fly::default();
+        let play = (hand[0], vec![]);
+        let guide = Guide::Play { id: AdviceId::default(), card: [0.0; 4], take: vec![] };
+        fly.step(0.016, screen, &hand, &guide, Some(&play));
+        fly.step(0.016, screen, &hand, &Guide::Waiting, None);
+        assert!(fly.spin.is_none());
+        assert!(!fly.bubble.as_ref().is_some_and(|b| PLAYED.contains(&b.text.as_str())));
+    }
+
+    #[test]
+    fn exact_spring_is_independent_of_render_frame_rate() {
+        let run = |hz: u32| {
+            let mut position = pos2(10.0, 20.0);
+            let mut velocity = vec2(150.0, -20.0);
+            for _ in 0..hz {
+                (position, velocity) = spring(position, velocity, pos2(400.0, 250.0), 34.0, 7.5, 1.0 / hz as f32);
+            }
+            (position, velocity)
+        };
+        let reference = run(120);
+        for hz in [30, 60, 144] {
+            let value = run(hz);
+            assert!((value.0 - reference.0).length() < 0.02, "{hz} Hz: {value:?}");
+            assert!((value.1 - reference.1).length() < 0.02);
+        }
+    }
+
+    #[test]
+    fn complete_motion_stays_consistent_at_30_60_and_120_hz() {
+        let (screen, hand, guide) = sight(Guide::Thinking);
+        let run = |hz: u32| {
+            let mut fly = Fly::default();
+            for _ in 0..hz * 2 {
+                fly.advance(1.0 / hz as f32, screen, &hand, &guide, None);
+            }
+            fly
+        };
+        let reference = run(120);
+        for hz in [30, 60] {
+            let fly = run(hz);
+            assert!((fly.pos - reference.pos).length() < 0.1, "{hz}: {:?} vs {:?}", fly.pos, reference.pos);
+            assert!((fly.vel - reference.vel).length() < 0.1);
+        }
+    }
+
+    #[test]
+    fn every_new_gesture_finishes_and_paints_finite_geometry() {
+        let (screen, hand, _) = sight(Guide::Waiting);
+        for gesture in [Gesture::Wave, Gesture::Stretch, Gesture::Groom, Gesture::Scan, Gesture::Bow, Gesture::Dance] {
+            let mut fly = Fly::default();
+            fly.gesture = Some((gesture, 0.0));
+            fly.next_gesture = 100.0;
+            let ctx = egui::Context::default();
+            for frame in 0..240 {
+                fly.step(1.0 / 60.0, screen, &hand, &Guide::Waiting, None);
+                if frame % 30 == 0 {
+                    let mut output =
+                        ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
+                            fly.paint(ui.painter(), None);
+                        });
+                    output.textures_delta.clear();
+                    for mesh in ctx.tessellate(output.shapes, output.pixels_per_point) {
+                        if let egui::epaint::Primitive::Mesh(mesh) = mesh.primitive {
+                            assert!(mesh.vertices.iter().all(|v| v.pos.x.is_finite() && v.pos.y.is_finite()));
+                        }
+                    }
+                }
+            }
+            assert!(fly.gesture.is_none(), "{gesture:?}");
+        }
+    }
+
+    /// Export the actual egui meshes and texture updates for a software-rendered preview.
+    /// Run with BRISMASTER_PSY_PREVIEW=/tmp/psy-preview cargo test -p brismaster export_animation_preview -- --ignored
+    #[test]
+    #[ignore = "manual animation preview export"]
+    fn export_animation_preview() {
+        let dir = std::path::PathBuf::from(std::env::var_os("BRISMASTER_PSY_PREVIEW").expect("preview directory"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(640.0, 400.0));
+        let hand = vec![Rect::from_min_size(pos2(260.0, 250.0), vec2(80.0, 120.0))];
+        let states = [
+            ("Ciao!", Guide::Waiting, Gesture::Wave),
+            ("Mi stiracchio", Guide::Waiting, Gesture::Stretch),
+            ("Pulizia delle zampette", Guide::Waiting, Gesture::Groom),
+            ("Cerco le carte", Guide::Seeking, Gesture::Scan),
+            (
+                "Questa!",
+                Guide::Play { id: AdviceId::default(), card: [260.0, 250.0, 340.0, 370.0], take: vec![] },
+                Gesture::Bow,
+            ),
+            ("Vittoria!", Guide::Won, Gesture::Dance),
+        ];
+        let mut frames = Vec::new();
+        let mut serial = 0;
+        for (label, guide, gesture) in states {
+            let mut fly = Fly::default();
+            let play = matches!(guide, Guide::Play { .. }).then(|| (hand[0], vec![]));
+            for _ in 0..120 {
+                fly.advance(1.0 / 60.0, screen, &hand, &guide, play.as_ref());
+            }
+            fly.pos = pos2(320.0, 190.0);
+            fly.vel = Vec2::ZERO;
+            fly.bubble = None;
+            fly.parts.clear();
+            fly.gesture = Some((gesture, 0.0));
+            fly.next_gesture = 100.0;
+            for frame in 0..36 {
+                let motion = if play.is_some() {
+                    vec2((frame as f32 * 0.12).sin() * 110.0, (frame as f32 * 0.17).cos() * 20.0)
+                } else { Vec2::ZERO };
+                let hand = vec![hand[0].translate(motion)];
+                let current = if play.is_some() {
+                    let r = hand[0];
+                    Guide::Play { id: AdviceId::default(), card: [r.min.x,r.min.y,r.max.x,r.max.y], take: vec![] }
+                } else { guide.clone() };
+                let play = fly.visual_play(&current, |r| Rect::from_min_max(pos2(r[0],r[1]),pos2(r[2],r[3])),0.05);
+                for _ in 0..3 {
+                    fly.advance(1.0 / 60.0, screen, &hand, &current, play.as_ref());
+                }
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        time: Some(serial as f64 / 20.0),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let p = ui.painter();
+                        p.rect_filled(screen, 0.0, Color32::from_rgb(19, 34, 32));
+                        p.text(
+                            pos2(320.0, 36.0),
+                            Align2::CENTER_CENTER,
+                            label,
+                            FontId::proportional(24.0),
+                            Color32::WHITE,
+                        );
+                        if play.is_some() {
+                            p.rect_filled(hand[0], 5.0, Color32::from_rgb(240, 232, 210));
+                            p.text(hand[0].center(), Align2::CENTER_CENTER, "A", FontId::proportional(36.0), OUTLINE);
+                        }
+                        fly.paint(p, play.as_ref());
+                    },
+                );
+                let mut textures = Vec::new();
+                for (id, deltas) in &output.textures_delta.set {
+                    for delta in deltas {
+                        let egui::ImageData::Color(img) = &delta.image;
+                        let pixels: Vec<u8> = img.pixels.iter().flat_map(|p| p.to_array()).collect();
+                        let name = format!("atlas-{serial}-{}.png", textures.len());
+                        image::save_buffer(
+                            dir.join(&name),
+                            &pixels,
+                            img.size[0] as u32,
+                            img.size[1] as u32,
+                            image::ColorType::Rgba8,
+                        )
+                        .unwrap();
+                        textures.push(serde_json::json!({"id": format!("{id:?}"), "path": name, "pos": delta.pos}));
+                    }
+                }
+                output.textures_delta.clear();
+                let meshes: Vec<_> = ctx.tessellate(output.shapes, output.pixels_per_point).into_iter().filter_map(|p| {
+                    if let egui::epaint::Primitive::Mesh(mesh) = p.primitive {
+                        let vertices: Vec<_> = mesh.vertices.iter().map(|v| {
+                            let [r,g,b,a] = v.color.to_array();
+                            [v.pos.x, v.pos.y, v.uv.x, v.uv.y, r as f32, g as f32, b as f32, a as f32]
+                        }).collect();
+                        Some(serde_json::json!({"vertices": vertices, "indices": mesh.indices, "texture": format!("{:?}", mesh.texture_id), "clip": [p.clip_rect.min.x,p.clip_rect.min.y,p.clip_rect.max.x,p.clip_rect.max.y]}))
+                    } else { None }
+                }).collect();
+                frames.push(serde_json::json!({"label": label, "textures": textures, "meshes": meshes}));
+                serial += 1;
+            }
+        }
+        std::fs::write(dir.join("frames.json"), serde_json::to_vec(&frames).unwrap()).unwrap();
     }
 }

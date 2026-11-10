@@ -225,6 +225,8 @@ struct Vision {
     transit: Option<Card>,
     /// L'ultima lettura non ha trovato il tavolo.
     lost: bool,
+    frame_id: u64,
+    enabled: bool,
 }
 
 struct Confirm {
@@ -252,6 +254,7 @@ struct Assist {
     analysis: Option<(Vec<MoveEval>, u32)>,
     pending: Option<Receiver<(Vec<MoveEval>, u32)>>,
     generation: u64,
+    pending_generation: u64,
     /// Ultima giocata, da mostrare sul tavolo.
     last: Option<String>,
     /// Tasti digitati finora per la carta in corso (es. "3" in attesa del seme).
@@ -288,7 +291,6 @@ impl Assist {
     fn changed(&mut self) {
         self.generation += 1;
         self.analysis = None;
-        self.pending = None;
         self.selected = None;
         self.pending_take = None;
         self.keys.clear();
@@ -337,8 +339,15 @@ impl Assist {
     /// Nuova partita: si tiene solo la lettura dello schermo.
     fn reset(&mut self) {
         let vision = std::mem::take(&mut self.vision);
+        let generation = self.generation.wrapping_add(1);
+        let pending = self.pending.take();
+        let pending_generation = self.pending_generation;
         *self = Assist::default();
+        self.generation = generation;
+        self.pending = pending;
+        self.pending_generation = pending_generation;
         self.vision = Vision {
+            enabled: vision.enabled,
             reader: vision.reader,
             memory: vision.memory,
             status: vision.status,
@@ -501,15 +510,21 @@ impl Assist {
 
     fn poll(&mut self, samples: u32, ctx: &egui::Context) {
         if let Some(rx) = &self.pending {
-            if let Ok(a) = rx.try_recv() {
-                self.analysis = Some(a);
-                self.pending = None;
-                if std::mem::take(&mut self.play_best_queued) {
-                    self.play_best();
-                    return;
+            match rx.try_recv() {
+                Ok(a) if self.pending_generation == self.generation => {
+                    self.analysis = Some(a);
+                    self.pending = None;
+                    if std::mem::take(&mut self.play_best_queued) {
+                        self.play_best();
+                        return;
+                    }
                 }
-            } else {
-                ctx.request_repaint_after(std::time::Duration::from_millis(60));
+                Ok(_) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(60));
+                }
             }
         }
         let Some(obs) = self.obs else { return };
@@ -523,6 +538,7 @@ impl Assist {
                 let mut rng = SmallRng::from_entropy();
                 let _ = tx.send((evaluate(&obs, &engine_cfg(samples), &mut rng), samples));
             });
+            self.pending_generation = self.generation;
             self.pending = Some(rx);
             ctx.request_repaint_after(std::time::Duration::from_millis(60));
         }
@@ -632,37 +648,83 @@ impl Assist {
         let Some(reader) = &self.vision.reader else {
             return psyfly::Sight::off();
         };
-        let monitor = reader.monitor();
+        let placement = reader.placement(self.vision.frame_id);
+        let monitor = placement.monitor;
         // Le carte lette ma non più sullo schermo (sparite, coperte, schermo cambiato) non si
         // segnano: la mosca aspetta la prossima lettura invece di indicare un posto vuoto.
         let scene = self.vision.scene.as_ref().filter(|_| !self.vision.lost);
-        if scene.is_some() && reader.lost() {
-            return psyfly::Sight { monitor, hand: Vec::new(), guide: psyfly::Guide::Hidden };
+        if self.step() != Step::Over && scene.is_some() && placement.hidden {
+            return psyfly::Sight {
+                monitor,
+                hand: Vec::new(),
+                guide: psyfly::Guide::Hidden,
+                context: (1, self.generation),
+                played_card: self.history.last().zip(self.obs).and_then(|((before, auto), now)| {
+                    if !*auto {
+                        before.hand.minus(now.hand).iter().next()
+                    } else {
+                        None
+                    }
+                }),
+            };
         }
         let hand: Vec<[f32; 4]> =
-            scene.map_or(Vec::new(), |s| s.hand.iter().filter_map(|v| reader.on_desktop(v.at)).collect());
+            scene.map_or(Vec::new(), |s| s.hand.iter().filter_map(|v| placement.on_desktop(v.at)).collect());
         let guide = match (scene, self.obs) {
+            (_, _) if self.step() == Step::Over => match match_winner(self.total()) {
+                Some(HUMAN) => psyfly::Guide::Won,
+                Some(_) => psyfly::Guide::Lost,
+                None => match self.obs.map(|o| o.score().points).unwrap_or_default() {
+                    [a, b] if a > b => psyfly::Guide::Won,
+                    [a, b] if a < b => psyfly::Guide::Lost,
+                    _ => psyfly::Guide::Tie,
+                },
+            },
             (None, _) => psyfly::Guide::NoTable,
             (Some(scene), Some(o)) if self.step() == Step::MyMove => {
                 let best = self.analysis.as_ref().and_then(|(ev, _)| ev.first()).map(|e| e.mv);
                 let find = |views: &[CardView], among: CardSet, c: Card| {
-                    crate::vision::locate(views, among, c).and_then(|v| reader.on_desktop(v.at))
+                    crate::vision::locate(views, among, c).and_then(|v| placement.on_desktop(v.at))
                 };
                 match best.and_then(|m| Some((find(&scene.hand, o.hand, m.card)?, m))) {
                     Some((card, m)) => {
-                        let take = m.take.iter().filter_map(|c| find(&scene.table, o.table, c)).collect();
-                        psyfly::Guide::Play { card, take }
+                        let take: Option<Vec<_>> = m.take.iter().map(|c| find(&scene.table, o.table, c)).collect();
+                        match take {
+                            Some(take) => psyfly::Guide::Play {
+                                id: psyfly::AdviceId {
+                                    card: m.card,
+                                    take: m.take.iter().fold(0, |bits, c| bits | (1u64 << c)),
+                                },
+                                card,
+                                take,
+                            },
+                            None => psyfly::Guide::Seeking,
+                        }
                     }
-                    None => psyfly::Guide::Thinking,
+                    None if self.pending.is_some() => psyfly::Guide::Thinking,
+                    None => psyfly::Guide::Seeking,
                 }
             }
             _ => psyfly::Guide::Waiting,
         };
-        psyfly::Sight { monitor, hand, guide }
+        psyfly::Sight {
+            monitor,
+            hand,
+            guide,
+            context: (1, self.generation),
+            played_card: self.history.last().zip(self.obs).and_then(|((before, auto), now)| {
+                if !*auto {
+                    before.hand.minus(now.hand).iter().next()
+                } else {
+                    None
+                }
+            }),
+        }
     }
 
     /// Accende o spegne la lettura dello schermo.
     fn set_vision(&mut self, on: bool, ctx: &egui::Context) {
+        self.vision.enabled = on;
         if on && self.vision.reader.is_none() {
             self.vision.memory = Memory::shared();
             let every = std::time::Duration::from_millis(250);
@@ -675,28 +737,46 @@ impl Assist {
         }
     }
 
+    pub fn vision_active(&mut self, active: bool, ctx: &egui::Context) {
+        if active {
+            if self.vision.enabled {
+                self.set_vision(true, ctx);
+            }
+        } else {
+            self.vision.reader = None;
+            self.vision.lost = true;
+        }
+    }
+
+    pub fn vision_off(&mut self, ctx: &egui::Context) {
+        self.set_vision(false, ctx);
+        self.vision.lost = true;
+    }
+
     /// Raccoglie l'ultima lettura dello schermo e la confronta con la partita.
     fn poll_vision(&mut self) {
-        let Some(reader) = &self.vision.reader else { return };
-        let mut latest = None;
-        while let Ok(r) = reader.rx.try_recv() {
-            latest = Some(r);
-        }
-        match latest {
-            Some(Reading::Scene(scene)) => {
-                self.vision.status =
-                    format!("Vedo: {} carte in mano · {} in tavola", scene.hand.len(), scene.table.len());
-                self.watch_transit(&scene);
-                self.sync(&scene);
-                self.vision.scene = Some(scene);
-                self.vision.lost = false;
+        loop {
+            let reading = self.vision.reader.as_ref().and_then(|r| r.rx.try_recv().ok());
+            match reading {
+                Some(Reading::Scene(scene, frame_id)) => {
+                    self.vision.frame_id = frame_id;
+                    self.vision.status =
+                        format!("Vedo: {} carte in mano · {} in tavola", scene.hand.len(), scene.table.len());
+                    self.watch_transit(&scene);
+                    self.sync(&scene);
+                    self.vision.scene = Some(scene);
+                    self.vision.lost = false;
+                }
+                Some(Reading::NoTable) => {
+                    self.vision.lost = true;
+                    self.vision.status = "Non vedo il tavolo: tieni la partita aperta e visibile sullo schermo".into()
+                }
+                Some(Reading::Error(e)) => {
+                    self.vision.lost = true;
+                    self.vision.status = format!("Lettura dello schermo non riuscita: {e}");
+                }
+                None => break,
             }
-            Some(Reading::NoTable) => {
-                self.vision.lost = true;
-                self.vision.status = "Non vedo il tavolo: tieni la partita aperta e visibile sullo schermo".into()
-            }
-            Some(Reading::Error(e)) => self.vision.status = format!("Lettura dello schermo non riuscita: {e}"),
-            None => {}
         }
     }
 
@@ -965,6 +1045,14 @@ impl ScopaUi {
         self.assist.set_vision(true, ctx);
     }
 
+    pub fn vision_active(&mut self, active: bool, ctx: &egui::Context) {
+        self.assist.vision_active(active, ctx);
+    }
+
+    pub fn vision_off(&mut self, ctx: &egui::Context) {
+        self.assist.vision_off(ctx);
+    }
+
     /// Cosa deve fare la Psy Fly.
     pub fn fly_sight(&self) -> psyfly::Sight {
         self.assist.fly_sight()
@@ -1144,6 +1232,10 @@ fn compact_header(a: &mut Assist, ui: &mut egui::Ui) {
 
 /// Interruttore, stato e richiesta di conferma della lettura dello schermo.
 fn vision_ui(a: &mut Assist, ui: &mut egui::Ui) {
+    let save_error = a.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).last_error().map(str::to_owned);
+    if let Some(error) = save_error {
+        ui.colored_label(Color32::LIGHT_RED, format!("Memoria carte non salvata: {error}"));
+    }
     let mut on = a.vision.reader.is_some();
     ui.horizontal(|ui| {
         if ui
@@ -1481,10 +1573,53 @@ mod tests {
         let best = Move { card: make(2, 6), take: single(game::SETTEBELLO) };
         let (tx, rx) = channel();
         tx.send((vec![MoveEval { mv: best, win_prob: 0.6, exp_diff: 1.0 }], 7)).unwrap();
+        a.pending_generation = a.generation;
         a.pending = Some(rx);
         a.poll(7, &egui::Context::default());
         assert!(a.obs.unwrap().captured[0].contains(game::SETTEBELLO));
         assert_eq!(a.step(), Step::OppMove);
+    }
+
+    #[test]
+    fn scopa_never_displays_a_partial_capture() {
+        let mut a = started();
+        let o = a.obs.unwrap();
+        let card = make(1, 4);
+        let take: CardSet = [make(0, 0), make(0, 3)].into_iter().collect();
+        let scene = scene(&[make(0, 0)], &o.hand.to_vec());
+        a.vision.scene = Some(scene);
+        a.vision.frame_id = 1;
+        a.vision.reader = Some(Reader::with_readings(vec![], 1));
+        a.analysis = Some((vec![MoveEval { mv: Move { card, take }, win_prob: 0.6, exp_diff: 1.0 }], 7));
+        assert_eq!(a.fly_sight().guide, psyfly::Guide::Seeking);
+    }
+
+    #[test]
+    fn final_scopa_result_survives_a_hidden_table() {
+        let mut a = Assist::default();
+        let mut o = Observation::new_hand(HUMAN, AI, [0, 0]);
+        o.deck_len = 0;
+        o.opp_hand_len = 0;
+        a.obs = Some(o);
+        a.score = [12, 1];
+        a.vision.reader = Some(Reader::with_readings(vec![], 1));
+        a.vision.lost = true;
+        assert_eq!(a.fly_sight().guide, psyfly::Guide::Won);
+        a.score = [1, 12];
+        assert_eq!(a.fly_sight().guide, psyfly::Guide::Lost);
+        a.score = [0, 0];
+        assert_eq!(a.fly_sight().guide, psyfly::Guide::Tie);
+    }
+
+    #[test]
+    fn stopping_a_reader_preserves_the_users_resume_preference() {
+        let mut a = Assist::default();
+        a.vision.enabled = true;
+        a.vision.reader = Some(Reader::with_readings(vec![], 1));
+        a.vision_active(false, &egui::Context::default());
+        assert!(a.vision.reader.is_none() && a.vision.enabled);
+        a.vision_off(&egui::Context::default());
+        assert!(!a.vision.enabled);
     }
 
     fn single(c: Card) -> CardSet {

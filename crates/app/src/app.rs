@@ -390,6 +390,13 @@ impl eframe::App for BrisApp {
             if let Some(previous)=self.active_game { self.settings.visual_layouts.insert(previous as u8,self.visual.layout()); }
             self.visual.stop();
             self.visual.set_layout(self.settings.visual_layouts.get(&(self.settings.game as u8)).cloned().unwrap_or_default());
+            use crate::vision::autosync::Role;
+            let roles:&[Role]=match self.settings.game {
+                Gioco::Blackjack=>&[Role::Dealer,Role::Hand],Gioco::SetteMezzo=>&[Role::Covered,Role::Hand],
+                Gioco::Scala40|Gioco::Burraco=>&[Role::Hand,Role::Discard],Gioco::PokerIt=>&[Role::Hand],
+                Gioco::Holdem=>&[Role::Hand,Role::Board],_=>&[],
+            };
+            self.visual.require_zones(roles);
             self.visual_error = None;
             self.active_game = Some(self.settings.game);
         }
@@ -577,6 +584,21 @@ fn install_theme(ctx: &egui::Context) {
 #[cfg(test)]
 mod visual_integration_tests {
     use super::*;
+    #[test]
+    fn calibrated_layouts_survive_settings_roundtrip_without_enabling_automatic_input() {
+        use crate::vision::{autosync::{Layout,Zone,Role},screen::Area};
+        let mut settings=Settings::default();
+        settings.visual_layouts.insert(5,Layout {area:Some(Area::default()),zones:vec![Zone {role:Role::Dealer,rect:[0.1,0.1,0.4,0.4]}]});
+        settings.visual_layouts.insert(7,Layout {area:Some(Area::default()),zones:vec![Zone {role:Role::Board,rect:[0.1,0.4,0.9,0.6]}]});
+        let restored:Settings=serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored.visual_layouts[&5].zones[0].role,Role::Dealer);
+        assert_eq!(restored.visual_layouts[&7].zones[0].role,Role::Board);
+        let legacy:Settings=serde_json::from_str("{}").unwrap();assert!(legacy.visual_layouts.is_empty());
+        let mut visual=crate::visual_reader::VisualReader::default();
+        visual.set_layout(restored.visual_layouts[&5].clone());visual.require_zones(&[Role::Dealer,Role::Hand]);visual.stop();
+        assert!(!visual.automatic());assert_eq!(visual.layout().zones[0].role,Role::Dealer);
+    }
+
     use crate::vision::universal::DeckCard;
     #[test]
     fn confirmed_input_reaches_each_new_game_and_rejects_wrong_decks() {

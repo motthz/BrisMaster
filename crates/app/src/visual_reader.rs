@@ -44,6 +44,7 @@ pub struct VisualReader {
     error: Option<String>,
     area_picker: vision::screen::AreaPicker,
     layout: vision::autosync::Layout,
+    required_roles: Vec<vision::autosync::Role>,
     automatic: bool,
     synchronizer: vision::autosync::Reconciler,
     auto_status: String,
@@ -55,10 +56,17 @@ pub struct VisualReader {
 impl VisualReader {
     pub fn stop(&mut self) {
         let layout = std::mem::take(&mut self.layout);
+        let required = std::mem::take(&mut self.required_roles);
         *self = Self::default();
         self.layout = layout;
+        self.required_roles = required;
     }
-    pub fn automatic(&self)->bool {self.automatic}
+    pub fn require_zones(&mut self, roles: &[vision::autosync::Role]) {
+        self.required_roles = roles.to_vec();
+    }
+    pub fn automatic(&self) -> bool {
+        self.automatic
+    }
     pub fn layout(&self) -> vision::autosync::Layout {
         self.layout.clone()
     }
@@ -204,7 +212,8 @@ impl VisualReader {
         let mut chosen = None;
         let mut open = self.review;
         egui::Window::new("Carte dallo schermo").id(egui::Id::unique("visual-review")).open(&mut open)
-            .default_width(570.0).max_height((ctx.viewport_rect().height()-40.0).max(240.0)).vscroll(true).show(ctx, |ui| {
+            .default_width(570.0)
+            .default_height(640.0).max_height((ctx.viewport_rect().height()-40.0).max(240.0)).vscroll(true).show(ctx, |ui| {
                 ui.label("Scegli nell'assistente dove inserire la carta, poi conferma qui. Le azioni e i turni restano sotto il tuo controllo.");
                 ui.label("Per Psy Fly, segna «La mia mano» sulle tue carte: le carte del tavolo non saranno indicate come scarti.");
                 let summary = self.scene.as_ref().map(|(s,_)| s.cards.iter().map(|c| c.card.label()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
@@ -260,6 +269,12 @@ impl VisualReader {
             }
             ui.label(format!("{} zone", self.layout.zones.len()));
         });
+        if !self.required_roles.is_empty() {
+            ui.label(format!(
+                "Zone richieste: {}",
+                self.required_roles.iter().map(|r| r.label()).collect::<Vec<_>>().join(", ")
+            ));
+        }
         if !self.edit_zones {
             return;
         }
@@ -375,9 +390,19 @@ impl VisualReader {
             return None;
         }
         let area = *vision::screen::area().lock().unwrap_or_else(|e| e.into_inner());
-        if self.scene_area!=Some(area) {self.synchronizer.interrupt();return None;}
+        if self.scene_area != Some(area) {
+            self.synchronizer.interrupt();
+            return None;
+        }
         if let Err(e) = self.layout.validate(area) {
             self.auto_status = e;
+            return None;
+        }
+        let missing: Vec<_> =
+            self.required_roles.iter().filter(|role| !self.layout.zones.iter().any(|z| z.role == **role)).collect();
+        if !missing.is_empty() {
+            self.auto_status =
+                format!("Definisci le zone: {}", missing.iter().map(|r| r.label()).collect::<Vec<_>>().join(", "));
             return None;
         }
         if !self.layout.zones.iter().any(|z| z.role == request.role) {
@@ -436,7 +461,10 @@ impl VisualReader {
         if placement.hidden || self.error.is_some() {
             return Sight::off();
         }
-        if self.automatic && self.synchronizer.has_uncommitted() {
+        if self.automatic
+            && (self.synchronizer.has_uncommitted()
+                || self.required_roles.iter().any(|role| !self.layout.zones.iter().any(|z| z.role == *role)))
+        {
             return Sight {
                 monitor: placement.monitor,
                 hand: Vec::new(),
@@ -552,6 +580,9 @@ mod tests {
         );
         visual.poll(&egui::Context::default());
         let mut game = crate::blackjack::BlackjackUi::new(Default::default());
+        visual.require_zones(&[Role::Dealer,Role::Hand,Role::Board]);
+        assert!(visual.automatic_batch(game.auto_request().as_ref()).is_none(),"a required zone is missing");
+        visual.require_zones(&[Role::Dealer,Role::Hand]);
         for expected in [Role::Dealer, Role::Hand] {
             let request = game.auto_request().unwrap();
             assert_eq!(request.role, expected);

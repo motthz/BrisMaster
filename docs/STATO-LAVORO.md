@@ -62,6 +62,18 @@ non rende automaticamente più forte la Briscola.
 - Backup Git bundle verificato e clonato senza accesso a GitHub; integrità Git
   controllata con `git fsck --full`.
 
+## Verifiche della sincronizzazione per zone
+
+- Suite completa: **234 passati, 0 falliti, 10 ignorati**; build release completata.
+  Codice verificato e log integrale in `bench/autosync-0.6.0/`.
+- Sei adattatori verificati con inserimenti atomici, ripristino su conflitto,
+  annullamento, fasi e conteggi; zone salvate separatamente per gioco.
+- Stabilità misurata sui tempi originali delle catture. Cambio monitor o scala:
+  automatismo sospeso fino alla verifica e riattivazione esplicita.
+- Prova GUI sintetica Blackjack senza clic sulle singole carte: importazione,
+  consiglio «Stai», chiusura normale, riavvio e recupero delle zone riusciti.
+  Immagine e schermata conservate; non certificano cattura e overlay Windows.
+
 ## Verifiche da riprendere
 
 - Eseguire `scripts/validate.sh` dopo ogni modifica, conservando il risultato.

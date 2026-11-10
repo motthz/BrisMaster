@@ -65,3 +65,8 @@ azioni del turno anziché mostrare un consiglio vecchio su una carta nuova.
 Le verifiche native Windows (DPI, più monitor, click-through ed esclusione dalle
 catture) restano necessarie. Disegni diversi, ventagli e occlusioni richiedono prove
 su tavoli reali: questa modalità non certifica tutti i siti.
+
+La stabilità viene misurata sui tempi originali delle catture: una consegna lenta
+all’interfaccia non rende stabile una sequenza troppo rapida. Se cambiano monitor
+o scala durante la lettura, la sincronizzazione si disattiva: verifica le zone
+e riattivala esplicitamente.

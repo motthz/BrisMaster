@@ -1,0 +1,19 @@
+{
+  "base_tag": "v0.6.0",
+  "code_commit": "e584d1ca30104aa2cc4710ac217ed9c4d0b79129",
+  "platform": "Linux x86_64",
+  "rust": "1.99.1",
+  "command": "bash scripts/validate.sh",
+  "passed": 234,
+  "failed": 0,
+  "ignored": 10,
+  "release_build": "passed",
+  "gui_smoke": "Synthetic Blackjack table imported without individual card clicks; saved zones restored after restart. GUI smoke precedes capture timestamp and monitor guards; those are unit tested.",
+  "not_verified": [
+    "Native Windows capture, DPI, overlay transparency and click-through",
+    "Unseen real-site artwork",
+    "Full turn and opponent action reconstruction",
+    "Blackjack split hands automatic input",
+    "Statistical strength improvements"
+  ]
+}

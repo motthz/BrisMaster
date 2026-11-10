@@ -103,8 +103,44 @@ avversario +0,6 al livello Massima (scartata: richiedeva di sapere contro chi si
   `sfrutta:ALFA:MODELLO@GIOCATORE`, `adatta:`, `esatta:`, `oracolo:`, `reale:FILE[:TEMP]` (giocatore o modello imitato da una rete).
 - Esempio: `BRISCOLA_POLICY=crates/core/nets/politica.bin briscola-sim --player prova:prefin=4,mondi=2000@infer:20000:1:1000:0.25 --opponent stile:circolo --deals 500 --seed 20261101`.
 
-## Lavori paralleli che restano disponibili
+## Motore auto-allenato (rete allenata giocando contro se stessa)
 
-- **Partite vere** (unito in questo ramo): registrazione a scelta nell'app, strumento `reali`, guida in `docs/PARTITE-VERE.md`.
-- **Motore auto-allenato**: ramo `claude/project-thread-sj98vx` (PR #43). Rete da sola, a 17,65 milioni di partite:
-  46,3% contro la Massima e 50,1% contro `ismcts+:2000`. Giocatore `rl:FILE[:TEMP]` nel simulatore. Non è nella 0.6.0.
+Il codice è nella 0.6.0 ma è **spento di default**: il motore dell'app resta la Massima 0.5.0.
+
+- `crates/core/src/rl.rs`: codifica della posizione e rete (formato `.brl`).
+- `crates/rl-py`: ambiente Python (pyo3) e `python/allena.py`, allenamento PPO con una lega di avversari passati.
+- Giocatori del banco: `rl:FILE[:TEMP]`, `rlcerca:FILE:MONDI:PROF` e
+  `prova:rlroll/rlmix/rlmixfine/rlguida/rldeduz/rlspareggio=FILE@infer:...`
+  (FILE senza "/": il banco va lanciato dalla cartella della rete).
+
+Due reti: piccola (allenata fino a ~90 milioni di partite) e grande (`--hidden 1024`, allenata sul PC con GPU
+fino a ~88 milioni). Risultati contro la Massima 0.5.0 (`infer:20000:1:1000:0.25`), seme 20261105:
+
+| Prova | Partite | Punteggio |
+|---|---:|---:|
+| Rete piccola da sola, 17M / 35M / 38,6M / 51,65M partite | 2.000 | 46,3 / 47,3 / 48,35 / 47,1% |
+| Rete piccola con ricerca (`rlcerca` 32:6, beta 0,03) | 2.000 | 48,4–49,8% |
+| Rete grande da sola, 49,5M partite | 2.000 | 44,85% |
+| Massima + valore della rete nelle foglie | 2.000 | 47,65% |
+| Massima + metà rete, metà simulazioni | 2.000 | 48,6% |
+| A: peso della rete che cala con il mazzo | 2.000 | 49,1% |
+| B: la rete guida l'albero (`rlguida`) | 15.500 | 50,44% |
+| C: la rete deduce le carte avversarie (`rldeduz`) | 2.000 | 49,4% |
+| D: la rete decide tra mosse alla pari (`rlspareggio`) | 2.000 | 49,0% |
+
+Contro `ismcts+:2000` la rete piccola da sola fa 50,1%. Nessuna variante batte la Massima in modo misurabile
+(B, la migliore, è +0,4 punti: dentro il rumore).
+
+**Dove sono le reti e gli stati di allenamento** (per riprendere il lavoro):
+- release GitHub [`archivio-0.6.0`](https://github.com/motthz/BrisMaster/releases/tag/archivio-0.6.0) (non è una
+  versione dell'app): reti `.brl` a 17, 28, 35, 38, 51, 81 milioni di partite e rete grande a 49 milioni, stati
+  completi di allenamento `.pt`, log e risultati delle prove;
+- ramo `claude/rl-stato`: stati ridotti `stato_ridotto.pt` (rete piccola) e `stato_grande.pt` (rete grande), da cui
+  `allena.py` riparte.
+
+Possibili riprese: misurare la rete grande oltre i 100 milioni di partite; ripetere la prova B con una rete più forte.
+
+## Partite vere
+
+Registrazione a scelta nell'app (spenta per ogni partita finché non la accendi), strumento `reali` per allenare la
+deduzione sulle proprie partite, guida in `docs/PARTITE-VERE.md`.

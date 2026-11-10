@@ -110,8 +110,11 @@ pub fn eval(cards: &[Card]) -> u32 {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Evaluator {
     suits: [u32; 4],
-    counts: [u8; 13],
     all: u32,
+    // Rank masks occurring at least twice, three times and four times.
+    pairs: u32,
+    trips: u32,
+    quads: u32,
 }
 
 impl Evaluator {
@@ -123,9 +126,13 @@ impl Evaluator {
 
     fn add(&mut self, c: Card) {
         let r = rank(c) as usize;
-        self.suits[suit(c) as usize] |= 1 << r;
-        self.counts[r] += 1;
-        self.all |= 1 << r;
+        let bit = 1 << r;
+        self.suits[suit(c) as usize] |= bit;
+        // Update from highest multiplicity down, using the previous masks.
+        self.quads |= self.trips & bit;
+        self.trips |= self.pairs & bit;
+        self.pairs |= self.all & bit;
+        self.all |= bit;
     }
 
     pub(crate) fn with_hole(mut self, hole: [Card; 2]) -> u32 {
@@ -135,7 +142,7 @@ impl Evaluator {
     }
 
     fn value(self) -> u32 {
-    let Self { suits, counts, all } = self;
+    let Self { suits, all, pairs, trips, quads } = self;
     for &sm in &suits {
         if sm.count_ones() >= 5 {
             if let Some(h) = straight_high(sm) {
@@ -144,22 +151,13 @@ impl Evaluator {
             return 5 << 20 | top_bits(sm, 5);
         }
     }
-    let (mut quads, mut trips, mut pairs) = (0u32, 0u32, 0u32);
-    for r in 0..13 {
-        match counts[r] {
-            4 => quads |= 1 << r,
-            3 => trips |= 1 << r,
-            2 => pairs |= 1 << r,
-            _ => {}
-        }
-    }
     if quads != 0 {
         let q = 31 - quads.leading_zeros();
         return 7 << 20 | q << 16 | top_bits(all & !(1 << q), 1) >> 4;
     }
     if trips != 0 {
         let t = 31 - trips.leading_zeros();
-        let rest = (trips & !(1 << t)) | pairs;
+        let rest = pairs & !(1 << t);
         if rest != 0 {
             let p = 31 - rest.leading_zeros();
             return 6 << 20 | t << 16 | p << 12;
@@ -225,6 +223,58 @@ mod tests {
         s.split_whitespace().map(|x| parse(x).unwrap()).collect()
     }
 
+    // Independent five-card oracle: sort ranks and groups, without Evaluator or
+    // its bit-mask helpers. Keep the public numeric ordering unchanged as well.
+    fn reference_five(cards: &[Card]) -> u32 {
+        assert_eq!(cards.len(), 5);
+        let mut ranks: Vec<_> = cards.iter().map(|&c| rank(c)).collect();
+        ranks.sort_unstable_by(|a, b| b.cmp(a));
+        let flush = cards.iter().all(|&c| suit(c) == suit(cards[0]));
+        let mut groups: Vec<(usize, u8)> = Vec::new();
+        for &r in &ranks {
+            if let Some(g) = groups.last_mut().filter(|g| g.1 == r) {
+                g.0 += 1;
+            } else {
+                groups.push((1, r));
+            }
+        }
+        let straight = if groups.len() != 5 { None }
+            else if ranks[0] - ranks[4] == 4 { Some(ranks[0]) }
+            else if ranks == [12, 3, 2, 1, 0] { Some(3) }
+            else { None };
+        groups.sort_unstable_by(|a, b| b.cmp(a));
+        let pack = |ranks: &[u8]| ranks.iter().enumerate().fold(0, |v, (i, &r)| v | (r as u32) << (16 - 4 * i));
+        if let Some(high) = straight.filter(|_| flush) { return 8 << 20 | (high as u32) << 16; }
+        if groups[0].0 == 4 { return 7 << 20 | pack(&[groups[0].1, groups[1].1]); }
+        if groups[0].0 == 3 && groups[1].0 == 2 { return 6 << 20 | pack(&[groups[0].1, groups[1].1]); }
+        if flush { return 5 << 20 | pack(&ranks); }
+        if let Some(high) = straight { return 4 << 20 | (high as u32) << 16; }
+        let category = if groups[0].0 == 3 { 3 }
+            else if groups[0].0 == 2 && groups[1].0 == 2 { 2 }
+            else if groups[0].0 == 2 { 1 }
+            else { 0 };
+        let ordered: Vec<_> = groups.iter().map(|g| g.1).collect();
+        category << 20 | pack(&ordered)
+    }
+
+    #[test]
+    fn every_five_card_hand_matches_independent_oracle_and_known_frequencies() {
+        let mut counts = [0u32; 9];
+        let mut scores = std::collections::HashSet::new();
+        for a in 0..48 { for b in a + 1..49 { for c in b + 1..50 {
+            for d in c + 1..51 { for e in d + 1..52 {
+                let hand = [a, b, c, d, e];
+                let actual = eval(&hand);
+                assert_eq!(actual, reference_five(&hand), "{hand:?}");
+                counts[category(actual)] += 1;
+                scores.insert(actual);
+            }}
+        }}}
+        assert_eq!(counts, [1_302_540, 1_098_240, 123_552, 54_912, 10_200, 5_108, 3_744, 624, 40]);
+        assert_eq!(counts.iter().sum::<u32>(), 2_598_960);
+        assert_eq!(scores.len(), 7_462);
+    }
+
     #[test]
     fn board_state_matches_direct_evaluation_and_best_five() {
         use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
@@ -238,7 +288,7 @@ mod tests {
             let mut best = 0;
             for i in 0..7 { for j in i + 1..7 {
                 let five: Vec<_> = (0..7).filter(|&k| k != i && k != j).map(|k| seven[k]).collect();
-                best = best.max(eval(&five));
+                best = best.max(reference_five(&five));
             }}
             assert_eq!(prepared, best);
         }

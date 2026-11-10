@@ -2,8 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, improve/v0.6.0-recognition-engines-ui]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -13,9 +21,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Test
-        run: cargo test --workspace --release
+        run: cargo test --workspace --locked --release
       - name: Build app
-        run: cargo build --release -p brismaster
+        run: cargo build --locked --release -p brismaster
       # Lo stesso installatore della release, per accorgersi subito se lo script non compila.
       - name: Installatore
         shell: pwsh
@@ -27,6 +35,26 @@ jobs:
           & $iscc "/DAppVersion=0.0.0" "/DExeDir=..\target\release" installer\BrisMaster.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Checkpoint Windows e checksum
+        shell: pwsh
+        run: |
+          Copy-Item target/release/brismaster.exe dist/BrisMaster.exe
+          $lines = @("BrisMaster.exe", "BrisMaster-Setup.exe") | ForEach-Object {
+            $hash = (Get-FileHash "dist/$_" -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $_"
+          }
+          $lines | Set-Content dist/SHA256SUMS -Encoding ascii
+      - name: Conserva app e installatore di questo commit
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrisMaster-Windows-${{ github.sha }}
+          path: |
+            dist/BrisMaster.exe
+            dist/BrisMaster-Setup.exe
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
   # Il motore della pull request contro quello dell'ultima release, sugli stessi mazzi.
   # Fallisce se la nuova versione è significativamente più debole (IC 95% tutto sotto il 50%).
   # 5000 mazzi: il numero che serve perché il motore contro se stesso dia 50% ± 1 punto (vedi bench/RAPPORTO.md).
@@ -37,7 +65,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Confronto con l'ultima release (livello Difficile)
-        run: cargo run --release -p briscola-sim -- gate --player engine:1000 --deals 5000 --seed 20261022 --summary "$GITHUB_STEP_SUMMARY"
+        run: cargo run --locked --release -p briscola-sim -- gate --player engine:1000 --deals 5000 --seed 20261022 --summary "$GITHUB_STEP_SUMMARY"
 
   # Sette e mezzo: i valori esatti del risolutore devono coincidere con 200.000 mani simulate
   # e nessuna strategia deve superare quella ottimale.
@@ -48,4 +76,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Calcolo esatto contro simulazione
-        run: cargo run --release -p settemezzo -- --hands 200000 --out "$GITHUB_STEP_SUMMARY"
+        run: cargo run --locked --release -p settemezzo -- --hands 200000 --out "$GITHUB_STEP_SUMMARY"

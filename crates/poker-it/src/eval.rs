@@ -6,7 +6,7 @@
 //! valori vince chi ha il seme più alto nella carta più alta della combinazione
 //! (cuori > quadri > fiori > picche), quindi non ci sono mai pareggi.
 
-use crate::cards::{rank, suit, Card, ACE};
+use crate::cards::{rank, suit, Card};
 
 pub const CATEGORY_NAMES: [&str; 9] =
     ["Carta alta", "Coppia", "Doppia coppia", "Tris", "Scala", "Full", "Colore", "Poker", "Scala reale"];
@@ -23,58 +23,53 @@ pub const STRAIGHT_FLUSH: u32 = 8;
 
 /// Valore di una mano: più alto è meglio, mai uguale per due mani diverse.
 pub fn evaluate(h: &[Card; 5]) -> u32 {
-    let mut count = [0u8; 8];
+    let (mut all, mut pairs, mut trips, mut quads) = (0u32, 0u32, 0u32, 0u32);
     let mut top_suit = [0u8; 8];
+    let mut flush = true;
     for &c in h {
         let r = rank(c) as usize;
-        count[r] += 1;
+        let bit = 1 << r;
+        quads |= trips & bit;
+        trips |= pairs & bit;
+        pairs |= all & bit;
+        all |= bit;
         top_suit[r] = top_suit[r].max(suit(c));
+        flush &= suit(c) == suit(h[0]);
     }
-    let flush = h.iter().all(|&c| suit(c) == suit(h[0]));
-    // Gruppi ordinati per numerosità e poi per valore, dal più forte.
-    let mut groups = [(0u8, 0u8); 5];
-    let mut n = 0;
-    for r in (0..8u8).rev() {
-        if count[r as usize] > 0 {
-            groups[n] = (count[r as usize], r);
-            n += 1;
-        }
-    }
-    groups[..n].sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
-    let straight_high = if n == 5 {
-        if groups[0].1 - groups[4].1 == 4 {
-            Some(groups[0].1)
-        } else if groups[0].1 == ACE && groups[1].1 == 3 {
-            Some(3) // A-7-8-9-10
-        } else {
-            None
-        }
+    let n = all.count_ones();
+    let high = 31 - all.leading_zeros();
+    let straight_high = if n != 5 { None }
+        else if high >= 4 && all >> (high - 4) == 31 { Some(high) }
+        else if all == 0b1000_1111 { Some(3) } // A-7-8-9-10
+        else { None };
+    let cat = if straight_high.is_some() && flush { STRAIGHT_FLUSH }
+        else if quads != 0 { QUADS }
+        else if flush { FLUSH }
+        else if trips != 0 && (pairs & !trips) != 0 { FULL }
+        else if straight_high.is_some() { STRAIGHT }
+        else if trips != 0 { TRIPS }
+        else if pairs.count_ones() == 2 { TWO_PAIR }
+        else if pairs != 0 { PAIR }
+        else { HIGH };
+    let (ranks, top) = if let Some(hi) = straight_high {
+        ((hi + 1) << 16, hi)
     } else {
-        None
-    };
-    let cat = match (straight_high, flush, groups[0].0, groups[1].0) {
-        (Some(_), true, _, _) => STRAIGHT_FLUSH,
-        (_, _, 4, _) => QUADS,
-        (_, true, _, _) => FLUSH,
-        (_, _, 3, 2) => FULL,
-        (Some(_), _, _, _) => STRAIGHT,
-        (_, _, 3, _) => TRIPS,
-        (_, _, 2, 2) => TWO_PAIR,
-        (_, _, 2, _) => PAIR,
-        _ => HIGH,
-    };
-    let mut ranks = 0u32;
-    let top;
-    if let Some(hi) = straight_high {
-        ranks = (hi as u32 + 1) << 16;
-        top = hi;
-    } else {
-        for g in &groups[..n] {
-            ranks = (ranks << 4) | (g.1 as u32 + 1);
+        // The repeated rank(s) precede the kickers. No sorting or rank scan.
+        let primary = if quads != 0 { quads }
+            else if trips != 0 { trips }
+            else if pairs != 0 { pairs }
+            else { all };
+        let top = 31 - primary.leading_zeros();
+        let mut ranks = 0;
+        for mut mask in [primary, all & !primary] {
+            while mask != 0 {
+                let r = 31 - mask.leading_zeros();
+                ranks = (ranks << 4) | (r + 1);
+                mask &= !(1 << r);
+            }
         }
-        ranks <<= 4 * (5 - n);
-        top = groups[0].1;
-    }
+        (ranks << (4 * (5 - n)), top)
+    };
     (cat << 24) | (ranks << 4) | top_suit[top as usize] as u32
 }
 
@@ -90,11 +85,83 @@ pub fn describe(v: u32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cards::{all_hands, parse};
+    use crate::cards::{all_hands, parse, ACE};
 
     fn h(s: &str) -> [Card; 5] {
         let v: Vec<Card> = s.split_whitespace().map(|x| parse(x).unwrap()).collect();
         v.try_into().unwrap()
+    }
+
+    // Frozen v0.6.0 evaluator is the compatibility oracle for all short-deck hands.
+    fn reference_evaluate(h: &[Card; 5]) -> u32 {
+        let mut count = [0u8; 8];
+        let mut top_suit = [0u8; 8];
+        for &c in h {
+            let r = rank(c) as usize;
+            count[r] += 1;
+            top_suit[r] = top_suit[r].max(suit(c));
+        }
+        let flush = h.iter().all(|&c| suit(c) == suit(h[0]));
+        // Gruppi ordinati per numerosità e poi per valore, dal più forte.
+        let mut groups = [(0u8, 0u8); 5];
+        let mut n = 0;
+        for r in (0..8u8).rev() {
+            if count[r as usize] > 0 {
+                groups[n] = (count[r as usize], r);
+                n += 1;
+            }
+        }
+        groups[..n].sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+        let straight_high = if n == 5 {
+            if groups[0].1 - groups[4].1 == 4 {
+                Some(groups[0].1)
+            } else if groups[0].1 == ACE && groups[1].1 == 3 {
+                Some(3) // A-7-8-9-10
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let cat = match (straight_high, flush, groups[0].0, groups[1].0) {
+            (Some(_), true, _, _) => STRAIGHT_FLUSH,
+            (_, _, 4, _) => QUADS,
+            (_, true, _, _) => FLUSH,
+            (_, _, 3, 2) => FULL,
+            (Some(_), _, _, _) => STRAIGHT,
+            (_, _, 3, _) => TRIPS,
+            (_, _, 2, 2) => TWO_PAIR,
+            (_, _, 2, _) => PAIR,
+            _ => HIGH,
+        };
+        let mut ranks = 0u32;
+        let top;
+        if let Some(hi) = straight_high {
+            ranks = (hi as u32 + 1) << 16;
+            top = hi;
+        } else {
+            for g in &groups[..n] {
+                ranks = (ranks << 4) | (g.1 as u32 + 1);
+            }
+            ranks <<= 4 * (5 - n);
+            top = groups[0].1;
+        }
+        (cat << 24) | (ranks << 4) | top_suit[top as usize] as u32
+    }
+
+    #[test]
+    fn all_short_deck_scores_and_input_orders_match_v060() {
+        let hands = all_hands();
+        assert_eq!(hands.len(), 201_376);
+        for mut hand in hands {
+            let expected = reference_evaluate(&hand);
+            for _ in 0..5 {
+                assert_eq!(evaluate(&hand), expected, "{hand:?}");
+                hand.rotate_left(1);
+            }
+            hand.reverse();
+            assert_eq!(evaluate(&hand), expected, "{hand:?}");
+        }
     }
 
     #[test]

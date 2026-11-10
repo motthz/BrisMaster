@@ -418,3 +418,22 @@ mod tests {
         assert_eq!(sm.viste.len(), 1);
     }
 }
+
+impl SetteMezzo {
+    pub fn visual_insert(&mut self, card: crate::vision::universal::DeckCard) -> Result<(), String> {
+        let crate::vision::universal::DeckCard::Naples(c) = card else { return Err("Serve una carta napoletana".into()) };
+        if self.enter(c) { Ok(()) } else { Err("Carta già presente nella partita".into()) }
+    }
+    pub fn visual_hint(&mut self, prefs: &Prefs) -> crate::visual_reader::Hint {
+        use crate::visual_reader::Hint;
+        self.sync(prefs);
+        let Some(c) = self.coperta else { return Hint::text("Inserisci la tua carta coperta") };
+        let rules = prefs.rules();
+        let hc = rules.class_of(c);
+        let up = Hand::of(&rules, self.scoperte.iter().copied());
+        if up.add(hc).bust() { return Hint::text("Hai sballato"); }
+        let d = rules.unseen(std::iter::once(c).chain(self.scoperte.iter().chain(&self.viste).copied()));
+        let a = self.solver.advise(&d, hc, up);
+        Hint::text(if a.should_hit(&rules) { "Chiedi carta" } else { "Stai" })
+    }
+}

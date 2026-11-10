@@ -106,6 +106,12 @@ pub struct CardIter(u64);
 impl Iterator for CardIter {
     type Item = Card;
     #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = self.0.count_ones() as usize;
+        (n, Some(n))
+    }
+
+    #[inline]
     fn next(&mut self) -> Option<Card> {
         if self.0 == 0 {
             None
@@ -116,6 +122,9 @@ impl Iterator for CardIter {
         }
     }
 }
+
+impl ExactSizeIterator for CardIter {}
+impl std::iter::FusedIterator for CardIter {}
 
 impl FromIterator<Card> for CardSet {
     fn from_iter<I: IntoIterator<Item = Card>>(it: I) -> Self {

@@ -14,6 +14,7 @@ mod scopa_ui;
 mod settemezzo_ui;
 mod update;
 mod vision;
+mod visual_reader;
 
 fn main() -> eframe::Result {
     // Le partite salvate in automatico dalle versioni precedenti si cancellano una volta sola:

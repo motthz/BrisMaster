@@ -14,6 +14,8 @@ pub enum Guide {
     NoTable,
     /// Tocca all'avversario (o bisogna inserire qualcosa): gironzola.
     Waiting,
+    /// Action advice for games where a decision is not a card play (hit, stand, bet...).
+    Decision(String),
     /// Tocca a te e il motore sta pensando.
     Thinking,
     /// The engine has a move, but its complete visual location is unavailable.
@@ -24,6 +26,8 @@ pub enum Guide {
         card: [f32; 4],
         take: Vec<[f32; 4]>,
     },
+    /// One or more cards to select/discard, with game-specific action wording.
+    Select { id: AdviceId, card: [f32; 4], take: Vec<[f32; 4]>, text: String },
     Won,
     Lost,
     Tie,
@@ -63,7 +67,7 @@ impl Sight {
                 && r[1] < g.y + g.h && r[3] > g.y
         };
         self.hand.retain(valid);
-        if let Guide::Play { card, take, .. } = &self.guide {
+        if let Guide::Play { card, take, .. } | Guide::Select { card, take, .. } = &self.guide {
             if !valid(card) || !take.iter().all(valid) { self.guide = Guide::Seeking; }
         }
         self
@@ -460,6 +464,9 @@ impl Fly {
             let mouse = native::cursor().map(|(x, y, down)| (pos2((x - g.x) / ppp, (y - g.y) / ppp), down));
             self.advance(dt, screen, &hand, &sight.guide, guide.as_ref());
             self.interact(dt, &hand, guide.as_ref(), mouse);
+            if let Guide::Decision(text) | Guide::Select { text, .. } = &sight.guide {
+                if self.bubble.as_ref().is_none_or(|b| b.text != *text) { self.say(text, 60.0); }
+            }
             self.paint(&painter, guide.as_ref());
         });
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
@@ -467,7 +474,7 @@ impl Fly {
 
     fn visual_play(&mut self, guide: &Guide, map: impl Fn([f32; 4]) -> Rect, dt: f32) -> Option<(Rect, Vec<Rect>)> {
         match guide {
-            Guide::Play { id, card, take } => {
+            Guide::Play { id, card, take } | Guide::Select { id, card, take, .. } => {
                 let all = std::iter::once(*card).chain(take.iter().copied()).map(map).collect();
                 let all = self.glide(*id, all, dt);
                 Some((all[0], all[1..].to_vec()))
@@ -600,7 +607,7 @@ impl Fly {
 
     fn sticky_at(&mut self, guide: Guide, now: std::time::Instant) -> Guide {
         match guide {
-            Guide::Play { .. } => {
+            Guide::Play { .. } | Guide::Select { .. } => {
                 self.last_play = Some((guide.clone(), now));
                 guide
             }
@@ -699,8 +706,8 @@ impl Fly {
                     Mood::Bored
                 }
             }
-            Guide::Thinking | Guide::Seeking => Mood::Thinking,
-            Guide::Play { .. } => Mood::Pointing,
+            Guide::Thinking | Guide::Seeking | Guide::Decision(_) => Mood::Thinking,
+            Guide::Play { .. } | Guide::Select { .. } => Mood::Pointing,
             Guide::Won | Guide::Tie => Mood::Party,
             Guide::Lost => Mood::Sad,
             Guide::Hidden => self.mood,
@@ -2014,6 +2021,19 @@ mod tests {
     }
 
     /// La mosca arriva sopra la carta consigliata e ci resta.
+    #[test]
+    fn invalid_geometry_never_reaches_the_overlay() {
+        let mut sight = Sight { monitor: Some(Geom { x: -1920.0, y: 0.0, w: 1920.0, h: 1080.0, scale: 1.5 }),
+            hand: vec![[-100.0, 10.0, -50.0, 100.0], [f32::NAN, 0.0, 10.0, 20.0]],
+            guide: Guide::Play { id: AdviceId::default(), card: [-100.0, 10.0, -50.0, 100.0],
+                take: vec![[0.0, 0.0, 0.0, 0.0]] }, context: (0, 1), played_card: None };
+        sight = sight.validated();
+        assert_eq!(sight.hand.len(), 1);
+        assert_eq!(sight.guide, Guide::Seeking);
+        sight.monitor.as_mut().unwrap().scale = 0.0;
+        assert!(sight.validated().monitor.is_none());
+    }
+
     #[test]
     fn flies_to_the_card() {
         let (screen, hand, _) = sight(Guide::Thinking);

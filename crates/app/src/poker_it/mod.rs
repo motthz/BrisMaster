@@ -618,3 +618,35 @@ fn cards_text(cs: &[Card]) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
+
+impl PokerIt {
+    pub fn visual_insert(&mut self, card: crate::vision::universal::DeckCard) -> Result<(), String> {
+        let c = card.poker_it().ok_or("Il poker all'italiana usa solo 7, 8, 9, 10, J, Q, K, A")?;
+        match self.stage {
+            Stage::Setup if self.cards.len() < 5 && !self.cards.contains(&c) => {
+                self.snapshot(); self.cards.push(c);
+                if self.cards.len() == 5 { self.start(); }
+                Ok(())
+            }
+            Stage::NewCards if !self.kept.contains(&c) && !self.drawn.contains(&c) && !self.gone.contains(&c) => {
+                self.add_drawn(c); Ok(())
+            }
+            _ => Err("Carta già presente oppure azione del turno da inserire prima".into()),
+        }
+    }
+    pub fn visual_hint(&mut self) -> crate::visual_reader::Hint {
+        use crate::{visual_reader::Hint, vision::universal::DeckCard};
+        let Some(adv) = self.current_advice() else { return Hint::text("Completa le carte o l'azione dell'avversario"); };
+        let Some((action, prob)) = adv.iter().max_by(|a,b| a.1.total_cmp(&b.1)) else { return Hint::text("Nessun consiglio disponibile"); };
+        let Some(hand) = &self.hand else { return Hint::default(); };
+        let obs = Observation::of(hand, self.me);
+        let text = format!("{} · strategia {:.0}%", action_name(*action, obs.to_call), prob * 100.0);
+        let cards = if let Action::Draw(mask) = action {
+            (0..5).filter(|i| mask & (1 << i) != 0).map(|i| {
+                let c = obs.hand[i]; let r = rank(c);
+                DeckCard::French([3,2,1,0][suit(c) as usize] * 13 + if r == 7 { 0 } else { r + 6 })
+            }).collect()
+        } else { Vec::new() };
+        Hint { text, cards }
+    }
+}

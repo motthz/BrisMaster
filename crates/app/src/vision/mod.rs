@@ -5,6 +5,7 @@
 
 pub mod capture;
 pub mod detect;
+pub mod universal;
 pub mod live;
 pub mod memory;
 pub mod reference;
@@ -1662,5 +1663,21 @@ mod other_sites {
         for (_, r) in rows.iter().take(15) {
             println!("{r}");
         }
+    }
+}
+
+#[cfg(test)]
+mod confidence_tests {
+    use super::*;
+    #[test]
+    fn ranked_cards_keep_ties_ambiguous_and_reject_nonfinite_evidence() {
+        let mut view = CardView::new(Img::new(CARD_W, CARD_H), WHOLE, [0.0; 40]);
+        view.scores[3] = 7.0; view.scores[4] = 7.0;
+        assert_eq!(view.best(CardSet::FULL), Some((3, 0.0)));
+        view.scores[4] = 6.0;
+        assert_eq!(view.best(CardSet::FULL), Some((3, 1.0)));
+        view.scores[10] = f32::NAN;
+        assert_eq!(view.best(CardSet::FULL), None);
+        assert_eq!(view.best(CardSet::EMPTY), None);
     }
 }

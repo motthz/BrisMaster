@@ -541,3 +541,27 @@ impl HoldemAssistant {
         });
     }
 }
+
+impl HoldemAssistant {
+    pub fn visual_insert(&mut self, card: crate::vision::universal::DeckCard) -> Result<(), String> {
+        let c = card.poker().ok_or("Serve una carta francese senza jolly")?;
+        if self.used().has(c) { return Err("Carta già inserita".into()); }
+        if !(self.hand.is_none() && self.hole.len() < 2) && self.board.len() >= self.board_needed() {
+            return Err("Prima inserisci le azioni del giro nell'assistente".into());
+        }
+        self.add_card(c); Ok(())
+    }
+    pub fn visual_hint(&self) -> crate::visual_reader::Hint {
+        use crate::visual_reader::Hint;
+        let Some(h) = &self.hand else { return Hint::text("Inserisci le tue due carte"); };
+        if h.over { return Hint::text("Mano terminata"); }
+        if self.board.len() < self.board_needed() { return Hint::text("Inserisci il board"); }
+        if h.to_act != ME { return Hint::text("Tocca all'avversario"); }
+        let Some((key, adv, _)) = &self.advice else { return Hint::text("Attendo il consiglio"); };
+        if *key != (h.log.len(), self.board.len()) { return Hint::text("Ricalcolo il consiglio"); }
+        let v = View::of(h, ME);
+        Hint::text(adv.iter().max_by(|a,b| a.prob.total_cmp(&b.prob))
+            .map(|a| format!("{} · strategia {:.0}%", action_text_ai(a.action, v.to_call, None), a.prob * 100.0))
+            .unwrap_or_else(|| "Nessun consiglio disponibile".into()))
+    }
+}

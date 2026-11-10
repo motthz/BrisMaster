@@ -1710,3 +1710,30 @@ pub fn scopa(img: &Img) -> Option<ScopaScene> {
     }
     Some(ScopaScene { hand: hand.iter().map(|f| f.view.clone()).collect(), table: out })
 }
+
+/// Geometric candidates for decks whose artwork is classified outside Naples recognition.
+/// They are never accepted as cards without independent rank/deck evidence.
+pub fn card_regions(img: &Img) -> Vec<RotRect> {
+    let paper = Paper::of(img);
+    let mask: Vec<bool> = img.px.iter().map(|&px| paper.is(px)).collect();
+    let mut out: Vec<RotRect> = Vec::new();
+    for erosion in [0, 1, 3, 6] {
+        for blob in blobs_r(img, &mask, erosion) {
+            let r = canonical(blob.rect);
+            let ratio = r.short() / r.long();
+            if !blob.light() || !(0.48..=0.82).contains(&ratio) || r.long() > img.h as f32 * 0.9 { continue; }
+            if out.iter().any(|o| o.dist(&r) < r.short() * 0.15 && (o.long() - r.long()).abs() < r.long() * 0.2) { continue; }
+            out.push(r);
+            if out.len() >= 256 { break; }
+        }
+    }
+    // Court artwork can split the paper into smaller card-shaped pieces. Once
+    // a complete outer card is found, those inner pieces are not new cards.
+    out.iter().copied().filter(|r| {
+        let b = r.bounds(img);
+        !out.iter().any(|outer| {
+            let o = outer.bounds(img);
+            outer.area() > r.area() * 1.2 && b[0] >= o[0] && b[1] >= o[1] && b[2] <= o[2] && b[3] <= o[3]
+        })
+    }).collect()
+}

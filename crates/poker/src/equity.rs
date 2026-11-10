@@ -163,6 +163,20 @@ mod tests {
     }
 
     #[test]
+    fn river_equity_is_exact_and_independent_of_seed_and_budget() {
+        let board = h("As Ks Qs Js Ts");
+        for seed in 0..3 {
+            let mut rng = SmallRng::seed_from_u64(seed);
+            for n in [0, 1, 4000] {
+                assert_eq!(equity_vs_random([parse("2h").unwrap(), parse("3h").unwrap()], &board, n, &mut rng), 0.5);
+            }
+        }
+        let mut rng = SmallRng::seed_from_u64(0);
+        assert!(equity_vs_random([0, 1], &[], 0, &mut rng).is_finite());
+        assert!(hs2([0, 1], &[2, 3, 4], 0, 0, &mut rng).is_finite());
+    }
+
+    #[test]
     fn river_nuts() {
         let b = h("As Ks Qs Js 2d");
         assert_eq!(river_hs([parse("Ts").unwrap(), parse("3c").unwrap()], &b), 1.0);

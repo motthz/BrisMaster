@@ -56,6 +56,12 @@ pub fn strength(h: &[Card; 5]) -> f32 {
 
 /// Mano ordinata dopo aver sostituito le carte in `mask` (posizioni) con `new`.
 pub fn replace(h: &[Card; 5], mask: u8, new: &[Card]) -> [Card; 5] {
+    let mut out = replace_unsorted(h, mask, new);
+    out.sort_unstable();
+    out
+}
+
+fn replace_unsorted(h: &[Card; 5], mask: u8, new: &[Card]) -> [Card; 5] {
     let mut out = *h;
     let mut j = 0;
     for (i, slot) in out.iter_mut().enumerate() {
@@ -64,7 +70,6 @@ pub fn replace(h: &[Card; 5], mask: u8, new: &[Card]) -> [Card; 5] {
             j += 1;
         }
     }
-    out.sort_unstable();
     out
 }
 
@@ -93,11 +98,20 @@ impl DrawInfo {
 
 /// Analizza il cambio per una mano ordinata, senza conoscere le carte dell'avversario.
 pub fn analyze(h: &[Card; 5]) -> DrawInfo {
-    analyze_with(h, &strength)
+    analyze_impl(h, &strength, false)
 }
 
 /// Come `analyze`, con una misura di forza a scelta (serve a costruire la tabella di riferimento).
 pub fn analyze_with(h: &[Card; 5], strength: &dyn Fn(&[Card; 5]) -> f32) -> DrawInfo {
+    analyze_impl(h, strength, true)
+}
+
+fn analyze_impl(h: &[Card; 5], strength: &dyn Fn(&[Card; 5]) -> f32, sorted: bool) -> DrawInfo {
+    // The built-in strength only counts ranks/suits; it does not need sorting.
+    // Keep sorted hands for public/custom callbacks that may use hand_index.
+    let replacement = |mask, cards: &[Card]| {
+        if sorted { replace(h, mask, cards) } else { replace_unsorted(h, mask, cards) }
+    };
     let mut used = 0u32;
     for &c in h {
         used |= 1 << c;
@@ -117,7 +131,7 @@ pub fn analyze_with(h: &[Card; 5], strength: &dyn Fn(&[Card; 5]) -> f32) -> Draw
             }
             1 => {
                 for &a in &rest {
-                    sum += strength(&replace(h, mask, &[a])) as f64;
+                    sum += strength(&replacement(mask, &[a])) as f64;
                 }
                 n = rest.len();
             }
@@ -125,7 +139,7 @@ pub fn analyze_with(h: &[Card; 5], strength: &dyn Fn(&[Card; 5]) -> f32) -> Draw
                 let mut cnt = 0;
                 for i in 0..rest.len() {
                     for j in i + 1..rest.len() {
-                        sum += strength(&replace(h, mask, &[rest[i], rest[j]])) as f64;
+                        sum += strength(&replacement(mask, &[rest[i], rest[j]])) as f64;
                         cnt += 1;
                     }
                 }
@@ -136,7 +150,7 @@ pub fn analyze_with(h: &[Card; 5], strength: &dyn Fn(&[Card; 5]) -> f32) -> Draw
                     for (slot, idx) in new.iter_mut().zip(sample(&mut rng, rest.len(), k).into_iter()) {
                         *slot = rest[idx];
                     }
-                    sum += strength(&replace(h, mask, &new[..k])) as f64;
+                    sum += strength(&replacement(mask, &new[..k])) as f64;
                 }
                 n = MC_SAMPLES;
             }
@@ -194,6 +208,20 @@ mod tests {
         let mut v: Vec<Card> = s.split_whitespace().map(|x| parse(x).unwrap()).collect();
         v.sort_unstable();
         v.try_into().unwrap()
+    }
+
+    #[test]
+    fn optimized_draw_preserves_every_mask_and_custom_callback_order() {
+        for hand in [h("Ac Ap 8f 9q Jc"), h("Kc Kp 9f 9q 7c"), h("7c 8c 9c 10c Jc")] {
+            let fast = analyze(&hand);
+            let reference = analyze_with(&hand, &|h| {
+                assert!(h.windows(2).all(|p| p[0] < p[1]));
+                strength(h)
+            });
+            assert_eq!(fast.ev, reference.ev);
+            assert_eq!(fast.best, reference.best);
+            assert_eq!(fast.best_ev, reference.best_ev);
+        }
     }
 
     #[test]

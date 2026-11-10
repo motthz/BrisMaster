@@ -193,3 +193,23 @@ impl Player for Engine {
         evaluate(g, &self.cfg, rng)[0].action.action()
     }
 }
+
+#[cfg(test)]
+mod evaluation_tests {
+    use super::*;
+    #[test]
+    fn streaming_parallel_evaluation_preserves_results() {
+        let game = Game::new(&mut SmallRng::seed_from_u64(42), 0);
+        let cands = [Action2::Stock];
+        let mut cfg = EngineConfig::new(3);
+        let serial = evaluate_choices(&game, &cands, &cfg, &mut SmallRng::seed_from_u64(9));
+        cfg.parallel = true;
+        let parallel = evaluate_choices(&game, &cands, &cfg, &mut SmallRng::seed_from_u64(9));
+        assert_eq!(serial[0].win_prob, parallel[0].win_prob);
+        assert_eq!(serial[0].margin, parallel[0].margin);
+        cfg.samples = 0;
+        let one = evaluate_choices(&game, &cands, &cfg, &mut SmallRng::seed_from_u64(9));
+        assert!(one[0].win_prob.is_finite());
+        assert!(evaluate_choices(&game, &[], &cfg, &mut SmallRng::seed_from_u64(9)).is_empty());
+    }
+}

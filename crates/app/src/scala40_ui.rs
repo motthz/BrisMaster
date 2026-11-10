@@ -557,3 +557,23 @@ fn meld_widget(ui: &mut egui::Ui, m: &Meld, active: bool) -> Option<egui::Respon
     }
     Some(resp.on_hover_text(format!("{} · {} punti", m.label(), m.value())))
 }
+
+impl Scala40Ui {
+    pub fn visual_insert(&mut self, card: crate::vision::universal::DeckCard) -> Result<(), String> {
+        let kind = card.french_kind().ok_or("Serve una carta francese")?;
+        self.assist.add(kind);
+        self.assist.msg.clone().map_or(Ok(()), Err)
+    }
+    pub fn visual_hint(&self) -> crate::visual_reader::Hint {
+        use crate::{visual_reader::Hint, vision::universal::DeckCard};
+        let a = &self.assist;
+        let text = a.advice.as_ref().map(|a| a.join(" · ")).unwrap_or_else(|| "Inserisci la mano, il pozzo e le combinazioni".into());
+        if let Some((d, t)) = &a.plan {
+            // Highlight the next discard only after any required melds/attachments.
+            if d.phase != Phase::Draw && t.actions.is_empty() {
+                return Hint::card(text, DeckCard::French(cards::kind(t.discard)));
+            }
+        }
+        Hint::text(text)
+    }
+}

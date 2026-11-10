@@ -8,6 +8,15 @@ Giochi: **briscola**, **scopa**, **scala 40**, **burraco**, **sette e mezzo**, *
 
 > Molte piattaforme di gioco online vietano nei loro regolamenti l'uso di programmi di aiuto durante le partite contro altre persone: controlla quelle della piattaforma su cui giochi.
 
+## Sviluppo e lettura estesa (ramo di lavoro sulla 0.6.0)
+
+Istruzioni per compilare, verificare e conservare una copia autonoma:
+[sviluppo e ripristino senza Codex](docs/SVILUPPO-E-RIPRISTINO.md).
+Il [registro del lavoro](docs/STATO-LAVORO.md) distingue funzionalità, prove e limiti.
+La lettura estesa degli altri sei giochi richiede conferma delle carte; Briscola e
+Scopa conservano la ricostruzione automatica. Psy Fly mostra anche i consigli degli
+altri giochi, con localizzazione solo quando univoca e aggiornata.
+
 ## Installazione
 
 1. Scarica `BrisMaster-Setup.exe` dall'[ultima release](https://github.com/motthz/BrisMaster/releases/latest) e aprilo.

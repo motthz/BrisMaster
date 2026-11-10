@@ -226,6 +226,25 @@ mod tests {
     }
 
     #[test]
+    fn board_state_matches_direct_evaluation_and_best_five() {
+        use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
+        let mut rng = SmallRng::seed_from_u64(20261110);
+        let mut deck: Vec<Card> = (0..52).collect();
+        for _ in 0..2000 {
+            deck.shuffle(&mut rng);
+            let seven = &deck[..7];
+            let prepared = Evaluator::board(&seven[..5]).with_hole([seven[5], seven[6]]);
+            assert_eq!(prepared, eval(seven));
+            let mut best = 0;
+            for i in 0..7 { for j in i + 1..7 {
+                let five: Vec<_> = (0..7).filter(|&k| k != i && k != j).map(|k| seven[k]).collect();
+                best = best.max(eval(&five));
+            }}
+            assert_eq!(prepared, best);
+        }
+    }
+
+    #[test]
     fn categories() {
         assert_eq!(category(eval(&h("As Ks Qs Js Ts 2d 3c"))), 8);
         assert_eq!(category(eval(&h("Ah 2h 3h 4h 5h Kd Kc"))), 8);

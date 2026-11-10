@@ -708,11 +708,9 @@ fn connects(n: &Counts, k: u8) -> bool {
         return true;
     }
     let p = r as i32;
-    let mut near = vec![p - 2, p - 1, p + 1, p + 2];
-    if r == 1 {
-        near.extend([12, 13]);
-    }
-    near.into_iter().any(|q| (1..=14).contains(&q) && n[pos_kind(s, q as u8).unwrap()] > 0)
+    [p - 2, p - 1, p + 1, p + 2].into_iter()
+        .chain((r == 1).then_some(12)).chain((r == 1).then_some(13))
+        .any(|q| (1..=14).contains(&q) && n[pos_kind(s, q as u8).unwrap()] > 0)
 }
 
 /// Scomposizione con la valutazione del motore (per decidere cosa calare).

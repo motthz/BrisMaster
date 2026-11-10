@@ -1267,3 +1267,33 @@ mod tests {
         }
     }
 }
+
+impl BurracoAssistant {
+    pub fn visual_insert(&mut self, card: crate::vision::universal::DeckCard) -> Result<(), String> {
+        let kind = card.french_kind().ok_or("Serve una carta francese")?;
+        if !matches!(self.step, Step::Setup | Step::MyDrawCard | Step::MyPozzetto | Step::MyPlay | Step::OppPlay) {
+            return Err("Prima indica la pescata o l'azione del turno nell'assistente".into());
+        }
+        if self.step == Step::Setup && self.setup_hand.len() >= 11 && self.setup_top.is_some() {
+            return Err("Preparazione completa: avvia la smazzata".into());
+        }
+        self.enter(kind);
+        self.error.clone().map_or(Ok(()), Err)
+    }
+    pub fn visual_hint(&self, samples: u32) -> crate::visual_reader::Hint {
+        use crate::{visual_reader::Hint, vision::universal::DeckCard};
+        let Some((generation, budget, advice)) = &self.advice else { return Hint::text("Completa il turno; attendo il consiglio"); };
+        if *generation != self.generation || *budget != samples { return Hint::text("Ricalcolo il consiglio"); }
+        match advice {
+            Advice::Draw(evals) => Hint::text(match evals.first().map(|e| e.action) {
+                Some(Action2::Pile) => "Raccogli gli scarti", _ => "Pesca dal tallone",
+            }),
+            Advice::Play { ops, evals, .. } => {
+                if let Some(op) = ops.first() { return Hint::text(format!("Cala o attacca: {}", names(op.cards()))); }
+                if let Some(ChoiceEval { action: Action2::Discard(c), .. }) = evals.first() {
+                    Hint::card(format!("Scarta {}", cards::name(*c)), DeckCard::French(*c))
+                } else { Hint::text("Completa la calata nell'assistente") }
+            }
+        }
+    }
+}

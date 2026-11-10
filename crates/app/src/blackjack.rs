@@ -744,3 +744,22 @@ fn paint_suit(p: &Painter, c: Pos2, d: f32, suit: u8, col: Color32) {
         }
     }
 }
+
+impl BlackjackUi {
+    pub fn visual_insert(&mut self, card: crate::vision::universal::DeckCard) -> Result<(), String> {
+        let c = card.blackjack().ok_or("Serve una carta francese senza jolly")?;
+        self.add_card(c); Ok(())
+    }
+    pub fn visual_hint(&mut self) -> crate::visual_reader::Hint {
+        use crate::visual_reader::Hint;
+        Hint::text(match self.advice() {
+            Advice::Play { evs, .. } => evs.best().0.label(),
+            Advice::NeedDealer => "Inserisci la carta scoperta del banco",
+            Advice::NeedCards => "Inserisci le carte della mano",
+            Advice::Bust => "Hai sballato",
+            Advice::Blackjack => "Blackjack",
+            Advice::TwentyOne => "Ventuno: stai",
+            Advice::Done => "Mano terminata",
+        })
+    }
+}

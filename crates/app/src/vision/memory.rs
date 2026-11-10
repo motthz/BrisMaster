@@ -42,7 +42,11 @@ pub struct Memory {
     path: Option<PathBuf>,
     #[serde(skip)]
     save_error: Option<String>,
+    #[serde(skip, default = "default_classes")]
+    classes: usize,
 }
+
+fn default_classes() -> usize { 40 }
 
 fn valid_view(img: &Img, vis: [f32; 2]) -> bool {
     img.w == CARD_W && img.h == CARD_H && img.px.len() == CARD_W * CARD_H
@@ -56,7 +60,7 @@ const SHIFTS: [(f32, f32); 9] =
     [(0.0, 0.0), (-3.0, 0.0), (3.0, 0.0), (0.0, -3.0), (0.0, 3.0), (-3.0, -3.0), (3.0, -3.0), (-3.0, 3.0), (3.0, 3.0)];
 
 /// Miniatura della carta raddrizzata, senza il bordo.
-fn thumb(img: &Img) -> Vec<u8> {
+pub(super) fn thumb(img: &Img) -> Vec<u8> {
     thumb_at(img, (0.0, 0.0))
 }
 
@@ -101,7 +105,7 @@ fn rows(vis: [f32; 2]) -> (usize, usize) {
 }
 
 /// Correlazione normalizzata fra due miniature, sulle righe `rows`.
-fn ncc(a: &[u8], b: &[u8], (r0, r1): (usize, usize)) -> f32 {
+pub(super) fn ncc(a: &[u8], b: &[u8], (r0, r1): (usize, usize)) -> f32 {
     // Meno di un quarto di carta non basta per dire che è la stessa.
     if r1 < r0 + TH / 4 {
         return 0.0;
@@ -132,6 +136,7 @@ pub const SAME: f32 = 0.9;
 
 /// Somiglianza fra due carte raddrizzate, sulla fascia visibile `vis`.
 pub fn similarity(a: &Img, b: &Img, vis: [f32; 2]) -> f32 {
+    if !valid_view(a, vis) || !valid_view(b, vis) { return 0.0; }
     ncc(&thumb(a), &thumb(b), rows(vis))
 }
 
@@ -147,13 +152,25 @@ impl Memory {
     }
 
     pub fn load() -> Memory {
-        let path = Memory::path();
+        Self::load_with_classes(Memory::path(), 40)
+    }
+
+    pub fn french_shared() -> Arc<Mutex<Memory>> {
+        static SHARED: OnceLock<Arc<Mutex<Memory>>> = OnceLock::new();
+        SHARED.get_or_init(|| Arc::new(Mutex::new(Self::load_with_classes(
+            Self::path().with_file_name("carte_francesi_viste.json"), 54)))).clone()
+    }
+
+    #[cfg(test)]
+    fn load_from(path: PathBuf) -> Self { Self::load_with_classes(path, 40) }
+
+    fn load_with_classes(path: PathBuf, classes: usize) -> Self {
         let mut m: Memory =
             std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         // Memory is editable/importable JSON: validate before any pixel slicing/indexing.
         let before = m.templates.len();
         m.templates.retain(|t| {
-            t.card < 40
+            (t.card as usize) < classes
                 && t.px.len() == TW * TH * 3
                 && t.vis.iter().all(|x| x.is_finite())
                 && 0.0 <= t.vis[0]
@@ -166,11 +183,12 @@ impl Memory {
             if !m.templates.is_empty() {
                 let _ = std::fs::rename(&path, path.with_extension("vecchio.json"));
             }
-            m = Memory { version: VERSION, ..Default::default() };
+            m = Memory { version: VERSION, classes: 40, ..Default::default() };
         }
         if rejected > 0 {
             m.save_error = Some(format!("Ignorati {rejected} esempi di carte danneggiati nella memoria"));
         }
+        m.classes = classes;
         m.path = Some(path);
         m
     }
@@ -178,7 +196,7 @@ impl Memory {
     /// Copia per una ricostruzione provvisoria: le ipotesi non devono insegnare
     /// carte alla memoria della partita reale, né scrivere sul disco.
     pub fn isolated(&self) -> Memory {
-        Memory { version: self.version, templates: self.templates.clone(), path: None, save_error: None }
+        Memory { version: self.version, templates: self.templates.clone(), path: None, save_error: None, classes: self.classes }
     }
 
     pub fn len(&self) -> usize {
@@ -191,12 +209,16 @@ impl Memory {
     /// Per ogni carta la somiglianza migliore con le immagini ricordate (None se mai vista),
     /// sulla fascia visibile `vis` (e su quella che si vedeva nell'immagine ricordata).
     pub fn similarity(&self, img: &Img, vis: [f32; 2]) -> [Option<f32>; 40] {
-        let mut out = [None; 40];
+        self.similarities(img, vis)
+    }
+
+    pub fn similarities<const N: usize>(&self, img: &Img, vis: [f32; 2]) -> [Option<f32>; N] {
+        let mut out = [None; N];
         if self.templates.is_empty() || !valid_view(img, vis) {
             return out;
         }
         let thumbs: Vec<Vec<u8>> = SHIFTS.iter().map(|&o| thumb_at(img, o)).collect();
-        for tpl in &self.templates {
+        for tpl in self.templates.iter().filter(|t| (t.card as usize) < N) {
             let rows = common(vis, tpl.vis);
             let s = thumbs.iter().map(|t| ncc(t, &tpl.px, rows)).fold(f32::MIN, f32::max);
             let o = &mut out[tpl.card as usize];
@@ -210,7 +232,7 @@ impl Memory {
     /// Ricorda una carta, vista nella fascia `vis`. Tiene al massimo 4 immagini per carta (luci,
     /// rotazioni e parti viste diverse).
     pub fn remember(&mut self, img: &Img, vis: [f32; 2], card: Card) {
-        if card >= 40 || !valid_view(img, vis) {
+        if card as usize >= self.classes || !valid_view(img, vis) {
             self.save_error = Some("Esempio di carta non valido: memoria invariata".into());
             return;
         }
@@ -232,6 +254,7 @@ impl Memory {
 
     /// Dimentica le immagini uguali a questa (la carta era stata riconosciuta male).
     pub fn forget(&mut self, img: &Img) {
+        if !valid_view(img, WHOLE) { return; }
         let t = thumb(img);
         let before = self.templates.len();
         self.templates.retain(|tpl| ncc(&t, &tpl.px, rows(tpl.vis)) <= 0.97);
@@ -292,13 +315,52 @@ fn replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> 
 #[cfg(test)]
 impl Memory {
     pub fn in_memory() -> Memory {
-        Memory { version: VERSION, ..Default::default() }
+        Memory { version: VERSION, classes: 40, ..Default::default() }
     }
 }
 
 #[cfg(test)]
 mod persistence_tests {
     use super::*;
+
+    #[test]
+    fn corrupt_templates_are_rejected_without_losing_valid_examples() {
+        let dir = std::env::temp_dir().join(format!("brismaster-corrupt-memory-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("memory.json");
+        let valid = Template { card: 2, px: vec![120; TW * TH * 3], vis: WHOLE };
+        let mut memory = Memory::in_memory();
+        memory.templates = vec![valid.clone(), Template { card: 255, ..valid.clone() },
+            Template { px: vec![0; 3], ..valid.clone() }, Template { vis: [0.8, 0.2], ..valid }];
+        std::fs::write(&path, serde_json::to_vec(&memory).unwrap()).unwrap();
+        let loaded = Memory::load_from(path.clone());
+        assert_eq!(loaded.templates.len(), 1);
+        assert!(loaded.last_error().unwrap().contains("3"));
+        assert_eq!(loaded.similarity(&Img::new(CARD_W, CARD_H), WHOLE)[2], Some(0.0));
+        // Loading is read-only: the original JSON remains available for repair.
+        let raw: Memory = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw.templates.len(), 4);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_images_never_enter_memory() {
+        let mut memory = Memory::in_memory();
+        memory.remember(&Img::new(2, 2), WHOLE, 0);
+        memory.remember(&Img::new(CARD_W, CARD_H), [f32::NAN, 1.0], 0);
+        memory.remember(&Img::new(CARD_W, CARD_H), WHOLE, 255);
+        assert_eq!(memory.len(), 0);
+        assert!(memory.last_error().is_some());
+    }
+
+    #[test]
+    fn correlation_is_stable_under_brightness_changes() {
+        let a: Vec<u8> = (0..TW * TH * 3).map(|i| (i % 80 + 20) as u8).collect();
+        let b: Vec<u8> = a.iter().map(|&v| v * 2 + 10).collect();
+        assert!((ncc(&a, &b, (0, TH)) - 1.0).abs() < 1e-6);
+        assert_eq!(ncc(&a, &vec![200; a.len()], (0, TH)), 0.0);
+        assert_eq!(ncc(&a, &b, (0, 3)), 0.0);
+    }
 
     #[test]
     fn atomic_save_replaces_existing_json_and_reports_errors() {

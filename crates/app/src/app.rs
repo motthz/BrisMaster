@@ -130,6 +130,8 @@ pub struct BrisApp {
     /// Il gioco per cui la mosca ha già acceso la lettura dello schermo.
     fly_reading: Option<Gioco>,
     active_game: Option<Gioco>,
+    visual: crate::visual_reader::VisualReader,
+    visual_error: Option<String>,
 }
 
 impl BrisApp {
@@ -150,6 +152,8 @@ impl BrisApp {
             fly: Fly::default(),
             fly_reading: None,
             active_game: None,
+            visual: Default::default(),
+            visual_error: None,
             settings,
         };
         if app.settings.auto_update {
@@ -211,6 +215,7 @@ impl BrisApp {
             if !self.fly.on {
                 self.assistant.vision_off(ui.ctx());
                 self.scopa.vision_off(ui.ctx());
+                self.visual.stop();
             }
         }
     }
@@ -219,16 +224,32 @@ impl BrisApp {
         match self.settings.game {
             Gioco::Briscola => self.assistant.vision_on(ctx),
             Gioco::Scopa => self.scopa.vision_on(ctx),
-            _ => {}
+            _ => self.visual.set_enabled(true, self.settings.game == Gioco::SetteMezzo, ctx),
         }
     }
 
-    /// La Psy Fly vola solo nei giochi che leggono lo schermo.
+    /// Le coordinate e il consiglio provengono dal lettore/assistente del gioco attivo.
     fn show_fly(&mut self, ctx: &egui::Context) {
+        if !self.settings.psy_fly {
+            self.fly.on = false;
+            self.fly.show(ctx, crate::psyfly::Sight::off());
+            return;
+        }
         let sight = match self.settings.game {
             Gioco::Briscola => self.assistant.fly_sight(),
             Gioco::Scopa => self.scopa.fly_sight(),
-            _ => return,
+            game => {
+                let hint = match game {
+                    Gioco::Scala40 => self.scala40.visual_hint(),
+                    Gioco::Burraco => self.burraco.visual_hint(self.settings.burraco_samples),
+                    Gioco::SetteMezzo => self.settemezzo.visual_hint(&self.settings.settemezzo),
+                    Gioco::Blackjack => self.blackjack.visual_hint(),
+                    Gioco::PokerIt => self.poker_it.visual_hint(),
+                    Gioco::Holdem => self.holdem.visual_hint(),
+                    _ => unreachable!(),
+                };
+                self.visual.sight(game as u8, hint)
+            }
         };
         self.fly.on = self.settings.psy_fly;
         self.fly.show(ctx, sight);
@@ -271,6 +292,12 @@ impl BrisApp {
                 self.fly_switch(ui);
             }
         });
+        if !matches!(self.settings.game, Gioco::Briscola | Gioco::Scopa) {
+            ui.horizontal_wrapped(|ui| {
+                self.visual.controls(ui, self.settings.game == Gioco::SetteMezzo);
+                self.fly_switch(ui);
+            });
+        }
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             match self.settings.game {
@@ -357,6 +384,8 @@ impl eframe::App for BrisApp {
         if self.active_game != Some(self.settings.game) {
             self.assistant.vision_active(self.settings.game == Gioco::Briscola, ui.ctx());
             self.scopa.vision_active(self.settings.game == Gioco::Scopa, ui.ctx());
+            self.visual.stop();
+            self.visual_error = None;
             self.active_game = Some(self.settings.game);
         }
         // La mosca accesa (anche dall'ultima volta) vede le carte con la lettura dello schermo:
@@ -370,6 +399,19 @@ impl eframe::App for BrisApp {
         let ui_ctx = ui.ctx().clone();
         self.ui_main(ui, now);
         if self.active_game != Some(self.settings.game) {
+            ui_ctx.request_repaint();
+        }
+        if let Some(card) = self.visual.ui(&ui_ctx) {
+            let result = match self.settings.game {
+                Gioco::Scala40 => self.scala40.visual_insert(card),
+                Gioco::Burraco => self.burraco.visual_insert(card),
+                Gioco::SetteMezzo => self.settemezzo.visual_insert(card),
+                Gioco::Blackjack => self.blackjack.visual_insert(card),
+                Gioco::PokerIt => self.poker_it.visual_insert(card),
+                Gioco::Holdem => self.holdem.visual_insert(card),
+                _ => Err("Usa il lettore automatico del gioco selezionato".into()),
+            };
+            self.visual_error = result.err();
             ui_ctx.request_repaint();
         }
         self.show_fly(&ui_ctx);
@@ -412,6 +454,9 @@ impl BrisApp {
                 ui.label(RichText::new(format!("{} · v{}", self.settings.game.label(), update::CURRENT)).small().color(cards_ui::GOLD));
                 ui.separator();
                 self.update_widget(ui);
+                if let Some(error) = &self.visual_error {
+                    ui.colored_label(Color32::LIGHT_RED, error);
+                }
             });
         });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {

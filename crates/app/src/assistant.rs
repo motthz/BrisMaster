@@ -1263,8 +1263,11 @@ impl Assistant {
             if Some(c) == pos.trump_card {
                 continue;
             }
+            // (Una carta letta spesso al posto di un'altra che nella storia c'è è spiegata: era
+            // quell'altra, letta male.)
+            let explained = s.alternative(c).is_some_and(|(c2, _)| mine.contains(c2) || gone(c2));
             if s.in_hand(c) && !mine.contains(c) {
-                bad += if opp.contains(c) { 3.0 } else { 2.0 };
+                bad += if explained { 0.25 } else if opp.contains(c) { 3.0 } else { 2.0 };
             }
             let o = &s.opponents[c as usize];
             if o.sure() && mine.contains(c) && !opp.contains(c) {
@@ -1275,7 +1278,7 @@ impl Assistant {
                 bad += 1.0;
             }
             if s.on_table(c) && !gone(c) {
-                bad += 1.0;
+                bad += if explained { 0.25 } else { 1.0 };
             }
         }
         let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
@@ -1328,11 +1331,22 @@ impl Assistant {
             }
         }
         let cur = self.incoherence(&self.pos, &self.rec.events, scene);
+        // Una storia che arriva molto meno avanti di quella in corso (ferma all'inizio, per esempio)
+        // non si prende mai: spiegherebbe poco solo perché ha visto poco.
+        let tricks = self.pos.tricks;
         let mut scored: Vec<(f32, usize, usize)> = cands
             .iter()
             .enumerate()
-            .map(|(k, (_, b))| (self.incoherence(&b.pos, &b.rec.events, scene), b.history.len(), k))
+            .filter(|(_, (_, b))| b.pos.tricks + 1 >= tricks && !matches!(b.pos.step(), Step::Trump | Step::First))
+            .map(|(k, (f, b))| {
+                // Sostituire una carta letta costa: deve spiegare chiaramente di più.
+                let swaps = f.len() - forced_base.len();
+                (self.incoherence(&b.pos, &b.rec.events, scene) + swaps as f32, b.history.len(), k)
+            })
             .collect();
+        if scored.is_empty() {
+            return false;
+        }
         scored.sort_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
         let (score, len, k) = scored[0];
         // Due storie diverse quasi ugualmente buone: si segue la migliore, ma si sa di essere incerti.
@@ -2767,7 +2781,7 @@ impl Sightings {
     fn alternative(&self, c: Card) -> Option<(Card, u16)> {
         let row = self.alt.get(c as usize)?;
         let (c2, n) = row.iter().enumerate().max_by_key(|(_, &n)| n)?;
-        (*n >= 2).then_some((c2 as Card, *n))
+        (*n >= 3).then_some((c2 as Card, *n))
     }
 
     /// In mano c'è con sicurezza una carta che non ho ancora: ho già pescato dopo la presa in corso.

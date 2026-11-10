@@ -891,6 +891,9 @@ impl Assistant {
         } else {
             self.vision.reader = None;
             self.vision.lost = true;
+            self.vision.gap = true;
+            self.vision.restart_after = None;
+            self.vision.catching_up = false;
         }
     }
 
@@ -2985,6 +2988,10 @@ mod tests {
         assert_eq!(a.vision.sightings.frame, 2);
         assert_eq!(a.vision.sightings.table[c as usize].count, 1);
         assert!(a.vision.lost);
+        // The finite test producer closes after the error: recovery supersedes
+        // its status message, while all intermediate scenes remain applied.
+        assert!(a.vision.restart_after.is_some());
+        a.take_reading(Reading::Error("lost capture".into()));
         assert!(a.vision.status.contains("lost capture"));
     }
 

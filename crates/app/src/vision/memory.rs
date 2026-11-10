@@ -156,7 +156,7 @@ impl Memory {
     /// Copia per una ricostruzione provvisoria: le ipotesi non devono insegnare
     /// carte alla memoria della partita reale, né scrivere sul disco.
     pub fn isolated(&self) -> Memory {
-        Memory { version: self.version, templates: self.templates.clone(), path: None }
+        Memory { version: self.version, templates: self.templates.clone(), path: None, save_error: None }
     }
 
     pub fn len(&self) -> usize {

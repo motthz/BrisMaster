@@ -864,7 +864,9 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
             "v0.3.0" | "v0.4.0" | "v0.4.1" | "v0.4.2" | "v0.4.3" | "v0.4.4" | "v0.4.5" | "v0.4.6" | "v0.4.7" => {
                 v0_3_0::make(rest)
             }
-            "v0.5.0" => v0_5_0::make(rest),
+            "v0.5.0" | "v0.5.1" | "v0.5.2" | "v0.5.3" | "v0.5.4" | "v0.5.5" | "v0.5.6" | "v0.5.7" | "v0.5.8" | "v0.5.9" | "v0.5.10"
+            | "v0.5.11" | "v0.5.12" => v0_5_0::make(rest),
+            "v0.6.0" => v0_6_0::make(rest),
             _ => Err(format!(
                 "versione non disponibile: {ver} (disponibili: {})",
                 RELEASED.join(", ")
@@ -921,7 +923,9 @@ pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
 /// v0.3.0: finale risolto con tabella delle trasposizioni, ISMCTS potenziato nell'assistente.
 /// Dalla v0.4.0 alla v0.4.7 il motore è quello della v0.3.0 (cambiano inserimento, lettura dello schermo e altri giochi).
 /// v0.5.0: nell'assistente Massima deduce le carte avversarie (qui la deduzione è `infer:`; `v0.5.0/` ha i giocatori senza deduzione).
-pub const RELEASED: &[&str] = &["v0.1.1", "v0.2.0", "v0.2.1", "v0.3.0", "v0.4.0", "v0.4.1", "v0.4.2", "v0.4.3", "v0.4.4", "v0.4.5", "v0.4.6", "v0.4.7", "v0.5.0"];
+/// Dalla v0.5.1 alla v0.5.12 il motore è quello della v0.5.0 (cambiano lettura dello schermo e app).
+/// v0.6.0: motore di gioco uguale alla v0.5.0; aggiunge al crate le opzioni sperimentali (spente di default) e la rete auto-allenata.
+pub const RELEASED: &[&str] = &["v0.1.1", "v0.2.0", "v0.2.1", "v0.3.0", "v0.4.0", "v0.4.1", "v0.4.2", "v0.4.3", "v0.4.4", "v0.4.5", "v0.4.6", "v0.4.7", "v0.5.0", "v0.5.1", "v0.5.2", "v0.5.3", "v0.5.4", "v0.5.5", "v0.5.6", "v0.5.7", "v0.5.8", "v0.5.9", "v0.5.10", "v0.5.11", "v0.5.12", "v0.6.0"];
 
 /// Genera l'adattatore per una versione rilasciata del crate `briscola-core`.
 /// Per aggiungere una versione: dipendenza in Cargo.toml, `legacy!`, voce in `make_agent` e `RELEASED`.
@@ -991,6 +995,13 @@ legacy!(
     "ismcts+:" => core_v0_5_0::ai::IsmctsPlayer::strong,
     "ismcts:" => core_v0_5_0::ai::IsmctsPlayer::new,
 );
+legacy!(
+    v0_6_0,
+    core_v0_6_0,
+    "v0.6.0",
+    "ismcts+:" => core_v0_6_0::ai::IsmctsPlayer::strong,
+    "ismcts:" => core_v0_6_0::ai::IsmctsPlayer::new,
+);
 
 #[cfg(test)]
 mod tests {
@@ -998,7 +1009,7 @@ mod tests {
 
     #[test]
     fn specs_parse() {
-        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "v0.2.0/engine:20", "v0.2.1/engine:20", "v0.3.0/engine:20", "v0.3.0/ismcts+:20", "v0.3.0/ismcts:20", "v0.4.0/ismcts+:20", "v0.4.1/ismcts+:20", "v0.4.7/ismcts+:20", "v0.5.0/ismcts+:20", "v0.5.0/engine:20", "v0.2.0/ismcts:20", "followsuit", "peek:20", "vedetutto:20", "misto:20", "stile:nonno", "persona:7", "fretta:0.4:counter", "tilt:0.3:stile:circolo", "camaleonte:3", "politica"] {
+        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "v0.2.0/engine:20", "v0.2.1/engine:20", "v0.3.0/engine:20", "v0.3.0/ismcts+:20", "v0.3.0/ismcts:20", "v0.4.0/ismcts+:20", "v0.4.1/ismcts+:20", "v0.4.7/ismcts+:20", "v0.5.0/ismcts+:20", "v0.5.0/engine:20", "v0.6.0/ismcts+:20", "v0.6.0/engine:20", "v0.2.0/ismcts:20", "followsuit", "peek:20", "vedetutto:20", "misto:20", "stile:nonno", "persona:7", "fretta:0.4:counter", "tilt:0.3:stile:circolo", "camaleonte:3", "politica"] {
             assert!(make_agent(s).is_ok(), "{s}");
         }
         assert!(make_agent("v9.9.9/engine:20").is_err());

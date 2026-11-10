@@ -402,6 +402,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "briscola-core"
+version = "0.6.0"
+source = "git+https://github.com/motthz/brismaster?tag=v0.6.0#c1e83b751d87b02e83dcbb7921b85ec2afdea372"
+dependencies = [
+ "rand 0.8.8",
+]
+
+[[package]]
 name = "briscola-sim"
 version = "0.6.0"
 dependencies = [
@@ -410,6 +418,7 @@ dependencies = [
  "briscola-core 0.3.0",
  "briscola-core 0.5.0",
  "briscola-core 0.6.0",
+ "briscola-core 0.6.0 (git+https://github.com/motthz/brismaster?tag=v0.6.0)",
  "rand 0.8.8",
  "rayon",
  "serde_json",

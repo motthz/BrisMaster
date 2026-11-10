@@ -294,12 +294,15 @@ const SIGHT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(2);
 pub struct Placement {
     pub monitor: Option<capture::Geom>,
     pub hidden: bool,
+    captured_at: Option<std::time::Instant>,
     place: Option<Place>,
     shift: [f32; 2],
     cards: Vec<([f32; 4], Option<[f32; 4]>)>,
 }
 
 impl Placement {
+    /// Original capture time, independent of recognition/UI delivery latency.
+    pub fn captured_at(&self) -> Option<std::time::Instant> { self.captured_at }
     pub fn on_desktop(&self, at: [f32; 4]) -> Option<[f32; 4]> {
         if self.hidden {
             return None;
@@ -321,6 +324,7 @@ impl Spot {
             |at: Option<std::time::Instant>| at.is_some_and(|t| now.saturating_duration_since(t) < SIGHT_MAX_AGE);
         Placement {
             monitor: self.place.map(|p| p.0),
+            captured_at: self.captured,
             hidden: !self.capture_ok
                 || self.frame_id != frame_id
                 || self.misses >= MISSES
@@ -781,6 +785,9 @@ impl<S> Reader<S> {
 #[cfg(test)]
 impl<S> Reader<S> {
     pub fn with_readings(readings: Vec<Reading<S>>, frame_id: u64) -> Self {
+        Self::with_readings_at(readings,frame_id,std::time::Instant::now())
+    }
+    pub fn with_readings_at(readings: Vec<Reading<S>>, frame_id:u64, captured:std::time::Instant)->Self {
         let (tx, rx) = sync_channel(readings.len().max(1));
         for r in readings {
             tx.try_send(r).ok().unwrap();
@@ -789,7 +796,7 @@ impl<S> Reader<S> {
         let spot = Spot {
             capture_ok: true,
             frame_id,
-            captured: Some(now),
+            captured: Some(captured),
             tracked: Some(now),
             place: Some((
                 capture::Geom { x: -1600.0, y: 0.0, w: 1600.0, h: 900.0, scale: 1.25 },

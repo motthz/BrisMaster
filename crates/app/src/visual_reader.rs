@@ -168,7 +168,12 @@ impl VisualReader {
                     self.scene_area = Some(area);
                     match vision::autosync::Observation::from_scene(&scene, &self.layout, area) {
                         Ok(observation) if !reader.placement(id).hidden => {
-                            self.synchronizer.observe(observation, id, std::time::Instant::now());
+                            let placement = reader.placement(id);
+                            if let Some(captured) = placement.captured_at().filter(|_| !placement.hidden) {
+                                self.synchronizer.observe(observation, id, captured);
+                            } else {
+                                self.synchronizer.interrupt();
+                            }
                             if self.automatic {
                                 self.auto_status = "Attendo letture coerenti o nuove carte".into();
                             }
@@ -547,6 +552,41 @@ fn same_observation(a: &universal::SeenCard, b: &universal::SeenCard) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn delayed_delivery_does_not_fake_capture_stability() {
+        use vision::autosync::{Layout, Observation, Role, Zone};
+        let area = *vision::screen::area().lock().unwrap_or_else(|e| e.into_inner());
+        let layout = Layout { area: Some(area), zones: vec![Zone { role: Role::Dealer, rect: [0.1, 0.1, 0.9, 0.9] }] };
+        let card = universal::SeenCard {
+            card: DeckCard::French(12),
+            image: universal::reference_image(12),
+            at: [0.2, 0.2, 0.4, 0.5],
+            margin: 0.2,
+            visible: vision::WHOLE,
+        };
+        let scene = Cards { cards: vec![card] };
+        let now = std::time::Instant::now();
+        // Images captured 30 ms apart, delivered roughly a second later.
+        let mut visual = VisualReader {
+            reader: Some(Reader::with_readings_at(
+                vec![Reading::Scene(scene.clone(), 2)],
+                2,
+                now - Duration::from_millis(970),
+            )),
+            layout: layout.clone(),
+            automatic: true,
+            ..Default::default()
+        };
+        visual.synchronizer.observe(
+            Observation::from_scene(&scene, &layout, area).unwrap(),
+            1,
+            now - Duration::from_secs(1),
+        );
+        visual.poll(&egui::Context::default());
+        let game = crate::blackjack::BlackjackUi::new(Default::default());
+        assert!(visual.automatic_batch(game.auto_request().as_ref()).is_none());
+    }
+
+    #[test]
     fn stable_zones_feed_blackjack_without_card_clicks_and_keep_manual_undo() {
         use vision::autosync::{Layout, Observation, Role, Zone};
         let area = *vision::screen::area().lock().unwrap_or_else(|e| e.into_inner());
@@ -580,9 +620,9 @@ mod tests {
         );
         visual.poll(&egui::Context::default());
         let mut game = crate::blackjack::BlackjackUi::new(Default::default());
-        visual.require_zones(&[Role::Dealer,Role::Hand,Role::Board]);
-        assert!(visual.automatic_batch(game.auto_request().as_ref()).is_none(),"a required zone is missing");
-        visual.require_zones(&[Role::Dealer,Role::Hand]);
+        visual.require_zones(&[Role::Dealer, Role::Hand, Role::Board]);
+        assert!(visual.automatic_batch(game.auto_request().as_ref()).is_none(), "a required zone is missing");
+        visual.require_zones(&[Role::Dealer, Role::Hand]);
         for expected in [Role::Dealer, Role::Hand] {
             let request = game.auto_request().unwrap();
             assert_eq!(request.role, expected);

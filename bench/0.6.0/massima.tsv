@@ -1,0 +1,13 @@
+infer:20000:1:1000:0.25	stile:domenica	77.40
+adatta:20:stile:domenica@infer:20000:1:1000:0.25	stile:domenica	79.85
+infer:20000:1:1000:0.25	stile:prende-tutto	82.30
+adatta:20:stile:prende-tutto@infer:20000:1:1000:0.25	stile:prende-tutto	83.00
+infer:20000:1:1000:0.25	stile:cacciatore	75.50
+adatta:20:stile:cacciatore@infer:20000:1:1000:0.25	stile:cacciatore	77.00
+infer:20000:1:1000:0.25	stile:frettoloso	79.25
+adatta:20:stile:frettoloso@infer:20000:1:1000:0.25	stile:frettoloso	80.30
+infer:20000:1:1000:0.25	stile:memoria-perfetta	69.80
+adatta:20:stile:memoria-perfetta@infer:20000:1:1000:0.25	stile:memoria-perfetta	69.80
+infer:20000:1:1000:0.25	stile:circolo	73.05
+adatta:20:stile:circolo@infer:20000:1:1000:0.25	stile:circolo	72.45
+infer:20000:1:1000:0.25	counter	74.45

@@ -1315,8 +1315,13 @@ impl Assistant {
                 continue;
             }
             if let Some(Event::Pescata { carta } | Event::Giocata { carta, .. }) = base.rec.events.get(h.2) {
+                // (Solo se la carta alternativa si è vista davvero, chiara, altrove: altrimenti
+                // durante le animazioni ogni lettura incerta diventerebbe una storia possibile.)
                 if let Some((c2, n)) = s.alternative(carta.id) {
-                    points.push((n, i, c2));
+                    let clear = |v: &[Sighting]| v.get(c2 as usize).is_some_and(|x| x.count >= 2 && x.margin >= 2.0 * AUTO_MARGIN);
+                    if clear(&s.hand) || clear(&s.table) {
+                        points.push((n, i, c2));
+                    }
                 }
             }
         }
@@ -4236,6 +4241,8 @@ mod tests {
         let (mut ok, mut n) = (0, 0);
         for dir in dirs {
             let log: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(dir.join("verita.json")).unwrap()).unwrap();
+            // Ogni partita come letta da sola: niente memoria dell'analisi dalla partita prima.
+            crate::vision::detect::forget_reading_state();
             let mut a = Assistant::default();
             let mut confirms = 0;
             let mut wrong = Vec::new();

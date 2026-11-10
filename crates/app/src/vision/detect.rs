@@ -1127,14 +1127,6 @@ thread_local! {
     static LAST_N: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Dimentica quello che l'analisi ricorda dalle schermate precedenti (prova di riserva, carte
-/// viste): per cominciare una lettura indipendente, come una partita nuova del banco di prova.
-pub fn forget_reading_state() {
-    LAST_TRY.with(|t| t.set(0));
-    LAST_N.with(|t| t.set(0));
-    LAST_CARD_L.with(|l| l.set(0.0));
-}
-
 /// La lunghezza delle carte trovate dall'ultima analisi fatta in questo thread (0 se nessuna).
 pub fn last_card_l() -> f32 {
     LAST_CARD_L.with(|l| l.get())
@@ -1618,23 +1610,6 @@ pub fn scene(img: &Img) -> Scene {
         .map(|b| b.rect.cy)
         .fold(f32::MAX, f32::min);
     let mid = if backs_y < f32::MAX { (backs_y + bottom) / 2.0 } else { bottom - 2.1 * card_l };
-    // Quanti dorsi: nella riga dei dorsi, dalla larghezza (le carte coperte si sovrappongono:
-    // ogni carta in più allarga di circa mezza carta).
-    if backs_y < f32::MAX {
-        let cw = 0.68 * card_l;
-        let n: f32 = a
-            .blobs
-            .iter()
-            .filter(|b| b.white <= 0.3 && b.rect.long() > 0.8 * card_l && (b.rect.cy - backs_y).abs() < 0.3 * card_l)
-            .map(|b| {
-                let w = 2.0 * (b.rect.hw * b.rect.u.0.abs() + b.rect.hh * b.rect.v.0.abs());
-                (1.0 + ((w - cw) / (0.5 * cw)).round()).clamp(1.0, 3.0)
-            })
-            .sum();
-        if (1.0..=3.0).contains(&n) {
-            scene.opp_backs = Some(n as u8);
-        }
-    }
     // In tavola: carte in piedi non troppo più piccole di quelle in mano (un pezzo di carta non lo è)
     // e più o meno sopra la mano: le carte giocate vanno al centro del tavolo, non in un punto
     // qualsiasi dello sfondo.

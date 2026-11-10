@@ -40,6 +40,8 @@ pub struct Memory {
     templates: Vec<Template>,
     #[serde(skip)]
     path: Option<PathBuf>,
+    #[serde(skip)]
+    save_error: Option<String>,
 }
 
 /// Spostamenti (in pixel della carta raddrizzata) provati nel confronto: le carte viste in parte
@@ -154,7 +156,7 @@ impl Memory {
     /// Copia per una ricostruzione provvisoria: le ipotesi non devono insegnare
     /// carte alla memoria della partita reale, né scrivere sul disco.
     pub fn isolated(&self) -> Memory {
-        Memory { version: self.version, templates: self.templates.clone(), path: None }
+        Memory { version: self.version, templates: self.templates.clone(), path: None, save_error: None }
     }
 
     pub fn len(&self) -> usize {
@@ -212,13 +214,52 @@ impl Memory {
         }
     }
 
-    fn save(&self) {
-        if let Some(p) = &self.path {
-            if let Some(d) = p.parent() {
-                let _ = std::fs::create_dir_all(d);
-            }
-            let _ = std::fs::write(p, serde_json::to_string(self).unwrap_or_default());
-        }
+    pub fn last_error(&self) -> Option<&str> {
+        self.save_error.as_deref()
+    }
+
+    fn save(&mut self) {
+        self.save_error = self.path.as_ref().and_then(|p| save_atomic(p, self).err()).map(|e| e.to_string());
+    }
+}
+
+fn save_atomic(path: &std::path::Path, memory: &Memory) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension(format!("{}.tmp", std::process::id()));
+    let result = (|| {
+        let bytes = serde_json::to_vec(memory)?;
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        replace(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
+#[cfg(not(windows))]
+fn replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+#[cfg(windows)]
+fn replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
+    let wide = |p: &std::path::Path| p.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    if unsafe {
+        MoveFileExW(wide(from).as_ptr(), wide(to).as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+    } == 0
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -226,5 +267,30 @@ impl Memory {
 impl Memory {
     pub fn in_memory() -> Memory {
         Memory { version: VERSION, ..Default::default() }
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+
+    #[test]
+    fn atomic_save_replaces_existing_json_and_reports_errors() {
+        let dir = std::env::temp_dir().join(format!("brismaster-memory-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cards.json");
+        std::fs::write(&path, b"old").unwrap();
+        let mut memory = Memory::in_memory();
+        memory.path = Some(path.clone());
+        memory.save();
+        assert!(memory.last_error().is_none());
+        let loaded: Memory = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(loaded.version, VERSION);
+        // A file cannot be used as the parent directory; preserve it on failure.
+        memory.path = Some(path.join("cannot-write.json"));
+        memory.save();
+        assert!(memory.last_error().is_some());
+        assert!(serde_json::from_slice::<Memory>(&std::fs::read(&path).unwrap()).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

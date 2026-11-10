@@ -179,6 +179,11 @@ impl AreaPicker {
     /// Pulsanti da mettere sotto l'interruttore della lettura dello schermo. `last` è l'ultima
     /// schermata letta (per la diagnosi), `summary` cosa ci è stato riconosciuto.
     pub fn controls(&mut self, ui: &mut egui::Ui, last: Option<Img>, summary: &str) {
+        self.controls_ref(ui, last.as_ref(), summary);
+    }
+
+    /// Borrow a cached diagnosis image without copying megapixels on every UI frame.
+    pub fn controls_ref(&mut self, ui: &mut egui::Ui, last: Option<&Img>, summary: &str) {
         let a = *area().lock().unwrap();
         ui.horizontal_wrapped(|ui| {
             let label = if a.rect.is_some() {

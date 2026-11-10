@@ -17,7 +17,9 @@ Mazzi scelti: napoletane per Briscola, Scopa e Sette e mezzo; francesi per gli a
   segnalazione, senza alterare il file originale durante il caricamento.
 - Psy Fly riceve il consiglio del gioco attivo. Per decisioni come carta/stai o
   puntate mostra il testo; evidenzia scarti/cambi soltanto quando tutte le carte
-  richieste sono localizzate senza ambiguità e la cattura è fresca. Nessun clic
+  richieste sono localizzate senza ambiguità e la cattura è fresca. Nel lettore
+  confermato occorre segnare «La mia mano»: non si assume che una carta unica sul
+  tavolo sia una propria carta da scartare. Nessun clic
   automatico. Un clic non anticipa più i cuori di una giocata confermata.
 - Palette comune, controlli distribuiti su righe distinte, aggiornamenti nel piè
   di pagina: un errore di rete non copre più la selezione del gioco.
@@ -47,7 +49,8 @@ non rende automaticamente più forte la Briscola.
 ## Verifiche da riprendere
 
 - Eseguire `scripts/validate.sh` dopo ogni modifica, conservando il risultato.
-- Confrontare i kernel con `scripts/bench-kernels.sh` sulla stessa macchina.
+- Primo confronto dei kernel eseguito contro il tag 0.6.0: dati grezzi e limiti
+  in `bench/quality-0.6.0/README.md`. Ripeterlo con `scripts/bench-kernels.sh`.
 - Verificare Windows: cattura, click-through, esclusione dell'overlay dalle foto,
   DPI 100/125/150/200%, monitor a scale diverse e coordinate negative.
 - Provare i mazzi francesi su tavoli reali: font e disegni diversi, ventagli,

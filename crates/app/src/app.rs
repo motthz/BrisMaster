@@ -277,6 +277,7 @@ impl BrisApp {
             ui.separator();
             egui::ComboBox::from_id_salt("game")
                 .width(180.0)
+                .height(360.0)
                 .selected_text(RichText::new(self.settings.game.label()).size(16.0).strong())
                 .show_ui(ui, |ui| {
                     for g in Gioco::ALL {
@@ -531,4 +532,40 @@ fn install_theme(ctx: &egui::Context) {
     style.spacing.item_spacing = egui::vec2(9.0, 8.0);
     style.spacing.combo_width = 160.0;
     ctx.set_global_style(style);
+}
+
+#[cfg(test)]
+mod visual_integration_tests {
+    use super::*;
+    use crate::vision::universal::DeckCard;
+    #[test]
+    fn confirmed_input_reaches_each_new_game_and_rejects_wrong_decks() {
+        let mut blackjack = BlackjackUi::new(Default::default());
+        assert!(blackjack.visual_insert(DeckCard::French(12)).is_ok());
+        assert!(blackjack.visual_insert(DeckCard::Naples(0)).is_err());
+        assert!(blackjack.visual_insert(DeckCard::French(52)).is_err());
+        let prefs = settemezzo_ui::Prefs::default();
+        let mut sette = SetteMezzo::new(&prefs);
+        assert!(sette.visual_insert(DeckCard::Naples(0)).is_ok());
+        assert!(sette.visual_insert(DeckCard::Naples(0)).is_err());
+        assert!(sette.visual_insert(DeckCard::French(0)).is_err());
+        let mut scala = Scala40Ui::default();
+        assert!(scala.visual_insert(DeckCard::French(0)).is_ok());
+        assert!(scala.visual_insert(DeckCard::French(0)).is_ok());
+        assert!(scala.visual_insert(DeckCard::French(0)).is_err());
+        let mut burraco = BurracoAssistant::default();
+        assert!(burraco.visual_insert(DeckCard::French(52)).is_ok());
+        assert!(burraco.visual_insert(DeckCard::Naples(0)).is_err());
+        let mut holdem = HoldemAssistant::default();
+        assert!(holdem.visual_insert(DeckCard::French(0)).is_ok());
+        assert!(holdem.visual_insert(DeckCard::French(0)).is_err());
+        assert!(holdem.visual_insert(DeckCard::French(51)).is_ok());
+        assert!(holdem.visual_insert(DeckCard::French(52)).is_err());
+        let mut poker = PokerIt::load(None);
+        assert!(poker.visual_insert(DeckCard::French(1)).is_err()); // 2 not in a short deck
+        for c in [0, 6, 7, 8, 9] {
+            assert!(poker.visual_insert(DeckCard::French(c)).is_ok());
+        }
+        assert!(poker.visual_insert(DeckCard::French(10)).is_err()); // betting phase, not card input
+    }
 }

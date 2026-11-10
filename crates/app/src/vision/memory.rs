@@ -33,7 +33,7 @@ struct Template {
     vis: [f32; 2],
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
 pub struct Memory {
     #[serde(default)]
     version: u32,
@@ -47,6 +47,12 @@ pub struct Memory {
 }
 
 fn default_classes() -> usize { 40 }
+
+impl Default for Memory {
+    fn default() -> Self {
+        Self { version: 0, templates: Vec::new(), path: None, save_error: None, classes: default_classes() }
+    }
+}
 
 fn valid_view(img: &Img, vis: [f32; 2]) -> bool {
     img.w == CARD_W && img.h == CARD_H && img.px.len() == CARD_W * CARD_H
@@ -322,6 +328,25 @@ impl Memory {
 #[cfg(test)]
 mod persistence_tests {
     use super::*;
+
+    #[test]
+    fn french_memory_preserves_jokers_separately_from_naples() {
+        let dir =
+            std::env::temp_dir().join(format!("brismaster-french-memory-{}", std::process::id()));
+        let path = dir.join("french.json");
+        let mut memory = Memory::load_with_classes(path.clone(), 54);
+        let mut image = Img::new(CARD_W, CARD_H);
+        for (i, p) in image.px.iter_mut().enumerate() {
+            *p = [(i % 200) as u8; 3];
+        }
+        memory.remember(&image, WHOLE, 52);
+        assert_eq!(memory.len(), 1);
+        assert!(memory.last_error().is_none());
+        let loaded = Memory::load_with_classes(path.clone(), 54);
+        assert!(loaded.similarities::<54>(&image, WHOLE)[52].unwrap() > 0.999);
+        assert_eq!(Memory::load_from(path).len(), 0); // no French indices enter Naples arrays
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn corrupt_templates_are_rejected_without_losing_valid_examples() {

@@ -1,0 +1,492 @@
+[
+  {
+    "repeat": 0,
+    "version": "baseline",
+    "kernel": "river_exact",
+    "ms": 6.431,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 0,
+    "version": "baseline",
+    "kernel": "river_app",
+    "ms": 59.339,
+    "checksum": "98.740750000000"
+  },
+  {
+    "repeat": 0,
+    "version": "baseline",
+    "kernel": "draw",
+    "ms": 121.206,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 0,
+    "version": "baseline",
+    "kernel": "blackjack",
+    "ms": 2.581,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 0,
+    "version": "baseline",
+    "kernel": "hands=200",
+    "ms": 1.059,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 0,
+    "version": "improved",
+    "kernel": "river_exact",
+    "ms": 3.999,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 0,
+    "version": "improved",
+    "kernel": "river_app",
+    "ms": 4.27,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 0,
+    "version": "improved",
+    "kernel": "draw",
+    "ms": 118.324,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 0,
+    "version": "improved",
+    "kernel": "blackjack",
+    "ms": 1.631,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 0,
+    "version": "improved",
+    "kernel": "hands=200",
+    "ms": 1.074,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 1,
+    "version": "improved",
+    "kernel": "river_exact",
+    "ms": 3.825,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 1,
+    "version": "improved",
+    "kernel": "river_app",
+    "ms": 3.755,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 1,
+    "version": "improved",
+    "kernel": "draw",
+    "ms": 113.816,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 1,
+    "version": "improved",
+    "kernel": "blackjack",
+    "ms": 1.754,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 1,
+    "version": "improved",
+    "kernel": "hands=200",
+    "ms": 1.041,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 1,
+    "version": "baseline",
+    "kernel": "river_exact",
+    "ms": 6.036,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 1,
+    "version": "baseline",
+    "kernel": "river_app",
+    "ms": 55.761,
+    "checksum": "98.740750000000"
+  },
+  {
+    "repeat": 1,
+    "version": "baseline",
+    "kernel": "draw",
+    "ms": 122.043,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 1,
+    "version": "baseline",
+    "kernel": "blackjack",
+    "ms": 2.441,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 1,
+    "version": "baseline",
+    "kernel": "hands=200",
+    "ms": 1.12,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 2,
+    "version": "baseline",
+    "kernel": "river_exact",
+    "ms": 6.048,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 2,
+    "version": "baseline",
+    "kernel": "river_app",
+    "ms": 57.185,
+    "checksum": "98.740750000000"
+  },
+  {
+    "repeat": 2,
+    "version": "baseline",
+    "kernel": "draw",
+    "ms": 120.162,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 2,
+    "version": "baseline",
+    "kernel": "blackjack",
+    "ms": 2.317,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 2,
+    "version": "baseline",
+    "kernel": "hands=200",
+    "ms": 0.993,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 2,
+    "version": "improved",
+    "kernel": "river_exact",
+    "ms": 4.047,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 2,
+    "version": "improved",
+    "kernel": "river_app",
+    "ms": 3.883,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 2,
+    "version": "improved",
+    "kernel": "draw",
+    "ms": 114.433,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 2,
+    "version": "improved",
+    "kernel": "blackjack",
+    "ms": 1.757,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 2,
+    "version": "improved",
+    "kernel": "hands=200",
+    "ms": 0.97,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 3,
+    "version": "improved",
+    "kernel": "river_exact",
+    "ms": 3.805,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 3,
+    "version": "improved",
+    "kernel": "river_app",
+    "ms": 3.722,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 3,
+    "version": "improved",
+    "kernel": "draw",
+    "ms": 117.47,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 3,
+    "version": "improved",
+    "kernel": "blackjack",
+    "ms": 1.591,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 3,
+    "version": "improved",
+    "kernel": "hands=200",
+    "ms": 0.984,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 3,
+    "version": "baseline",
+    "kernel": "river_exact",
+    "ms": 6.112,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 3,
+    "version": "baseline",
+    "kernel": "river_app",
+    "ms": 56.858,
+    "checksum": "98.740750000000"
+  },
+  {
+    "repeat": 3,
+    "version": "baseline",
+    "kernel": "draw",
+    "ms": 120.958,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 3,
+    "version": "baseline",
+    "kernel": "blackjack",
+    "ms": 2.279,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 3,
+    "version": "baseline",
+    "kernel": "hands=200",
+    "ms": 1.003,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 4,
+    "version": "baseline",
+    "kernel": "river_exact",
+    "ms": 6.083,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 4,
+    "version": "baseline",
+    "kernel": "river_app",
+    "ms": 57.0,
+    "checksum": "98.740750000000"
+  },
+  {
+    "repeat": 4,
+    "version": "baseline",
+    "kernel": "draw",
+    "ms": 124.626,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 4,
+    "version": "baseline",
+    "kernel": "blackjack",
+    "ms": 2.339,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 4,
+    "version": "baseline",
+    "kernel": "hands=200",
+    "ms": 0.975,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 4,
+    "version": "improved",
+    "kernel": "river_exact",
+    "ms": 3.765,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 4,
+    "version": "improved",
+    "kernel": "river_app",
+    "ms": 3.713,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 4,
+    "version": "improved",
+    "kernel": "draw",
+    "ms": 116.489,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 4,
+    "version": "improved",
+    "kernel": "blackjack",
+    "ms": 1.682,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 4,
+    "version": "improved",
+    "kernel": "hands=200",
+    "ms": 0.975,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 5,
+    "version": "improved",
+    "kernel": "river_exact",
+    "ms": 3.872,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 5,
+    "version": "improved",
+    "kernel": "river_app",
+    "ms": 3.717,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 5,
+    "version": "improved",
+    "kernel": "draw",
+    "ms": 122.772,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 5,
+    "version": "improved",
+    "kernel": "blackjack",
+    "ms": 1.634,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 5,
+    "version": "improved",
+    "kernel": "hands=200",
+    "ms": 1.008,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 5,
+    "version": "baseline",
+    "kernel": "river_exact",
+    "ms": 6.089,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 5,
+    "version": "baseline",
+    "kernel": "river_app",
+    "ms": 56.462,
+    "checksum": "98.740750000000"
+  },
+  {
+    "repeat": 5,
+    "version": "baseline",
+    "kernel": "draw",
+    "ms": 125.138,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 5,
+    "version": "baseline",
+    "kernel": "blackjack",
+    "ms": 2.37,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 5,
+    "version": "baseline",
+    "kernel": "hands=200",
+    "ms": 0.977,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 6,
+    "version": "baseline",
+    "kernel": "river_exact",
+    "ms": 6.675,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 6,
+    "version": "baseline",
+    "kernel": "river_app",
+    "ms": 59.008,
+    "checksum": "98.740750000000"
+  },
+  {
+    "repeat": 6,
+    "version": "baseline",
+    "kernel": "draw",
+    "ms": 118.863,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 6,
+    "version": "baseline",
+    "kernel": "blackjack",
+    "ms": 2.394,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 6,
+    "version": "baseline",
+    "kernel": "hands=200",
+    "ms": 0.99,
+    "checksum": "7449"
+  },
+  {
+    "repeat": 6,
+    "version": "improved",
+    "kernel": "river_exact",
+    "ms": 4.031,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 6,
+    "version": "improved",
+    "kernel": "river_app",
+    "ms": 3.865,
+    "checksum": "98.608585858586"
+  },
+  {
+    "repeat": 6,
+    "version": "improved",
+    "kernel": "draw",
+    "ms": 113.81,
+    "checksum": "101.440467834"
+  },
+  {
+    "repeat": 6,
+    "version": "improved",
+    "kernel": "blackjack",
+    "ms": 1.614,
+    "checksum": "-5708.172663398105"
+  },
+  {
+    "repeat": 6,
+    "version": "improved",
+    "kernel": "hands=200",
+    "ms": 1.047,
+    "checksum": "7449"
+  }
+]

@@ -121,10 +121,19 @@ fn groups_of(n: &mut Counts, k: usize, partials: bool) -> Vec<Group> {
     let jokers = n[JOKER as usize] > 0;
 
     // Tris e poker con gli altri semi (tutti di tipo più alto).
-    let others = (suit + 1..4).filter(|&s| n[kind_of(s, rank) as usize] > 0).fold(0u8, |m, s| m | (1 << s));
-    // At most three suits: enumerate subsets without allocating at every search node.
-    for mask in (1u8..16).filter(|m| m & !others == 0) {
-        let suits = (1u8 << suit) | mask;
+    let mut others = [0u8; 3];
+    let mut n_others = 0;
+    for s in suit + 1..4 {
+        if n[kind_of(s, rank) as usize] > 0 {
+            others[n_others] = s;
+            n_others += 1;
+        }
+    }
+    // Keep the original enumeration order, with no heap allocation per node.
+    for mask in 1u8..(1 << n_others) {
+        let suits = others[..n_others].iter().enumerate()
+            .filter(|(i, _)| mask & (1 << i) != 0)
+            .fold(1u8 << suit, |m, (_, &s)| m | 1 << s);
         let c = suits.count_ones();
         if c >= 3 {
             out.push(Group::Set { rank, suits, joker: false });

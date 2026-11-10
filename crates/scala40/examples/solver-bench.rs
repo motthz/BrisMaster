@@ -12,5 +12,5 @@ fn main() {
     }
     let start = Instant::now();
     let checksum: f32 = hands.iter().map(|n| solver::best(n, &solver::OpenValue).score).sum();
-    println!("hands={} elapsed_ms={:.3} checksum={checksum}", hands.len(), start.elapsed().as_secs_f64()*1000.0);
+    println!("hands={} elapsed_ms={:.3} checksum={checksum}", hands.len(), start.elapsed().as_secs_f64() * 1000.0);
 }

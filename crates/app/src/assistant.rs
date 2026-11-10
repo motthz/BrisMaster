@@ -2161,7 +2161,7 @@ impl Assistant {
 
     /// Registrazione di questa partita (la accende l'utente) e file da inviare.
     fn recording_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.vertical(|ui| {
             let mut on = self.rec.enabled;
             let text = if on {
                 RichText::new("● Registra questa partita").color(Color32::LIGHT_RED).strong()
@@ -2175,7 +2175,7 @@ impl Assistant {
             {
                 self.rec.set_enabled(on, &self.pos);
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("Apri cartella partite").clicked() {
                     record::open_dir();
                 }

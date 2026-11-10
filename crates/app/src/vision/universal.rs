@@ -27,6 +27,12 @@ impl DeckCard {
             ),
         }
     }
+    pub fn from_poker(c: u8) -> Self {
+        Self::French([3,0,1,2][(c % 4) as usize] * 13 + (c / 4 + 1) % 13)
+    }
+    pub fn from_poker_it(c: u8) -> Self {
+        Self::French([3,2,1,0][(c % 4) as usize] * 13 + if c / 4 == 7 { 0 } else { c / 4 + 6 })
+    }
     pub fn french_kind(self) -> Option<u8> {
         match self {
             Self::French(c) if c < 54 => Some(c.min(52)),

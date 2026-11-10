@@ -565,3 +565,94 @@ impl HoldemAssistant {
             .unwrap_or_else(|| "Nessun consiglio disponibile".into()))
     }
 }
+
+impl HoldemAssistant {
+    pub fn auto_request(&self) -> Option<crate::vision::autosync::Request> {
+        use crate::vision::{
+            autosync::{Domain, Request, Role},
+            universal::DeckCard,
+        };
+        let (role, existing, total) = if self.hand.is_none() {
+            (Role::Hand, self.hole.iter().copied().map(DeckCard::from_poker).collect(), 2)
+        } else if (self.hand.as_ref()?.over && self.hand.as_ref()?.folded.is_some())
+            || self.board.len() >= self.board_needed()
+        {
+            return None;
+        } else {
+            (Role::Board, self.board.iter().copied().map(DeckCard::from_poker).collect(), self.board_needed())
+        };
+        Some(Request {
+            role,
+            existing,
+            min_total: total,
+            max_total: total,
+            max_copies: 1,
+            domain: Domain::French52,
+            replace: false,
+        })
+    }
+    pub fn visual_batch(&mut self, cards: &[crate::vision::universal::DeckCard]) -> Result<(), String> {
+        if cards.is_empty() {
+            return Ok(());
+        }
+        let old = self.snapshot();
+        let undo = self.undo.clone();
+        let advice = self.advice.take();
+        for &card in cards {
+            if let Err(e) = self.visual_insert(card) {
+                self.hole = old.hole;
+                self.i_am_button = old.i_am_button;
+                self.board = old.board;
+                self.hand = old.hand;
+                self.undo = undo;
+                self.advice = advice;
+                return Err(e);
+            }
+        }
+        self.undo = undo;
+        self.undo.push(old);
+        self.advice = None;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod automatic_tests {
+    use super::*;
+    use crate::vision::{autosync::Role, universal::DeckCard as C};
+    #[test]
+    fn automatic_hole_and_board_wait_for_betting_and_roll_back_conflicts() {
+        let mut app = HoldemAssistant::default();
+        let req = app.auto_request().unwrap();
+        app.visual_batch(&req.additions(&[C::French(0), C::French(12)]).unwrap()).unwrap();
+        assert_eq!(app.hole.len(), 2);
+        assert!(app.auto_request().is_none());
+        while app.hand.as_ref().unwrap().street == 0 {
+            app.apply(Action::Call);
+        }
+        let req = app.auto_request().unwrap();
+        assert_eq!(req.role, Role::Board);
+        assert!(req.additions(&[C::French(1), C::French(2)]).unwrap().is_empty());
+        // The third card conflicts with a hole card: do not retain the first two.
+        assert!(app.visual_batch(&[C::French(1), C::French(2), C::French(0)]).is_err());
+        assert!(app.board.is_empty());
+        app.visual_batch(&req.additions(&[C::French(1), C::French(2), C::French(3)]).unwrap()).unwrap();
+        assert_eq!(app.board.len(), 3);
+        assert!(app.auto_request().is_none());
+        app.undo(); // a full observed flop has one undo entry
+        assert!(app.board.is_empty());
+    }
+}
+
+impl HoldemAssistant {
+    pub fn auto_known(&self) -> Vec<crate::vision::autosync::Request> {
+        use crate::vision::{
+            autosync::{Domain, Request, Role},
+            universal::DeckCard as C,
+        };
+        vec![
+            Request::known(Role::Hand, Domain::French52, self.hole.iter().copied().map(C::from_poker).collect(), 1),
+            Request::known(Role::Board, Domain::French52, self.board.iter().copied().map(C::from_poker).collect(), 1),
+        ]
+    }
+}

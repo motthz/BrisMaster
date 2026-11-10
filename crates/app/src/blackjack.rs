@@ -763,3 +763,120 @@ impl BlackjackUi {
         })
     }
 }
+
+impl BlackjackUi {
+    pub fn auto_request(&self) -> Option<crate::vision::autosync::Request> {
+        use crate::vision::{
+            autosync::{Domain, Request, Role},
+            universal::DeckCard,
+        };
+        if self.table.up.is_none() || self.to_dealer {
+            return Some(Request {
+                role: Role::Dealer,
+                existing: self.table.up.map(|c| DeckCard::French(c as u8)).into_iter().collect(),
+                min_total: 1,
+                max_total: 1,
+                max_copies: self.settings.rules.decks as usize,
+                domain: Domain::Blackjack,
+                replace: true,
+            });
+        }
+        if self.table.hands.len() != 1 {
+            return None;
+        } // split hands need separate calibrated areas
+        let hand = &self.table.hands[0];
+        if hand.done {
+            return None;
+        }
+        Some(Request {
+            role: Role::Hand,
+            existing: hand.cards.iter().map(|&c| DeckCard::French(c as u8)).collect(),
+            min_total: 2.max(hand.cards.len()),
+            max_total: 2.max(hand.cards.len() + 1),
+            max_copies: self.settings.rules.decks as usize,
+            domain: Domain::Blackjack,
+            replace: false,
+        })
+    }
+    pub fn visual_batch(&mut self, cards: &[crate::vision::universal::DeckCard]) -> Result<(), String> {
+        if cards.is_empty() {
+            return Ok(());
+        }
+        let old = self.table.clone();
+        let undo = self.undo.clone();
+        let version = self.version;
+        let to_dealer = self.to_dealer;
+        for &card in cards {
+            let before = self.version;
+            if let Err(error) = self.visual_insert(card).and_then(|_| {
+                if self.version != before {
+                    Ok(())
+                } else {
+                    Err("La mano è già terminata".into())
+                }
+            }) {
+                self.table = old;
+                self.undo = undo;
+                self.version = version;
+                self.to_dealer = to_dealer;
+                self.cached = None;
+                return Err(error);
+            }
+        }
+        self.undo = undo;
+        self.undo.push(old); // one undo restores the whole observed batch
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod automatic_tests {
+    use super::*;
+    use crate::vision::{autosync::Role, universal::DeckCard as C};
+    #[test]
+    fn automatic_deal_draw_undo_and_failed_batch_are_consistent() {
+        let mut app = BlackjackUi::new(Default::default());
+        assert_eq!(app.auto_request().unwrap().role, Role::Dealer);
+        app.visual_batch(&[C::French(12)]).unwrap();
+        let request = app.auto_request().unwrap();
+        assert_eq!(request.role, Role::Hand);
+        let cards = request.additions(&[C::French(0), C::French(8)]).unwrap();
+        app.visual_batch(&cards).unwrap();
+        assert_eq!(app.table.hands[0].cards, vec![0, 8]);
+        let old = app.table.hands[0].cards.clone();
+        let undo = app.undo.len();
+        assert!(app.visual_batch(&[C::French(1), C::Unknown]).is_err());
+        assert_eq!(app.table.hands[0].cards, old);
+        assert_eq!(app.undo.len(), undo);
+        app.undo();
+        assert!(app.table.hands[0].cards.is_empty());
+        app.visual_batch(&[C::French(9), C::French(10)]).unwrap();
+        app.split();
+        assert!(app.auto_request().is_none(), "do not mix split hands into one role");
+    }
+}
+
+impl BlackjackUi {
+    pub fn auto_known(&self) -> Vec<crate::vision::autosync::Request> {
+        use crate::vision::{
+            autosync::{Domain, Request, Role},
+            universal::DeckCard as C,
+        };
+        let copies = self.settings.rules.decks as usize;
+        let mut known = vec![Request::known(
+            Role::Dealer,
+            Domain::Blackjack,
+            self.table.up.map(|c| C::French(c as u8)).into_iter().collect(),
+            copies,
+        )];
+        if self.table.hands.len() == 1 {
+            known.push(Request::known(
+                Role::Hand,
+                Domain::Blackjack,
+                self.table.hands[0].cards.iter().map(|&c| C::French(c as u8)).collect(),
+                copies,
+            ));
+        }
+        known
+    }
+}

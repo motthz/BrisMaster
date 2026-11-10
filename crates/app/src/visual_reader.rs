@@ -40,12 +40,32 @@ pub struct VisualReader {
     labels: Vec<u8>,
     own_hand: Vec<bool>,
     last_image: Option<vision::Img>,
+    scene_area: Option<vision::screen::Area>,
     error: Option<String>,
     area_picker: vision::screen::AreaPicker,
+    layout: vision::autosync::Layout,
+    automatic: bool,
+    synchronizer: vision::autosync::Reconciler,
+    auto_status: String,
+    edit_zones: bool,
+    zone_role: vision::autosync::Role,
+    zone_drag: Option<(egui::Pos2, egui::Pos2)>,
+    table_texture: Option<egui::TextureHandle>,
 }
 impl VisualReader {
     pub fn stop(&mut self) {
+        let layout = std::mem::take(&mut self.layout);
         *self = Self::default();
+        self.layout = layout;
+    }
+    pub fn automatic(&self)->bool {self.automatic}
+    pub fn layout(&self) -> vision::autosync::Layout {
+        self.layout.clone()
+    }
+    pub fn set_layout(&mut self, layout: vision::autosync::Layout) {
+        self.layout = layout;
+        self.automatic = false;
+        self.synchronizer = Default::default();
     }
     pub fn set_enabled(&mut self, enabled: bool, naples: bool, ctx: &egui::Context) {
         if enabled && self.reader.is_none() {
@@ -82,13 +102,16 @@ impl VisualReader {
         while let Ok(reading) = reader.rx.try_recv() {
             match reading {
                 Reading::Scene(scene, id) => {
+                    let area = *vision::screen::area().lock().unwrap_or_else(|e| e.into_inner());
                     self.last_image = reader.last_frame();
+                    self.table_texture = self.last_image.as_ref().map(|im| table_texture(ctx, im));
                     let own_hand = scene
                         .cards
                         .iter()
                         .map(|new| {
                             self.scene
                                 .as_ref()
+                                .filter(|_| self.scene_area == Some(area))
                                 .and_then(|(old, _)| {
                                     old.cards
                                         .iter()
@@ -105,6 +128,7 @@ impl VisualReader {
                         .map(|new| {
                             self.scene
                                 .as_ref()
+                                .filter(|_| self.scene_area == Some(area))
                                 .and_then(|(old, _)| {
                                     old.cards
                                         .iter()
@@ -133,17 +157,36 @@ impl VisualReader {
                         .collect();
                     self.labels = labels;
                     self.own_hand = own_hand;
+                    self.scene_area = Some(area);
+                    match vision::autosync::Observation::from_scene(&scene, &self.layout, area) {
+                        Ok(observation) if !reader.placement(id).hidden => {
+                            self.synchronizer.observe(observation, id, std::time::Instant::now());
+                            if self.automatic {
+                                self.auto_status = "Attendo letture coerenti o nuove carte".into();
+                            }
+                        }
+                        Ok(_) => self.synchronizer.interrupt(),
+                        Err(e) => {
+                            self.synchronizer.interrupt();
+                            if self.automatic {
+                                self.auto_status = e;
+                            }
+                        }
+                    }
                     self.scene = Some((scene, id));
                     self.error = None;
                 }
                 Reading::NoTable => {
+                    self.synchronizer.interrupt();
                     self.last_image = reader.last_frame();
+                    self.table_texture = self.last_image.as_ref().map(|im| table_texture(ctx, im));
                     self.scene = None;
                     self.textures.clear();
                     self.labels.clear();
                     self.own_hand.clear();
                 }
                 Reading::Error(error) => {
+                    self.synchronizer.interrupt();
                     self.scene = None;
                     self.textures.clear();
                     self.labels.clear();
@@ -161,7 +204,7 @@ impl VisualReader {
         let mut chosen = None;
         let mut open = self.review;
         egui::Window::new("Carte dallo schermo").id(egui::Id::unique("visual-review")).open(&mut open)
-            .default_width(510.0).show(ctx, |ui| {
+            .default_width(570.0).max_height((ctx.viewport_rect().height()-40.0).max(240.0)).vscroll(true).show(ctx, |ui| {
                 ui.label("Scegli nell'assistente dove inserire la carta, poi conferma qui. Le azioni e i turni restano sotto il tuo controllo.");
                 ui.label("Per Psy Fly, segna «La mia mano» sulle tue carte: le carte del tavolo non saranno indicate come scarti.");
                 let summary = self.scene.as_ref().map(|(s,_)| s.cards.iter().map(|c| c.card.label()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
@@ -170,6 +213,10 @@ impl VisualReader {
                 if let Some(memory) = &self.memory {
                     if let Some(e) = memory.lock().unwrap_or_else(|e| e.into_inner()).last_error() { ui.colored_label(egui::Color32::LIGHT_RED, e); }
                 }
+                self.calibration_ui(ui);
+                let auto_changed=ui.checkbox(&mut self.automatic,"Sincronizza automaticamente le carte nelle zone").changed();
+                if auto_changed { self.synchronizer.interrupt(); self.auto_status.clear(); self.error=None; }
+                if self.automatic { ui.label(if self.auto_status.is_empty() { "Attendo due letture coerenti…" } else { &self.auto_status }); }
                 let Some((scene, id)) = &self.scene else { ui.label("Cerco carte visibili sul tavolo…"); return; };
                 let fresh = self.reader.as_ref().is_some_and(|r| !r.placement(*id).hidden);
                 if !fresh { ui.label(RichText::new("Lettura scaduta: attendo una nuova immagine.").color(egui::Color32::YELLOW)); }
@@ -205,11 +252,198 @@ impl VisualReader {
         self.review = open;
         chosen
     }
+    fn calibration_ui(&mut self, ui: &mut egui::Ui) {
+        use vision::autosync::{Role, Zone};
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Definisci zone del tavolo").clicked() {
+                self.edit_zones = !self.edit_zones;
+            }
+            ui.label(format!("{} zone", self.layout.zones.len()));
+        });
+        if !self.edit_zones {
+            return;
+        }
+        ui.label("Scegli il ruolo e trascina sulla foto un rettangolo attorno a tutte le carte di quella zona. Le zone non devono sovrapporsi.");
+        egui::ComboBox::from_id_salt("zone-role").selected_text(self.zone_role.label()).show_ui(ui, |ui| {
+            for role in Role::ALL {
+                ui.selectable_value(&mut self.zone_role, role, role.label());
+            }
+        });
+        let area = *vision::screen::area().lock().unwrap_or_else(|e| e.into_inner());
+        if let (Some(image), Some(texture)) = (&self.last_image, &self.table_texture) {
+            let scale = (ui.available_width() / image.w as f32).min(280.0 / image.h as f32);
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(image.w as f32 * scale, image.h as f32 * scale), egui::Sense::drag());
+            ui.painter().image(
+                texture.id(),
+                rect,
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            let screen_rect = |r: [f32; 4]| {
+                egui::Rect::from_min_max(
+                    rect.min + egui::vec2(r[0] * rect.width(), r[1] * rect.height()),
+                    rect.min + egui::vec2(r[2] * rect.width(), r[3] * rect.height()),
+                )
+            };
+            if self.layout.area == Some(area) {
+                for zone in &self.layout.zones {
+                    let r = screen_rect(zone.rect);
+                    ui.painter().rect_stroke(
+                        r,
+                        0.0,
+                        egui::Stroke::new(2.0, egui::Color32::GOLD),
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.painter().text(
+                        r.left_top(),
+                        egui::Align2::LEFT_TOP,
+                        zone.role.label(),
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::GOLD,
+                    );
+                }
+            }
+            if response.drag_started() {
+                self.zone_drag = response.interact_pointer_pos().map(|p| (p, p));
+            }
+            if response.dragged() {
+                if let (Some((start, _)), Some(p)) = (self.zone_drag, response.interact_pointer_pos()) {
+                    self.zone_drag = Some((start, rect.clamp(p)));
+                }
+            }
+            if let Some((start, end)) = self.zone_drag {
+                let selection = egui::Rect::from_two_pos(start, end);
+                ui.painter().rect_stroke(
+                    selection,
+                    0.0,
+                    egui::Stroke::new(2.0, egui::Color32::LIGHT_GREEN),
+                    egui::StrokeKind::Inside,
+                );
+                if response.drag_stopped() {
+                    self.zone_drag = None;
+                    if selection.width() > 8.0 && selection.height() > 8.0 {
+                        if self.layout.area != Some(area) {
+                            self.layout.zones.clear();
+                        }
+                        self.layout.area = Some(area);
+                        self.layout.zones.retain(|z| z.role != self.zone_role);
+                        self.layout.zones.push(Zone {
+                            role: self.zone_role,
+                            rect: [
+                                (selection.min.x - rect.min.x) / rect.width(),
+                                (selection.min.y - rect.min.y) / rect.height(),
+                                (selection.max.x - rect.min.x) / rect.width(),
+                                (selection.max.y - rect.min.y) / rect.height(),
+                            ],
+                        });
+                        self.synchronizer = Default::default();
+                    }
+                }
+            }
+        }
+        let mut remove = None;
+        for (i, zone) in self.layout.zones.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(zone.role.label());
+                if ui.small_button("Rimuovi").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            self.layout.zones.remove(i);
+            self.synchronizer = Default::default();
+        }
+        if let Err(e) = self.layout.validate(area) {
+            ui.colored_label(egui::Color32::YELLOW, e);
+        }
+    }
+    pub fn automatic_batch(&mut self, request: Option<&vision::autosync::Request>) -> Option<Vec<DeckCard>> {
+        if !self.automatic {
+            return None;
+        }
+        let Some(request) = request else {
+            self.auto_status = "Completa le azioni del turno nell'assistente".into();
+            return None;
+        };
+        let Some((_, id)) = &self.scene else {
+            return None;
+        };
+        if self.reader.as_ref().is_none_or(|r| r.placement(*id).hidden) {
+            self.synchronizer.interrupt();
+            return None;
+        }
+        let area = *vision::screen::area().lock().unwrap_or_else(|e| e.into_inner());
+        if self.scene_area!=Some(area) {self.synchronizer.interrupt();return None;}
+        if let Err(e) = self.layout.validate(area) {
+            self.auto_status = e;
+            return None;
+        }
+        if !self.layout.zones.iter().any(|z| z.role == request.role) {
+            self.auto_status = format!("Definisci la zona «{}»", request.role.label());
+            return None;
+        }
+        match self.synchronizer.plan(request) {
+            Ok(cards) if !cards.is_empty() => Some(cards),
+            Ok(_) => {
+                self.synchronizer.acknowledge_existing(request);
+                None
+            }
+            Err(e) => {
+                self.automatic = false;
+                self.synchronizer.interrupt();
+                self.error = Some(format!("Sincronizzazione sospesa: {e}"));
+                None
+            }
+        }
+    }
+    pub fn acknowledge_known(&mut self, known: &[vision::autosync::Request]) {
+        if !self.automatic {
+            return;
+        }
+        if let (Some(reader), Some((_, id))) = (&self.reader, &self.scene) {
+            let area = *vision::screen::area().lock().unwrap_or_else(|e| e.into_inner());
+            if !reader.placement(*id).hidden && self.scene_area == Some(area) && self.layout.validate(area).is_ok() {
+                for request in known {
+                    self.synchronizer.acknowledge_existing(request);
+                }
+            }
+        }
+    }
+    pub fn complete_automatic(&mut self, role: vision::autosync::Role, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.synchronizer.commit(role);
+                self.auto_status = "Carte sincronizzate".into();
+                self.error = None;
+            }
+            Err(e) => {
+                self.automatic = false;
+                self.synchronizer.interrupt();
+                self.error = Some(format!("Sincronizzazione sospesa: {e}"));
+            }
+        }
+    }
     pub fn sight(&self, game: u8, hint: Hint) -> Sight {
         let (Some(reader), Some((scene, id))) = (&self.reader, &self.scene) else { return Sight::off() };
-        let placement = reader.placement(*id);
-        if placement.hidden {
+        let area = *vision::screen::area().lock().unwrap_or_else(|e| e.into_inner());
+        if self.scene_area.is_some_and(|old| old != area) {
             return Sight::off();
+        }
+        let zones_valid = self.layout.validate(area).is_ok();
+        let placement = reader.placement(*id);
+        if placement.hidden || self.error.is_some() {
+            return Sight::off();
+        }
+        if self.automatic && self.synchronizer.has_uncommitted() {
+            return Sight {
+                monitor: placement.monitor,
+                hand: Vec::new(),
+                guide: Guide::Decision("Attendo carte coerenti e azioni del turno".into()),
+                context: (game, 0),
+                played_card: None,
+            };
         }
         let mut targets = Vec::new();
         let complete = !hint.cards.is_empty()
@@ -218,7 +452,11 @@ impl VisualReader {
                     .cards
                     .iter()
                     .enumerate()
-                    .filter(|(i, c)| self.own_hand.get(*i) == Some(&true) && c.card == wanted)
+                    .filter(|(i, c)| {
+                        (self.own_hand.get(*i) == Some(&true)
+                            || (zones_valid && self.layout.role_at(c.at) == Some(vision::autosync::Role::Hand)))
+                            && c.card == wanted
+                    })
                     .map(|(_, c)| c)
                     .collect();
                 if found.len() != 1 {
@@ -253,7 +491,22 @@ impl VisualReader {
         use std::hash::{Hash, Hasher};
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         hint.text.hash(&mut hash);
-        Sight { monitor: placement.monitor, hand: Vec::new(), guide, context: (game, hash.finish()), played_card: None }
+        Sight {
+            monitor: placement.monitor,
+            hand: scene
+                .cards
+                .iter()
+                .enumerate()
+                .filter(|(i, c)| {
+                    self.own_hand.get(*i) == Some(&true)
+                        || (zones_valid && self.layout.role_at(c.at) == Some(vision::autosync::Role::Hand))
+                })
+                .filter_map(|(_, c)| placement.on_desktop(c.at))
+                .collect(),
+            guide,
+            context: (game, hash.finish()),
+            played_card: None,
+        }
     }
 }
 
@@ -265,6 +518,54 @@ fn same_observation(a: &universal::SeenCard, b: &universal::SeenCard) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stable_zones_feed_blackjack_without_card_clicks_and_keep_manual_undo() {
+        use vision::autosync::{Layout, Observation, Role, Zone};
+        let area = *vision::screen::area().lock().unwrap_or_else(|e| e.into_inner());
+        let layout = Layout {
+            area: Some(area),
+            zones: vec![
+                Zone { role: Role::Dealer, rect: [0.35, 0.05, 0.55, 0.4] },
+                Zone { role: Role::Hand, rect: [0.2, 0.5, 0.8, 0.95] },
+            ],
+        };
+        let make = |c, at| universal::SeenCard {
+            card: DeckCard::French(c),
+            image: universal::reference_image(c),
+            at,
+            margin: 0.2,
+            visible: vision::WHOLE,
+        };
+        let scene = Cards {
+            cards: vec![make(12, [0.4, 0.1, 0.5, 0.35]), make(0, [0.3, 0.6, 0.4, 0.9]), make(8, [0.5, 0.6, 0.6, 0.9])],
+        };
+        let mut visual = VisualReader {
+            reader: Some(Reader::with_readings(vec![Reading::Scene(scene.clone(), 2)], 2)),
+            layout: layout.clone(),
+            automatic: true,
+            ..Default::default()
+        };
+        visual.synchronizer.observe(
+            Observation::from_scene(&scene, &layout, area).unwrap(),
+            1,
+            std::time::Instant::now() - Duration::from_millis(250),
+        );
+        visual.poll(&egui::Context::default());
+        let mut game = crate::blackjack::BlackjackUi::new(Default::default());
+        for expected in [Role::Dealer, Role::Hand] {
+            let request = game.auto_request().unwrap();
+            assert_eq!(request.role, expected);
+            let batch = visual.automatic_batch(Some(&request)).expect("stable automatic input");
+            let result = game.visual_batch(&batch);
+            assert!(result.is_ok());
+            visual.complete_automatic(request.role, result);
+        }
+        assert_eq!(game.visual_hint().text, "Stai");
+        assert_eq!(visual.sight(5, Hint::text("Stai")).hand.len(), 2);
+        let request = game.auto_request().unwrap();
+        assert!(visual.automatic_batch(Some(&request)).is_none(), "same snapshot never repeats");
+    }
+
     #[test]
     fn fly_only_selects_cards_explicitly_marked_as_our_hand() {
         let card = universal::SeenCard {
@@ -333,4 +634,13 @@ mod tests {
         b.at[0] += 0.1;
         assert!(!same_observation(&a, &b));
     }
+}
+
+fn table_texture(ctx: &egui::Context, image: &vision::Img) -> egui::TextureHandle {
+    let raw: Vec<u8> = image.px.iter().flatten().copied().collect();
+    ctx.load_texture(
+        "calibration-table",
+        egui::ColorImage::from_rgb([image.w, image.h], &raw),
+        egui::TextureOptions::LINEAR,
+    )
 }

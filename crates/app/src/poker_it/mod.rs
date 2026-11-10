@@ -650,3 +650,83 @@ impl PokerIt {
         Hint { text, cards }
     }
 }
+
+impl PokerIt {
+    pub fn auto_request(&self) -> Option<crate::vision::autosync::Request> {
+        use crate::vision::{
+            autosync::{Domain, Request, Role},
+            universal::DeckCard,
+        };
+        let existing = match self.stage {
+            Stage::Setup => self.cards.iter().copied().map(DeckCard::from_poker_it).collect(),
+            Stage::NewCards => self.kept.iter().chain(&self.drawn).copied().map(DeckCard::from_poker_it).collect(),
+            _ => return None,
+        };
+        Some(Request {
+            role: Role::Hand,
+            existing,
+            min_total: 5,
+            max_total: 5,
+            max_copies: 1,
+            domain: Domain::ShortFrench,
+            replace: false,
+        })
+    }
+    pub fn visual_batch(&mut self, cards: &[crate::vision::universal::DeckCard]) -> Result<(), String> {
+        if cards.is_empty() {
+            return Ok(());
+        }
+        let old = (self.stage, self.hand.clone(), self.cards.clone(), self.drawn.clone(), self.gone.clone());
+        let undo = self.undo.clone();
+        let advice = self.advice.take();
+        for &card in cards {
+            if let Err(e) = self.visual_insert(card) {
+                (self.stage, self.hand, self.cards, self.drawn, self.gone) = old;
+                self.undo = undo;
+                self.advice = advice;
+                return Err(e);
+            }
+        }
+        self.undo = undo;
+        self.undo.push(old);
+        self.advice = None;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod automatic_tests {
+    use super::*;
+    use crate::vision::universal::DeckCard as C;
+    #[test]
+    fn automatic_five_cards_start_once_and_invalid_batch_is_atomic() {
+        let mut app = PokerIt::load(None);
+        assert!(app.visual_batch(&[C::French(6), C::French(1)]).is_err());
+        assert!(app.cards.is_empty());
+        assert!(app.hand.is_none());
+        let visible = [C::French(0), C::French(6), C::French(7), C::French(8), C::French(9)];
+        let request = app.auto_request().unwrap();
+        assert!(request.additions(&visible[..4]).unwrap().is_empty());
+        app.visual_batch(&request.additions(&visible).unwrap()).unwrap();
+        assert!(app.hand.is_some());
+        assert!(app.auto_request().is_none());
+        app.back();
+        assert!(app.cards.is_empty());
+        assert!(app.hand.is_none());
+    }
+}
+
+impl PokerIt {
+    pub fn auto_known(&self) -> Vec<crate::vision::autosync::Request> {
+        use crate::vision::{
+            autosync::{Domain, Request, Role},
+            universal::DeckCard as C,
+        };
+        let cards = match self.stage {
+            Stage::Setup => self.cards.clone(),
+            Stage::NewCards => self.kept.iter().chain(&self.drawn).copied().collect(),
+            Stage::Playing => self.hand.as_ref().map(|h| h.hands[self.me as usize].to_vec()).unwrap_or_default(),
+        };
+        vec![Request::known(Role::Hand, Domain::ShortFrench, cards.into_iter().map(C::from_poker_it).collect(), 1)]
+    }
+}

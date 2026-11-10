@@ -187,6 +187,7 @@ enum Target {
     Builder,
 }
 
+#[derive(Clone)]
 struct Assist {
     hand: Vec<Card>,
     top: Option<Card>,
@@ -575,5 +576,128 @@ impl Scala40Ui {
             }
         }
         Hint::text(text)
+    }
+}
+
+impl Scala40Ui {
+    pub fn auto_request(&self) -> Option<crate::vision::autosync::Request> {
+        use crate::vision::{
+            autosync::{Domain, Request, Role},
+            universal::DeckCard,
+        };
+        let a = &self.assist;
+        if a.hand.is_empty() && a.awaiting_draw {
+            return None;
+        }
+        if a.target == Target::Hand && a.hand.len() >= 13 && a.top.is_none() && !a.drawn && !a.awaiting_draw {
+            return Some(Request {
+                role: Role::Discard,
+                existing: vec![],
+                min_total: 1,
+                max_total: 1,
+                max_copies: 2,
+                domain: Domain::French,
+                replace: true,
+            });
+        }
+        let (role, existing, min, max, replace) = match a.target {
+            Target::Hand => (
+                Role::Hand,
+                a.hand.iter().map(|&c| DeckCard::French(cards::kind(c))).collect(),
+                if a.hand.is_empty() { 13 } else { a.hand.len() },
+                if a.hand.is_empty() { 14 } else { (a.hand.len() + 1).min(21) },
+                false,
+            ),
+            Target::Top => {
+                (Role::Discard, a.top.map(|c| DeckCard::French(cards::kind(c))).into_iter().collect(), 1, 1, true)
+            }
+            _ => return None,
+        };
+        Some(Request { role, existing, min_total: min, max_total: max, max_copies: 2, domain: Domain::French, replace })
+    }
+    pub fn visual_auto_batch(
+        &mut self,
+        role: crate::vision::autosync::Role,
+        cards: &[crate::vision::universal::DeckCard],
+    ) -> Result<(), String> {
+        let target = self.assist.target;
+        self.assist.target = match role {
+            crate::vision::autosync::Role::Hand => Target::Hand,
+            crate::vision::autosync::Role::Discard => Target::Top,
+            _ => return Err("Zona non supportata per Scala 40".into()),
+        };
+        let result = self.visual_batch(cards);
+        self.assist.target = target;
+        result
+    }
+    pub fn visual_batch(&mut self, cards: &[crate::vision::universal::DeckCard]) -> Result<(), String> {
+        let old = self.assist.clone();
+        for &card in cards {
+            if let Err(e) = self.visual_insert(card) {
+                self.assist = old;
+                return Err(e);
+            }
+        }
+        if !cards.is_empty()
+            && old.target == Target::Hand
+            && !old.drawn
+            && ((!old.hand.is_empty() && self.assist.hand.len() == old.hand.len() + 1)
+                || (old.hand.is_empty() && self.assist.hand.len() == 14))
+        {
+            self.assist.drawn = true;
+            self.assist.refresh();
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod automatic_tests {
+    use super::*;
+    use crate::vision::universal::DeckCard as C;
+    #[test]
+    fn automatic_setup_and_draw_set_phase_and_failures_preserve_position() {
+        let mut app = Scala40Ui::default();
+        let cards: Vec<_> = [0, 3, 6, 9, 12, 14, 17, 20, 23, 27, 30, 33, 36].into_iter().map(C::French).collect();
+        let req = app.auto_request().unwrap();
+        assert!(req.additions(&cards[..12]).unwrap().is_empty());
+        app.visual_batch(&req.additions(&cards).unwrap()).unwrap();
+        assert_eq!(app.assist.hand.len(), 13);
+        assert!(!app.assist.drawn);
+        let top = app.auto_request().unwrap();
+        assert_eq!(top.role, crate::vision::autosync::Role::Discard);
+        app.visual_auto_batch(top.role, &[C::French(51)]).unwrap();
+        let mut drawn = cards.clone();
+        drawn.push(C::French(40));
+        let req = app.auto_request().unwrap();
+        app.visual_batch(&req.additions(&drawn).unwrap()).unwrap();
+        assert_eq!(app.assist.hand.len(), 14);
+        assert!(app.assist.drawn);
+        let old = app.assist.hand.clone();
+        assert!(app.visual_batch(&[C::French(0), C::French(0)]).is_err());
+        assert_eq!(app.assist.hand, old);
+    }
+}
+
+impl Scala40Ui {
+    pub fn auto_known(&self) -> Vec<crate::vision::autosync::Request> {
+        use crate::vision::{
+            autosync::{Domain, Request, Role},
+            universal::DeckCard as C,
+        };
+        vec![
+            Request::known(
+                Role::Hand,
+                Domain::French,
+                self.assist.hand.iter().map(|&c| C::French(cards::kind(c))).collect(),
+                2,
+            ),
+            Request::known(
+                Role::Discard,
+                Domain::French,
+                self.assist.top.map(|c| C::French(cards::kind(c))).into_iter().collect(),
+                2,
+            ),
+        ]
     }
 }

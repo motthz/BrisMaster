@@ -4,6 +4,7 @@
 //! dell'utente.
 
 pub mod capture;
+pub mod autosync;
 pub mod detect;
 pub mod universal;
 pub mod live;

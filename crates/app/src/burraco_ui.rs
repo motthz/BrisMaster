@@ -1297,3 +1297,135 @@ impl BurracoAssistant {
         }
     }
 }
+
+impl BurracoAssistant {
+    pub fn auto_request(&self) -> Option<crate::vision::autosync::Request> {
+        use crate::vision::{
+            autosync::{Domain, Request, Role},
+            universal::DeckCard,
+        };
+        let (role, existing, total) = match self.step {
+            Step::Setup if self.setup_hand.len() < 11 => {
+                (Role::Hand, self.setup_hand.iter().copied().map(DeckCard::French).collect(), 11)
+            }
+            Step::Setup if self.setup_top.is_none() => (Role::Discard, vec![], 1),
+            Step::MyDrawCard => (
+                Role::Hand,
+                self.g.hands[ME as usize]
+                    .kinds()
+                    .flat_map(|k| std::iter::repeat_n(DeckCard::French(k), self.g.hands[ME as usize].count(k) as usize))
+                    .collect(),
+                self.g.hands[ME as usize].len() + 1,
+            ),
+            Step::MyPozzetto => (
+                Role::Hand,
+                self.selected.iter().copied().map(DeckCard::French).collect(),
+                self.g.hands[ME as usize].len(),
+            ),
+            _ => return None,
+        };
+        Some(Request {
+            role,
+            existing,
+            min_total: total,
+            max_total: total,
+            max_copies: 2,
+            domain: Domain::French,
+            replace: false,
+        })
+    }
+    pub fn visual_batch(&mut self, cards: &[crate::vision::universal::DeckCard]) -> Result<(), String> {
+        let old = Snapshot { g: self.g.clone(), step: self.step.clone(), log: self.log.clone() };
+        let history = self.history.clone();
+        let setup_hand = self.setup_hand.clone();
+        let setup_top = self.setup_top;
+        let selected = self.selected.clone();
+        let entry = self.entry.clone();
+        let error = self.error.clone();
+        let generation = self.generation;
+        let pending = self.pending.take();
+        let advice = self.advice.take();
+        for &card in cards {
+            if let Err(e) = self.visual_insert(card) {
+                self.g = old.g;
+                self.step = old.step;
+                self.log = old.log;
+                self.history = history;
+                self.setup_hand = setup_hand;
+                self.setup_top = setup_top;
+                self.selected = selected;
+                self.entry = entry;
+                self.error = error;
+                self.generation = generation;
+                self.pending = pending;
+                self.advice = advice;
+                return Err(e);
+            }
+        }
+        if self.generation == generation {
+            self.pending = pending;
+            self.advice = advice;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod automatic_tests {
+    use super::*;
+    use crate::vision::{autosync::Role, universal::DeckCard as C};
+    #[test]
+    fn automatic_setup_and_draw_preserve_hidden_card_count_and_pending_work_on_failure() {
+        let mut app = BurracoAssistant::default();
+        let cards: Vec<_> = (0..11).map(C::French).collect();
+        let req = app.auto_request().unwrap();
+        app.visual_batch(&req.additions(&cards).unwrap()).unwrap();
+        assert_eq!(app.auto_request().unwrap().role, Role::Discard);
+        app.visual_batch(&[C::French(20)]).unwrap();
+        app.start();
+        app.step = Step::MyDrawCard; // same transition as the UI's draw-stock button
+        let old = app.g.hands[ME as usize];
+        let generation = app.generation;
+        let (tx, rx) = channel();
+        app.pending = Some((generation, rx));
+        tx.send(Advice::Draw(vec![])).unwrap();
+        assert!(app.visual_batch(&[C::French(25), C::Unknown]).is_err());
+        assert_eq!(app.g.hands[ME as usize], old);
+        assert_eq!(app.step, Step::MyDrawCard);
+        assert_eq!(app.generation, generation);
+        assert!(app.pending.as_ref().unwrap().1.try_recv().is_ok());
+        let mut visible = cards;
+        visible.push(C::French(25));
+        let req = app.auto_request().unwrap();
+        app.visual_batch(&req.additions(&visible).unwrap()).unwrap();
+        assert_eq!(app.g.total_cards(), 108);
+        assert_eq!(app.g.hands[ME as usize].len(), 12);
+        assert_eq!(app.step, Step::MyPlay);
+    }
+}
+
+impl BurracoAssistant {
+    pub fn auto_known(&self) -> Vec<crate::vision::autosync::Request> {
+        use crate::vision::{
+            autosync::{Domain, Request, Role},
+            universal::DeckCard as C,
+        };
+        let (hand, top) = if self.step == Step::Setup {
+            (self.setup_hand.clone(), self.setup_top)
+        } else if self.step == Step::MyPozzetto {
+            (self.selected.clone(), self.g.pile.last().copied())
+        } else {
+            (
+                self.g.hands[ME as usize]
+                    .kinds()
+                    .flat_map(|k| std::iter::repeat_n(k, self.g.hands[ME as usize].count(k) as usize))
+                    .collect(),
+                self.g.pile.last().copied(),
+            )
+        };
+        vec![
+            Request::known(Role::Hand, Domain::French, hand.into_iter().map(C::French).collect(), 2),
+            Request::known(Role::Discard, Domain::French, top.map(C::French).into_iter().collect(), 2),
+        ]
+    }
+}

@@ -7,9 +7,11 @@ Mazzi scelti: napoletane per Briscola, Scopa e Sette e mezzo; francesi per gli a
 ## Comportamento implementato
 
 - Briscola e Scopa conservano ricostruzione automatica, cronologia e tracking esistenti.
-- Gli altri sei giochi hanno un lettore comune con conferma dell'inserimento e
-  scelta/correzione dell'etichetta. Il ruolo della carta è quello selezionato
-  nell'assistente: non si inventano puntate, calate o turni dai soli pixel.
+- Gli altri sei giochi hanno un lettore comune con scelta/correzione delle carte
+  e sincronizzazione automatica per zone calibrate. Due osservazioni coerenti
+  vengono confrontate con fase e carte già presenti; il gruppo entra per intero
+  oppure viene ripristinato. Puntate e azioni non deducibili dalle carte restano
+  esplicite. Guida: `SINCRONIZZAZIONE-CARTE.md`.
 - Riferimenti francesi: 52 carte e due disegni di jolly, che valgono lo stesso tipo
   di carta. Le doppie copie rimangono distinte sullo schermo. Un disegno non
   riconosciuto può essere etichettato e appreso; non viene inserito automaticamente.
@@ -18,8 +20,8 @@ Mazzi scelti: napoletane per Briscola, Scopa e Sette e mezzo; francesi per gli a
 - Psy Fly riceve il consiglio del gioco attivo. Per decisioni come carta/stai o
   puntate mostra il testo; evidenzia scarti/cambi soltanto quando tutte le carte
   richieste sono localizzate senza ambiguità e la cattura è fresca. Nel lettore
-  confermato occorre segnare «La mia mano»: non si assume che una carta unica sul
-  tavolo sia una propria carta da scartare. Nessun clic
+  manuale si può segnare «La mia mano»; con la calibrazione viene usata quella
+  zona. Non si assume che una carta unica sul tavolo sia una propria carta. Nessun clic
   automatico. Un clic non anticipa più i cuori di una giocata confermata.
 - Palette comune, controlli distribuiti su righe distinte, aggiornamenti nel piè
   di pagina: un errore di rete non copre più la selezione del gioco.
@@ -46,7 +48,7 @@ Non sono stati sostituiti i modelli allenati, né attribuiti nuovi rating o
 percentuali di vittoria. Le prove della 0.6.0 mostrano che aumentare le iterazioni
 non rende automaticamente più forte la Briscola.
 
-## Verifiche eseguite
+## Verifiche del primo checkpoint (prima dell'automatismo per zone)
 
 - Suite del workspace in release: **215 passati, 0 falliti, 10 ignorati**; build
   dell'app completata. Log e metadati in `bench/quality-0.6.0/validation.log` e
@@ -70,9 +72,11 @@ non rende automaticamente più forte la Briscola.
 - Provare i mazzi francesi su tavoli reali: font e disegni diversi, ventagli,
   sovrapposizioni, rotazioni, animazioni e scritte sulle carte. Le prove sintetiche
   sui riferimenti inclusi non sono una certificazione di tutti i siti.
-- Completare la ricostruzione *automatica* dei turni degli altri sei giochi con
-  replay annotati di partite complete. L'inserimento confermato è intenzionale:
-  l'estensione attuale non equivale al lettore automatico di Briscola/Scopa.
+- Completare la ricostruzione delle azioni di turno con replay annotati di partite
+  complete. La nuova sincronizzazione automatizza le carte nelle fasi supportate;
+  non equivale alla ricostruzione completa di Briscola/Scopa e non deduce le puntate.
+- Estendere il Blackjack alle mani divise e verificare tavoli con distribuzioni
+  istantanee, ventagli, copie indistinguibili e spostamento delle file di carte.
 - Prima di dichiarare motori più forti: banco in duplicato con più semi e avversari,
   intervalli di confidenza e confronto contro la 0.6.0 invariata.
 

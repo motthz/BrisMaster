@@ -437,3 +437,68 @@ impl SetteMezzo {
         Hint::text(if a.should_hit(&rules) { "Chiedi carta" } else { "Stai" })
     }
 }
+
+impl SetteMezzo {
+    pub fn auto_request(&self) -> Option<crate::vision::autosync::Request> {
+        use crate::vision::{
+            autosync::{Domain, Request, Role},
+            universal::DeckCard,
+        };
+        if self.target == Target::Scoperta {
+            let rules = self.solver.rules;
+            let hand = Hand::of(&rules, self.coperta.iter().chain(&self.scoperte).copied());
+            if hand.bust() || hand.total() == Some(15) {
+                return None;
+            }
+        }
+        let (role, existing, max_total) = match self.target {
+            Target::Coperta if self.coperta.is_none() => (Role::Covered, vec![], 1),
+            Target::Scoperta => (Role::Hand, self.scoperte.iter().copied().map(DeckCard::Naples).collect(), 39),
+            Target::Vista => (Role::Observed, self.viste.iter().copied().map(DeckCard::Naples).collect(), 39),
+            _ => return None,
+        };
+        Some(Request { role, existing, min_total: 1, max_total, max_copies: 1, domain: Domain::Naples, replace: false })
+    }
+    pub fn visual_batch(&mut self, cards: &[crate::vision::universal::DeckCard]) -> Result<(), String> {
+        let old = (self.coperta, self.scoperte.clone(), self.viste.clone(), self.target, self.entry_error.clone());
+        for &card in cards {
+            if let Err(e) = self.visual_insert(card) {
+                (self.coperta, self.scoperte, self.viste, self.target, self.entry_error) = old;
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod automatic_tests {
+    use super::*;
+    use crate::vision::{autosync::Role, universal::DeckCard as C};
+    #[test]
+    fn automatic_coperta_and_received_cards_do_not_duplicate_or_continue_after_real() {
+        let mut app = SetteMezzo::new(&Prefs::default());
+        assert_eq!(app.auto_request().unwrap().role, Role::Covered);
+        app.visual_batch(&[C::Naples(16)]).unwrap(); // sette di coppe
+        let req = app.auto_request().unwrap();
+        assert_eq!(req.role, Role::Hand);
+        assert!(app.visual_batch(&[C::Naples(27), C::French(0)]).is_err());
+        assert!(app.scoperte.is_empty());
+        app.visual_batch(&req.additions(&[C::Naples(27)]).unwrap()).unwrap();
+        assert!(app.auto_request().is_none());
+    }
+}
+
+impl SetteMezzo {
+    pub fn auto_known(&self) -> Vec<crate::vision::autosync::Request> {
+        use crate::vision::{
+            autosync::{Domain, Request, Role},
+            universal::DeckCard as C,
+        };
+        vec![
+            Request::known(Role::Covered, Domain::Naples, self.coperta.map(C::Naples).into_iter().collect(), 1),
+            Request::known(Role::Hand, Domain::Naples, self.scoperte.iter().copied().map(C::Naples).collect(), 1),
+            Request::known(Role::Observed, Domain::Naples, self.viste.iter().copied().map(C::Naples).collect(), 1),
+        ]
+    }
+}

@@ -13,8 +13,9 @@ Giochi: **briscola**, **scopa**, **scala 40**, **burraco**, **sette e mezzo**, *
 Istruzioni per compilare, verificare e conservare una copia autonoma:
 [sviluppo e ripristino senza Codex](docs/SVILUPPO-E-RIPRISTINO.md).
 Il [registro del lavoro](docs/STATO-LAVORO.md) distingue funzionalità, prove e limiti.
-La lettura estesa degli altri sei giochi richiede conferma delle carte; Briscola e
-Scopa conservano la ricostruzione automatica. Psy Fly mostra anche i consigli degli
+La [sincronizzazione per zone](docs/SINCRONIZZAZIONE-CARTE.md) aggiorna automaticamente
+le carte degli altri sei assistenti nelle fasi supportate; Briscola e Scopa
+conservano la propria ricostruzione completa. Psy Fly mostra anche i consigli degli
 altri giochi, con localizzazione solo quando univoca e aggiornata.
 
 ## Installazione

@@ -86,6 +86,7 @@ struct Settings {
     on_top: bool,
     /// La Psy Fly accesa.
     psy_fly: bool,
+    visual_layouts: std::collections::BTreeMap<u8, crate::vision::autosync::Layout>,
 }
 
 impl Default for Settings {
@@ -99,6 +100,7 @@ impl Default for Settings {
             compact: false,
             on_top: false,
             psy_fly: false,
+            visual_layouts: Default::default(),
         }
     }
 }
@@ -385,7 +387,9 @@ impl eframe::App for BrisApp {
         if self.active_game != Some(self.settings.game) {
             self.assistant.vision_active(self.settings.game == Gioco::Briscola, ui.ctx());
             self.scopa.vision_active(self.settings.game == Gioco::Scopa, ui.ctx());
+            if let Some(previous)=self.active_game { self.settings.visual_layouts.insert(previous as u8,self.visual.layout()); }
             self.visual.stop();
+            self.visual.set_layout(self.settings.visual_layouts.get(&(self.settings.game as u8)).cloned().unwrap_or_default());
             self.visual_error = None;
             self.active_game = Some(self.settings.game);
         }
@@ -401,6 +405,7 @@ impl eframe::App for BrisApp {
         self.ui_main(ui, now);
         if self.active_game != Some(self.settings.game) {
             ui_ctx.request_repaint();
+            return; // old reader observations must never be applied to the newly selected game
         }
         if let Some(card) = self.visual.ui(&ui_ctx) {
             let result = match self.settings.game {
@@ -415,6 +420,40 @@ impl eframe::App for BrisApp {
             self.visual_error = result.err();
             ui_ctx.request_repaint();
         }
+        if self.visual.automatic() {
+            let known = match self.settings.game {
+                Gioco::Scala40 => self.scala40.auto_known(),
+                Gioco::Burraco => self.burraco.auto_known(),
+                Gioco::SetteMezzo => self.settemezzo.auto_known(),
+                Gioco::Blackjack => self.blackjack.auto_known(),
+                Gioco::PokerIt => self.poker_it.auto_known(),
+                Gioco::Holdem => self.holdem.auto_known(),
+                _ => Vec::new(),
+            };
+            self.visual.acknowledge_known(&known);
+            let request = match self.settings.game {
+                Gioco::Scala40 => self.scala40.auto_request(),
+                Gioco::Burraco => self.burraco.auto_request(),
+                Gioco::SetteMezzo => self.settemezzo.auto_request(),
+                Gioco::Blackjack => self.blackjack.auto_request(),
+                Gioco::PokerIt => self.poker_it.auto_request(),
+                Gioco::Holdem => self.holdem.auto_request(),
+                _ => None,
+            };
+            if let (Some(request), Some(cards)) = (request.as_ref(), self.visual.automatic_batch(request.as_ref())) {
+                let result = match self.settings.game {
+                    Gioco::Scala40 => self.scala40.visual_auto_batch(request.role, &cards),
+                    Gioco::Burraco => self.burraco.visual_batch(&cards),
+                    Gioco::SetteMezzo => self.settemezzo.visual_batch(&cards),
+                    Gioco::Blackjack => self.blackjack.visual_batch(&cards),
+                    Gioco::PokerIt => self.poker_it.visual_batch(&cards),
+                    Gioco::Holdem => self.holdem.visual_batch(&cards),
+                    _ => Err("Usa il lettore del gioco selezionato".into()),
+                };
+                self.visual.complete_automatic(request.role, result);
+                ui_ctx.request_repaint();
+            }
+        }
         self.show_fly(&ui_ctx);
     }
 
@@ -424,6 +463,7 @@ impl eframe::App for BrisApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if let Some(game)=self.active_game { self.settings.visual_layouts.insert(game as u8,self.visual.layout()); }
         eframe::set_value(storage, "settings", &self.settings);
         eframe::set_value(storage, "scopa", &self.scopa.settings);
         eframe::set_value(storage, "blackjack", &self.blackjack.settings);

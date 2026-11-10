@@ -635,7 +635,7 @@ impl Match {
         // (I colori di riferimento sono di tutta la larghezza: per una striscia non si confrontano.)
         let vis = self.seen.vis;
         let whole_width = self.seen.cols == WHOLE;
-        if let Some(seen) = self.hues.share(vis).filter(|_| whole_width) {
+        if let Some(seen) = self.hues.share(vis).filter(|_| whole_width && !self.seen.gray) {
             let dist: Vec<Option<f32>> = template_hues()
                 .iter()
                 .map(|t| t.share(vis).map(|t| seen.iter().zip(&t).map(|(a, b)| (a - b).abs()).sum()))

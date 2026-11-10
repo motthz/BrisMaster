@@ -83,6 +83,8 @@ pub struct Scene {
     pub my_slot: Option<CardView>,
     /// Le tue carte, da sinistra a destra.
     pub hand: Vec<CardView>,
+    /// Quante carte coperte ha in mano l'avversario, se si vedono i dorsi (stima).
+    pub opp_backs: Option<u8>,
 }
 
 /// Una carta scoperta raddrizzata e riconosciuta.
@@ -154,6 +156,13 @@ impl CardView {
     }
 
     /// La carta più probabile fra `among`, e quanto stacca la seconda.
+    /// La seconda carta più probabile, e quanto le manca per essere la prima.
+    pub fn second(&self) -> Option<(Card, f32)> {
+        let mut v: Vec<(Card, f32)> = (0..40u8).map(|c| (c, self.scores[c as usize])).collect();
+        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        Some((v.get(1)?.0, v[0].1 - v[1].1))
+    }
+
     pub fn best(&self, among: CardSet) -> Option<(Card, f32)> {
         let mut v: Vec<(Card, f32)> = among.iter().map(|c| (c, self.scores[c as usize])).collect();
         v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());

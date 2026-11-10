@@ -327,6 +327,17 @@ pub struct Assistant {
 /// Distacco minimo fra la carta più probabile e la seconda per inserirla senza chiedere.
 const AUTO_MARGIN: f32 = 1.4;
 
+/// Quanto la partita seguita è sicura.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SyncState {
+    /// Quello che si vede torna con la partita.
+    Synced,
+    /// Due storie quasi ugualmente coerenti, o una regola violata: si sta controllando.
+    Uncertain,
+    /// Quello che si vede non torna da un po': la partita si sta ricostruendo.
+    Lost,
+}
+
 /// Letture con lo schermo cambiato e la partita ferma prima di ricostruirla dallo storico.
 const STALL: u32 = 8;
 
@@ -382,6 +393,20 @@ struct Vision {
     /// La coda è elaborata a piccoli lotti per lasciare sempre rispondere l'interfaccia.
     catching_up: bool,
     inconsistent: bool,
+    /// Carte imposte nella storia dal controllo (letture corrette): (indice della cronologia, carta).
+    forced: Vec<(usize, Card)>,
+    /// L'ultimo controllo ha trovato due storie quasi ugualmente coerenti.
+    close_alt: bool,
+    /// Una regola del gioco è stata violata da quello che si vede: va controllata subito la storia.
+    alarm: bool,
+    /// Lettura dell'ultimo controllo (per non rifarlo a ogni lettura).
+    audited_at: u64,
+    /// Letture di fila con i dorsi dell'avversario diversi dalle carte che dovrebbe avere, e
+    /// letture in cui il conteggio dei dorsi tornava (se non torna mai, non si usa).
+    backs_off: u32,
+    backs_ok: u32,
+    /// Letture di fila in cui quello che si vede torna con la partita.
+    calm: u32,
     restart_after: Option<std::time::Instant>,
 }
 
@@ -1026,6 +1051,17 @@ impl Assistant {
                 break;
             }
         }
+        // Le regole del gioco come controllo continuo: se quello che si vede le viola, la storia
+        // della partita ha un errore e si controlla subito (al più ogni tre letture).
+        let frame = self.vision.sightings.frame;
+        self.vision.alarm = self.rules_broken(scene);
+        if self.vision.alarm && self.history.len() == before && frame >= self.vision.audited_at + 3 {
+            self.vision.audited_at = frame;
+            if self.audit(scene, false) {
+                self.vision.alarm = false;
+                self.vision.stall = 0;
+            }
+        }
         // Il controllore: se lo schermo continua a cambiare ma la partita resta ferma, la partita
         // si rigioca da capo con tutto quello che si è visto finora (e le carte decise
         // dall'utente). Se la ricostruzione va più avanti, si tiene quella.
@@ -1038,14 +1074,23 @@ impl Assistant {
             || seen_hand.iter().any(|&c| !self.pos.hand.contains(c))
             || self.pos.table.is_some_and(|t| !seen_table.contains(&t))
             || (self.pos.table.is_none() && !seen_table.is_empty());
-        if !differs { self.vision.inconsistent = false; }
+        if !differs {
+            self.vision.inconsistent = false;
+            // Tre letture di fila che tornano: il dubbio fra due storie è risolto.
+            self.vision.calm += 1;
+            if self.vision.calm >= 3 {
+                self.vision.close_alt = false;
+            }
+        } else {
+            self.vision.calm = 0;
+        }
         if self.history.len() != before || !differs {
             self.vision.stall = 0;
         } else if !matches!(self.pos.step(), Step::Trump | Step::Over) {
             self.vision.stall += 1;
             if self.vision.stall >= STALL {
                 self.vision.stall = 0;
-                if self.rebuild(scene) || self.resync(scene) {
+                if self.audit(scene, true) || self.resync(scene) {
                     self.vision.inconsistent = false;
                 } else {
                     self.vision.inconsistent = true;
@@ -1065,21 +1110,76 @@ impl Assistant {
         self.vision.seen = Some(sig);
     }
 
-    /// Rigioca la partita da capo dallo storico delle letture (gli avvistamenti di ogni carta, con
-    /// quando e dove) e dalle carte decise dall'utente, e la adotta se arriva più avanti di quella
-    /// in corso: un evento capito male o in ritardo non blocca più la partita.
-    fn rebuild(&mut self, scene: &Scene) -> bool {
-        if !self.vision.gaps.is_empty() {
+    /// Quello che si vede viola le regole del gioco secondo la partita in corso: una carta già
+    /// uscita è di nuovo in mano, o la presa nuova l'apre chi non l'ha vinta (in tavola, a presa da
+    /// aprire, c'è una mia carta mentre la partita aspetta l'avversario, o il contrario), o i dorsi
+    /// dell'avversario non sono quanti dovrebbero.
+    fn rules_broken(&mut self, scene: &Scene) -> bool {
+        let pos = self.pos;
+        if !matches!(pos.step(), Step::MyMove | Step::OppMove) {
             return false;
         }
-        let Some(trump) = self.pos.trump_card else { return false };
+        let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
+        let hand: Vec<Card> = scene.hand.iter().filter_map(sure).collect();
+        let table: Vec<Card> = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().filter_map(sure).collect();
+        if hand.iter().any(|&c| pos.played.contains(c)) {
+            return true;
+        }
+        if pos.table.is_none() && pos.tricks > 0 {
+            if let [t] = table.as_slice() {
+                let t = *t;
+                let mine = pos.hand.contains(t) && !hand.contains(&t);
+                let theirs = !pos.hand.contains(t) && !pos.played.contains(t) && Some(t) != pos.trump_card;
+                if (pos.step() == Step::OppMove && mine) || (pos.step() == Step::MyMove && theirs) {
+                    return true;
+                }
+            }
+        }
+        // I dorsi dell'avversario, se si contano, uguali per tre letture di fila: devono essere
+        // le carte che ha in mano.
+        // (Il conteggio vale solo se su questo sito ha già dato il numero giusto più volte.)
+        match scene.opp_backs {
+            Some(n) if n == pos.opp_hand_len => {
+                self.vision.backs_ok = self.vision.backs_ok.saturating_add(1);
+                self.vision.backs_off = 0;
+                false
+            }
+            Some(_) if self.vision.backs_ok >= 5 => {
+                self.vision.backs_off += 1;
+                self.vision.backs_off >= 3
+            }
+            _ => {
+                self.vision.backs_off = 0;
+                false
+            }
+        }
+    }
+
+    /// Quanto la partita seguita è sicura: tutto torna, sta decidendo fra due storie (o una regola
+    /// è violata), o non riesce a far tornare quello che vede.
+    pub fn sync_state(&self) -> SyncState {
+        if self.vision.inconsistent || self.vision.stall >= STALL / 2 {
+            SyncState::Lost
+        } else if self.vision.alarm || self.vision.close_alt || self.vision.stall > 0 {
+            SyncState::Uncertain
+        } else {
+            SyncState::Synced
+        }
+    }
+
+    /// Rigioca la partita da capo dallo storico delle letture (gli avvistamenti di ogni carta, con
+    /// quando e dove) e dalle carte decise dall'utente. In `forced`, carte imposte in certi punti
+    /// (indice della cronologia): sono le storie alternative, dove una lettura incerta era un'altra
+    /// carta. La memoria delle carte è una copia: un'ipotesi non insegna niente.
+    fn replay(&self, scene: &Scene, forced: &[(usize, Card)]) -> Option<Assistant> {
+        let trump = self.pos.trump_card?;
         let mut b = Assistant::default();
         b.rec.off = true;
         b.vision.memory = Arc::new(Mutex::new(self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).isolated()));
         b.vision.sightings = self.vision.sightings.clone();
         b.vision.doubts = self.vision.doubts.clone();
         if !b.enter(trump) {
-            return false;
+            return None;
         }
         if let Some(p) = self.vision.user_first {
             b.set_first(p);
@@ -1091,6 +1191,11 @@ impl Assistant {
                 break;
             }
             b.vision.confirm = None;
+            if let Some(&(_, c)) = forced.iter().find(|(i, _)| *i == b.history.len()) {
+                if b.pos.allowed().contains(c) && b.enter(c) {
+                    continue;
+                }
+            }
             if b.advance(scene) {
                 continue;
             }
@@ -1114,17 +1219,145 @@ impl Assistant {
                 None => break,
             }
         }
-        if b.history.len() <= self.history.len() {
+        Some(b)
+    }
+
+    /// Quanto una storia della partita (posizione ed eventi) contraddice quello che si è visto:
+    /// carte viste con sicurezza in mano mia che nella storia non ho mai avuto (o ha giocato
+    /// l'avversario), carte viste in tavola che nella storia non sono uscite, carte dalla parte
+    /// dell'avversario che nella storia erano mie, e la mano e la tavola di adesso. Zero: la storia
+    /// spiega tutto.
+    fn incoherence(&self, pos: &Position, events: &[Event], scene: &Scene) -> f32 {
+        let s = &self.vision.sightings;
+        if s.hand.is_empty() {
+            return 0.0;
+        }
+        let (mut mine, mut opp) = (CardSet::EMPTY, CardSet::EMPTY);
+        for e in events {
+            match e {
+                Event::Pescata { carta } => mine.insert(carta.id),
+                Event::Giocata { chi, carta, .. } if *chi == record::who(OPP) => opp.insert(carta.id),
+                _ => {}
+            }
+        }
+        if pos.trump_card_owner == Some(ME) {
+            if let Some(t) = pos.trump_card {
+                mine.insert(t);
+            }
+        }
+        let gone = |c: Card| pos.played.contains(c) || pos.table == Some(c) || pos.hand.contains(c);
+        let mut bad = 0.0;
+        for c in 0..40u8 {
+            if Some(c) == pos.trump_card {
+                continue;
+            }
+            if s.in_hand(c) && !mine.contains(c) {
+                bad += if opp.contains(c) { 3.0 } else { 2.0 };
+            }
+            let o = &s.opponents[c as usize];
+            if o.sure() && mine.contains(c) && !opp.contains(c) {
+                bad += 1.0;
+            }
+            if s.on_table(c) && !gone(c) {
+                bad += 1.0;
+            }
+        }
+        let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
+        let seen: Vec<Card> = scene.hand.iter().filter_map(sure).collect();
+        let missing = seen.iter().filter(|&&c| !pos.hand.contains(c)).count();
+        bad += 2.0 * missing.saturating_sub(pos.to_draw as usize) as f32;
+        if seen.len() == scene.hand.len() && !seen.is_empty() {
+            bad += pos.hand.iter().filter(|c| !seen.contains(c)).count() as f32;
+        }
+        let table: Vec<Card> = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().filter_map(sure).collect();
+        if let Some(t) = pos.table {
+            if !table.is_empty() && !table.contains(&t) {
+                bad += 1.5;
+            }
+        }
+        bad
+    }
+
+    /// Controlla la partita contro tutte le storie possibili: quella rigiocata dallo storico e
+    /// quelle in cui, in un punto dubbio, la carta letta era la seconda più probabile. Tiene la più
+    /// coerente con quello che si è visto (a parità, quella che va più avanti), se è meglio di
+    /// quella in corso. Così un errore non resta definitivo: lo correggono le letture dopo.
+    fn audit(&mut self, scene: &Scene, stalled: bool) -> bool {
+        if !self.vision.gaps.is_empty() {
             return false;
         }
-        // La ricostruzione deve tornare con quello che si vede adesso: le carte lette con sicurezza
+        let mut forced_base = self.vision.forced.clone();
+        let Some(base) = self.replay(scene, &forced_base) else { return false };
+        // I punti dubbi: le carte della storia che sono state lette anche come un'altra.
+        let s = &self.vision.sightings;
+        let mut points: Vec<(u16, usize, Card)> = Vec::new();
+        for (i, h) in base.history.iter().enumerate() {
+            if forced_base.iter().any(|f| f.0 == i) {
+                continue;
+            }
+            if let Some(Event::Pescata { carta } | Event::Giocata { carta, .. }) = base.rec.events.get(h.2) {
+                if let Some((c2, n)) = s.alternative(carta.id) {
+                    points.push((n, i, c2));
+                }
+            }
+        }
+        points.sort_by(|a, b| b.0.cmp(&a.0));
+        points.truncate(6);
+        let mut cands: Vec<(Vec<(usize, Card)>, Assistant)> = vec![(forced_base.clone(), base)];
+        for &(_, i, c2) in &points {
+            let mut f = forced_base.clone();
+            f.push((i, c2));
+            if let Some(b) = self.replay(scene, &f) {
+                cands.push((f, b));
+            }
+        }
+        let cur = self.incoherence(&self.pos, &self.rec.events, scene);
+        let mut scored: Vec<(f32, usize, usize)> = cands
+            .iter()
+            .enumerate()
+            .map(|(k, (_, b))| (self.incoherence(&b.pos, &b.rec.events, scene), b.history.len(), k))
+            .collect();
+        scored.sort_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
+        let (score, len, k) = scored[0];
+        // Due storie diverse quasi ugualmente buone: si segue la migliore, ma si sa di essere incerti.
+        self.vision.close_alt = scored.get(1).is_some_and(|x| x.0 - score < 0.5 && x.1 != len);
+        // (Una storia che va solo più avanti si prende se la partita è ferma: altrimenti potrebbe
+        // anticipare eventi che le letture non hanno ancora confermato.)
+        let better = score + 0.5 < cur || (stalled && score <= cur && len > self.history.len());
+        if !better {
+            return false;
+        }
+        // La storia scelta deve tornare con quello che si vede adesso: le carte lette con sicurezza
         // in mano devono essere in mano (al più manca la pescata da segnare) e non giocate.
+        let (f, mut b) = cands.swap_remove(k);
         let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
         let seen: Vec<Card> = scene.hand.iter().filter_map(sure).collect();
         let missing = seen.iter().filter(|&&c| !b.pos.hand.contains(c)).count();
         if seen.iter().any(|&c| b.pos.played.contains(c)) || missing > b.pos.to_draw as usize {
             return false;
         }
+        // Le carte sostituite: le letture sbagliate si dimenticano (non tornano a essere pescate o
+        // giocate), e se la storia nuova spiega tutto l'immagine si impara con la carta giusta.
+        let swaps: Vec<(usize, Card)> = f.iter().copied().filter(|x| !forced_base.contains(x)).collect();
+        for &(i, right) in &swaps {
+            let wrong = self.history.get(i).and_then(|h| match self.rec.events.get(h.2) {
+                Some(Event::Pescata { carta } | Event::Giocata { carta, .. }) => Some(carta.id),
+                _ => None,
+            });
+            if let Some(wrong) = wrong.filter(|&w| w != right && !b.pos.hand.contains(w) && !b.pos.played.contains(w)) {
+                let view = self.vision.sightings.view(wrong);
+                for step in [Step::Draw(0), Step::MyMove] {
+                    self.vision.sightings.forget(step, wrong);
+                }
+                if score == 0.0 {
+                    if let Some((img, vis)) = view {
+                        self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&img, vis, right);
+                    }
+                }
+            }
+        }
+        forced_base = f;
+        self.vision.forced = forced_base;
         let events = std::mem::take(&mut b.rec.events);
         self.pos = b.pos;
         self.history = b.history;
@@ -1133,7 +1366,11 @@ impl Assistant {
         self.rec.write(&self.pos);
         self.changed();
         self.vision.last = None;
-        self.vision.status = format!("Partita ricostruita dallo storico delle letture: {} prese", self.pos.tricks);
+        self.vision.status = if swaps.is_empty() {
+            format!("Partita ricostruita dallo storico delle letture: {} prese", self.pos.tricks)
+        } else {
+            format!("Corretto da solo un errore di lettura e ricostruita la partita: {} prese", self.pos.tricks)
+        };
         true
     }
 
@@ -1318,7 +1555,7 @@ impl Assistant {
                 .chain(scene.hand.iter())
                 .find(|v| is_trump(v))
                 .cloned();
-            return Some(Scene { trump, opp_slot: None, my_slot: None, hand: Vec::new() });
+            return Some(Scene { trump, opp_slot: None, my_slot: None, hand: Vec::new(), opp_backs: scene.opp_backs });
         }
         if !scene.opp_slot.as_ref().is_some_and(is_trump)
             && !scene.my_slot.as_ref().is_some_and(is_trump)
@@ -1331,7 +1568,7 @@ impl Assistant {
         let trump = [&scene.trump, &scene.opp_slot, &scene.my_slot].into_iter().flatten().find(|v| is_trump(v)).cloned();
         let mine = |v: &CardView| v.best(CardSet::FULL).is_some_and(|(c, _)| self.pos.hand.contains(c));
         let table = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().find(|v| !is_trump(v) && !mine(v)).cloned();
-        let out = Scene { trump, opp_slot: table, my_slot: None, hand: scene.hand.clone() };
+        let out = Scene { trump, opp_slot: table, my_slot: None, hand: scene.hand.clone(), opp_backs: scene.opp_backs };
         Some(out)
     }
 
@@ -1710,6 +1947,15 @@ impl Assistant {
             ui.colored_label(GOLD, "Partita ripresa con prese non viste: i punti e le carte mancanti non sono verificati. Puoi annullare il recupero con Ctrl+Z.");
         }
         if !on { return; }
+        let (dot, text) = match self.sync_state() {
+            SyncState::Synced => (Color32::from_rgb(90, 200, 120), "Partita seguita: tutto torna"),
+            SyncState::Uncertain => (GOLD, "Partita incerta: sto controllando le letture"),
+            SyncState::Lost => (Color32::LIGHT_RED, "Partita da ricostruire: quello che vedo non torna"),
+        };
+        ui.horizontal(|ui| {
+            ui.colored_label(dot, "●");
+            ui.label(RichText::new(text).small());
+        });
         if self.screen_is_behind() {
             let message = if self.vision.inconsistent {
                 "La lettura non coincide con la partita. Il consiglio è sospeso mentre controllo lo storico; puoi correggere le carte o annullare una lettura."
@@ -2419,6 +2665,9 @@ struct Sightings {
     full_hands: Vec<(u64, Vec<Card>)>,
     /// Quante carte avevo in mano quando è comparsa la prima carta in tavola.
     hand_at_first_play: Option<usize>,
+    /// Per ogni carta letta senza molta sicurezza, quante volte ciascun'altra carta era la seconda
+    /// più probabile: sono le storie alternative da provare (un 6 letto come 7).
+    alt: Vec<[u16; 40]>,
 }
 
 /// Distacco minimo perché una lettura conti come avvistamento.
@@ -2432,6 +2681,16 @@ impl Sightings {
             self.opponents = vec![Sighting::default(); 40];
             self.hand_places = vec![None; 40];
             self.views = vec![None; 40];
+            self.alt = vec![[0; 40]; 40];
+        }
+        // Le seconde carte più probabili delle letture incerte.
+        for v in scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot) {
+            if let (Some((c, m)), Some((c2, _))) = (v.best(CardSet::FULL), v.second()) {
+                if m < 2.0 * AUTO_MARGIN {
+                    let n = &mut self.alt[c as usize][c2 as usize];
+                    *n = n.saturating_add(1);
+                }
+            }
         }
         self.frame += 1;
         let f = self.frame;
@@ -2479,6 +2738,14 @@ impl Sightings {
         if let Some((c, m)) = scene.opp_slot.as_ref().and_then(|v| v.best(CardSet::FULL)).filter(|b| b.1 >= 0.3) {
             self.opponents[c as usize].bump(f, m);
         }
+    }
+
+    /// La carta che più spesso era la seconda scelta quando si leggeva `c` (almeno due volte), e
+    /// quante volte.
+    fn alternative(&self, c: Card) -> Option<(Card, u16)> {
+        let row = self.alt.get(c as usize)?;
+        let (c2, n) = row.iter().enumerate().max_by_key(|(_, &n)| n)?;
+        (*n >= 2).then_some((c2 as Card, *n))
     }
 
     /// In mano c'è con sicurezza una carta che non ho ancora: ho già pescato dopo la presa in corso.
@@ -2917,6 +3184,45 @@ mod tests {
         CardView { img, partial: false, vis: crate::vision::WHOLE, sim: [0.0; 40], scores, at: [0.0; 4] }
     }
 
+    /// Una carta letta come `c` con distacco `margin`, e `second` come seconda più probabile.
+    fn seen_as(c: Card, second: Card, margin: f32) -> CardView {
+        let mut v = seen(c, margin + 0.5);
+        v.scores[second as usize] = 0.5;
+        v
+    }
+
+    /// Una carta letta male all'inizio (un sette preso per un sei, con buona sicurezza) entra in
+    /// mano; quando la carta vera compare chiara in tavola, la partita non torna più: il controllo
+    /// prova la storia in cui la lettura incerta era la seconda carta più probabile, la trova
+    /// coerente e la adotta da solo, senza chiedere niente all'utente.
+    #[test]
+    fn a_misread_card_is_corrected_by_later_evidence() {
+        let c = |s, r| cards::make(s, r);
+        let (trump, a1, a2) = (c(0, 4), c(1, 2), c(2, 8));
+        let (wrong, right) = (c(3, 5), c(3, 6));
+        let mut a = Assistant::default();
+        a.rec.off = true;
+        a.vision.memory = Arc::new(Mutex::new(Memory::in_memory()));
+        let mut scene = Scene { trump: Some(seen(trump, 4.0)), ..Default::default() };
+        show(&mut a, &scene);
+        a.set_first(ME);
+        scene.hand = vec![seen(a1, 4.0), seen(a2, 4.0), seen_as(wrong, right, 1.6)];
+        for _ in 0..3 {
+            show(&mut a, &scene);
+        }
+        assert!(a.pos.hand.contains(wrong), "la lettura sbagliata entra in mano");
+        // Gioco la carta vera: in tavola si vede chiara.
+        scene.hand = vec![seen(a1, 4.0), seen(a2, 4.0)];
+        scene.my_slot = Some(seen(right, 4.0));
+        for _ in 0..12 {
+            show(&mut a, &scene);
+        }
+        assert_eq!(a.pos.table, Some(right), "la giocata vera è in tavola");
+        assert!(!a.pos.hand.contains(wrong) && !a.pos.played.contains(wrong), "la carta letta male è sparita");
+        assert!(a.vision.user_moves.is_empty() && a.vision.confirm.is_none(), "senza chiedere niente");
+        assert_eq!(a.sync_state(), SyncState::Synced);
+    }
+
     /// Ogni lettura arriva due volte, come dallo schermo (la prima si scarta per prudenza).
     fn show(a: &mut Assistant, scene: &Scene) {
         a.sync(scene);
@@ -3181,6 +3487,7 @@ mod tests {
                     hand: hand.iter().map(|&c| seen(c, 4.0)).collect(),
                     my_slot: slots[0].map(|c| seen(c, 4.0)),
                     opp_slot: slots[1].map(|c| seen(c, 4.0)),
+                    opp_backs: None,
                 };
                 for _ in 0..3 { readings.push(Reading::Scene(scene.clone())); }
             };
@@ -3269,7 +3576,7 @@ mod tests {
         a.vision.sightings.update(&scene);
         a.vision.sightings.update(&scene);
         assert_eq!(a.vision.memory.lock().unwrap().len(), 0);
-        assert!(!a.rebuild(&scene));
+        assert!(!a.audit(&scene, true));
         assert_eq!(a.vision.memory.lock().unwrap().len(), 0);
     }
 
@@ -3908,6 +4215,12 @@ mod tests {
             let mut typed = 0;
             // Primo punto in cui l'app resta indietro (o avanti) sul mazzo vero per più di 6 letture.
             let (mut off, mut first_off): (u32, Option<String>) = (0, None);
+            // Misure del recupero: tratti in cui l'app segue male la partita (mazzo o mano diversi
+            // dalla verità per almeno tre letture), dopo quante letture se ne accorge (stato non più
+            // "seguita"), se torna giusta e se da sola (senza conferme né carte scritte), e le
+            // letture in cui dice di essersi persa mentre segue bene.
+            let (mut run, mut rk, mut episode): (u32, u32, Option<(u32, Option<u32>, usize)>) = (0, 0, None);
+            let (mut episodes, mut detected, mut delay, mut recovered, mut alone, mut false_alarm) = (0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
             let mut recent: Vec<String> = Vec::new();
             let load = |idx: usize| -> Img {
                 let f = log[idx]["frame"].as_str().unwrap();
@@ -4184,10 +4497,12 @@ mod tests {
                 let prev_hand = std::mem::replace(&mut before, truth_hand.clone());
                 before.extend(prev_hand);
                 // La mano dell'app deve essere (un sottoinsieme di) quella vera.
+                let mut wrong_hand = false;
                 for c in a.pos.hand.iter() {
                     // (la situazione vera si legge un attimo dopo la schermata: vale anche quella prima)
                     let next = hands.get(idx + 1).is_some_and(|h| h.contains(&c));
                     let held = truth_hand.contains(&c) || before.contains(&c) || next || truth_trick.iter().any(|t| t.0 == c && t.1);
+                    wrong_hand |= !held;
                     if !held && a.pos.step() != Step::Over {
                         let msg = format!("{f}: l'app crede di avere {}", cards::name(c));
                         if !wrong.contains(&msg) && wrong.len() < 5 {
@@ -4195,7 +4510,42 @@ mod tests {
                         }
                     }
                 }
+                {
+                    rk += 1;
+                    let playing = !matches!(a.pos.step(), Step::Trump | Step::Over);
+                    let desync = playing && (wrong_hand || a.pos.deck_len != truth_deck);
+                    run = if desync { run + 1 } else { 0 };
+                    let state = a.sync_state();
+                    if run == 3 && episode.is_none() {
+                        episode = Some((rk - 2, None, confirms + typed));
+                    }
+                    if let Some(ep) = &mut episode {
+                        if ep.1.is_none() && state != SyncState::Synced {
+                            ep.1 = Some(rk - ep.0);
+                        }
+                        if !desync {
+                            episodes += 1;
+                            recovered += 1;
+                            alone += (confirms + typed == ep.2) as u32;
+                            if let Some(d) = ep.1 {
+                                detected += 1;
+                                delay += d;
+                            }
+                            episode = None;
+                        }
+                    } else if !desync && state == SyncState::Lost && playing {
+                        false_alarm += 1;
+                    }
+                }
             }
+            if let Some(ep) = episode {
+                episodes += 1;
+                if let Some(d) = ep.1 {
+                    detected += 1;
+                    delay += d;
+                }
+            }
+            {
             n += 1;
             let _ = &mut before;
             // (Le proposte sbagliate corrette dall'utente non contano come errori della partita.)
@@ -4211,8 +4561,13 @@ mod tests {
                 if wrong.is_empty() { String::new() } else { format!(", errori: {}", wrong.join("; ")) },
                 if a.vision.status.is_empty() { String::new() } else { format!(" [{}]", a.vision.status) }
             );
+            println!(
+                "  recupero: episodi {episodes}, rilevati {detected} (ritardo medio {:.1} letture), recuperati {recovered} (da soli {alone}), falsi allarmi {false_alarm} letture",
+                if detected > 0 { delay as f32 / detected as f32 } else { 0.0 }
+            );
             if let Some(t) = first_off {
                 println!("  perde il passo qui:\n    {t}");
+            }
             }
         }
         println!("== partite seguite fino in fondo: {ok}/{n}");

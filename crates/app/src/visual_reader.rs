@@ -46,6 +46,7 @@ pub struct VisualReader {
     layout: vision::autosync::Layout,
     required_roles: Vec<vision::autosync::Role>,
     automatic: bool,
+    auto_monitor: Option<vision::capture::Geom>,
     synchronizer: vision::autosync::Reconciler,
     auto_status: String,
     edit_zones: bool,
@@ -188,6 +189,18 @@ impl VisualReader {
                     }
                     self.scene = Some((scene, id));
                     self.error = None;
+                    if self.automatic {
+                        let source = reader.placement(id).monitor;
+                        if self.auto_monitor.is_some() && source != self.auto_monitor {
+                            self.automatic = false;
+                            self.synchronizer.interrupt();
+                            self.error = Some(
+                                "Monitor o scala cambiati: verifica le zone e riattiva la sincronizzazione".into(),
+                            );
+                        } else {
+                            self.auto_monitor = source;
+                        }
+                    }
                 }
                 Reading::NoTable => {
                     self.synchronizer.interrupt();
@@ -229,7 +242,10 @@ impl VisualReader {
                 }
                 self.calibration_ui(ui);
                 let auto_changed=ui.checkbox(&mut self.automatic,"Sincronizza automaticamente le carte nelle zone").changed();
-                if auto_changed { self.synchronizer.interrupt(); self.auto_status.clear(); self.error=None; }
+                if auto_changed {
+                    self.synchronizer.interrupt(); self.auto_status.clear(); self.error=None;
+                    self.auto_monitor=if self.automatic {self.scene.as_ref().and_then(|(_,id)|self.reader.as_ref().and_then(|r|r.placement(*id).monitor))} else {None};
+                }
                 if self.automatic { ui.label(if self.auto_status.is_empty() { "Attendo due letture coerenti…" } else { &self.auto_status }); }
                 let Some((scene, id)) = &self.scene else { ui.label("Cerco carte visibili sul tavolo…"); return; };
                 let fresh = self.reader.as_ref().is_some_and(|r| !r.placement(*id).hidden);
@@ -551,6 +567,30 @@ fn same_observation(a: &universal::SeenCard, b: &universal::SeenCard) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn switching_capture_monitor_suspends_automatic_input_and_guidance() {
+        let area = *vision::screen::area().lock().unwrap_or_else(|e| e.into_inner());
+        let card = universal::SeenCard {
+            card: DeckCard::French(12),
+            image: universal::reference_image(12),
+            at: [0.2, 0.2, 0.4, 0.5],
+            margin: 0.2,
+            visible: vision::WHOLE,
+        };
+        let mut visual = VisualReader {
+            reader: Some(Reader::with_readings(vec![Reading::Scene(Cards { cards: vec![card] }, 2)], 2)),
+            layout: vision::autosync::Layout { area: Some(area), zones: vec![] },
+            automatic: true,
+            auto_monitor: Some(vision::capture::Geom { x: 0.0, y: 0.0, w: 1600.0, h: 900.0, scale: 1.25 }),
+            ..Default::default()
+        };
+        // The replay helper reports the other monitor at x=-1600.
+        visual.poll(&egui::Context::default());
+        assert!(!visual.automatic());
+        assert!(visual.error.as_ref().unwrap().contains("Monitor"));
+        assert!(visual.sight(5, Hint::text("Stai")).monitor.is_none());
+    }
+
     #[test]
     fn delayed_delivery_does_not_fake_capture_stability() {
         use vision::autosync::{Layout, Observation, Role, Zone};

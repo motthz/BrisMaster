@@ -4,6 +4,7 @@ use crate::cards::*;
 use crate::game::{Game, Observation};
 use crate::infer::{Belief, Event};
 use crate::net::Net;
+use crate::rl::{RlNet, RL_IN};
 use std::sync::Arc;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -300,6 +301,23 @@ pub struct IsmctsPlayer {
     /// Modalità ombra del velo: le iterazioni velate aggiornano solo statistiche separate
     /// dell'avversario, che poi sceglie le sue mosse con quelle anche nei mondi veri.
     pub shadow: bool,
+    /// Rete auto-allenata nelle simulazioni (spenta = `None`): `(rete, mosse)`. Dalla foglia la
+    /// rete gioca per entrambi, da ciò che vede chi muove, al più `mosse` carte; poi, se il mazzo
+    /// è ancora più lungo di `rollout_solve`, l'esito è il valore della rete, altrimenti il
+    /// risolutore esatto.
+    pub rl: Option<(Arc<RlNet>, u8)>,
+    /// Storia pubblica fino alla radice (carte giocate in ordine, con chi le ha giocate),
+    /// necessaria alla rete auto-allenata.
+    pub rl_hist: Vec<(u8, Card)>,
+    /// Peso del valore della rete auto-allenata rispetto alla simulazione classica a carte
+    /// scoperte dalla stessa foglia (1 = solo rete).
+    pub rl_mix: f64,
+    /// Peso della rete a mazzo vuoto: il peso va da `rl_mix` (mazzo pieno) a questo, in
+    /// proporzione alle carte nel mazzo (`None` = sempre `rl_mix`).
+    pub rl_mix_late: Option<f64>,
+    /// Rete auto-allenata come guida dei primi livelli dell'albero (al posto di `prior`, con
+    /// lo stesso `prior_weight`), vista da chi muove con la storia pubblica.
+    pub rl_guide: Option<Arc<RlNet>>,
 }
 
 /// Rimescola la mano di `me` con le carte del mazzo che l'avversario non conosce
@@ -350,6 +368,11 @@ impl IsmctsPlayer {
             model_rollout: true,
             veil: 0.0,
             shadow: false,
+            rl: None,
+            rl_hist: Vec::new(),
+            rl_mix: 1.0,
+            rl_mix_late: None,
+            rl_guide: None,
         }
     }
 
@@ -373,6 +396,11 @@ impl IsmctsPlayer {
             model_rollout: true,
             veil: 0.0,
             shadow: false,
+            rl: None,
+            rl_hist: Vec::new(),
+            rl_mix: 1.0,
+            rl_mix_late: None,
+            rl_guide: None,
         }
     }
 
@@ -440,6 +468,7 @@ impl IsmctsPlayer {
         let mut solver = Solver::default();
         let mut nodes = vec![Node { card: 255, mover: 1 - obs.me, children: vec![], visits: 0.0, avail: 0.0, reward: 0.0, wins: 0.0, points: 0.0, ov: 0.0, oa: 0.0, orw: 0.0 }];
         let mut base = None;
+        let mut rl_cache: std::collections::HashMap<(usize, u64), [f64; NUM_CARDS]> = Default::default();
         for it in 0..self.iterations {
             if it % self.reuse.max(1) == 0 {
                 base = Some(world(rng));
@@ -495,7 +524,26 @@ impl IsmctsPlayer {
                 }
                 // Probabilità della rete guida per le carte di chi muove (vista da lui).
                 let mut guide = [0f64; NUM_CARDS];
-                let guided = match &self.prior {
+                let rl_guided = match &self.rl_guide {
+                    Some(net) if path.len() <= PRIOR_DEPTH && legal.len() > 1 => {
+                        let mover = g.to_move();
+                        let key = (cur, g.hands[mover as usize].0);
+                        let p = rl_cache.entry(key).or_insert_with(|| {
+                            let o = Observation::of(&g, mover);
+                            let mut hist = self.rl_hist.clone();
+                            hist.extend(path[1..].iter().map(|&k| (nodes[k].mover, nodes[k].card)));
+                            let mut p = [0f64; NUM_CARDS];
+                            for (c, q) in net.policy(&o, &hist, 1.0) {
+                                p[c as usize] = q as f64;
+                            }
+                            p
+                        });
+                        guide = *p;
+                        true
+                    }
+                    _ => false,
+                };
+                let guided = rl_guided || match &self.prior {
                     Some(net) if path.len() <= PRIOR_DEPTH && legal.len() > 1 => {
                         let o = Observation::of(&g, g.to_move());
                         let mut pr = [0f32; 3];
@@ -552,12 +600,71 @@ impl IsmctsPlayer {
                 veil_hand(&mut g, obs.me, rng);
             }
             // Esito per il giocatore 0: probabilità di vittoria e punti finali.
-            let (w0, p0) = match self.policy {
-                None => {
+            let (w0, p0) = match (&self.rl, self.policy) {
+                (Some((net, moves)), _) if !g.is_over() => {
+                    let solve_at = self.rollout_solve.unwrap_or(0);
+                    let mut hist = self.rl_hist.clone();
+                    hist.extend(path[1..].iter().map(|&k| (nodes[k].mover, nodes[k].card)));
+                    let mut x = [0u8; RL_IN];
+                    let mut left = *moves;
+                    while !g.is_over() && g.deck_len > solve_at && left > 0 {
+                        let p = g.to_move();
+                        let o = Observation::of(&g, p);
+                        crate::rl::encode(&o, &hist, &mut x);
+                        let out = net.forward(&x);
+                        let c = g
+                            .legal_moves()
+                            .iter()
+                            .max_by(|&a, &b| {
+                                let la = out.logits[crate::rl::canon_card(a, g.trump)];
+                                let lb = out.logits[crate::rl::canon_card(b, g.trump)];
+                                la.partial_cmp(&lb).unwrap()
+                            })
+                            .unwrap();
+                        hist.push((p, c));
+                        g.play(c);
+                        left -= 1;
+                    }
+                    let mix = match self.rl_mix_late {
+                        Some(late) => late + (self.rl_mix - late) * g.deck_len as f64 / 33.0,
+                        None => self.rl_mix,
+                    };
+                    let mixed = match self.policy {
+                        Some(p) if mix < 1.0 && !g.is_over() && g.deck_len > solve_at => {
+                            let mut r = g;
+                            rollout_until(&mut r, Some(&p), self.rollout_eps, self.rollout_solve, rng);
+                            let p0 = if r.is_over() { r.points[0] } else { solver.solve(&r, 0) };
+                            Some((result(p0), p0 as f64))
+                        }
+                        _ => None,
+                    };
+                    if g.is_over() || g.deck_len <= solve_at {
+                        let p0 = if g.is_over() { g.points[0] } else { solver.solve(&g, 0) };
+                        (result(p0), p0 as f64)
+                    } else {
+                        let p = g.to_move();
+                        let o = Observation::of(&g, p);
+                        crate::rl::encode(&o, &hist, &mut x);
+                        let v = net.forward(&x).value as f64;
+                        let v0 = if p == 0 { v } else { -v };
+                        // Punti stimati: quelli già fatti più una quota del resto secondo il valore.
+                        let rest = 120.0 - g.points[0] as f64 - g.points[1] as f64;
+                        let pts = g.points[0] as f64 + rest * (0.5 + 0.25 * v0);
+                        let (w, pts) = ((v0 + 1.0) / 2.0, pts);
+                        match mixed {
+                            Some((rw, rp)) => {
+                                let m = mix;
+                                (m * w + (1.0 - m) * rw, m * pts + (1.0 - m) * rp)
+                            }
+                            None => (w, pts),
+                        }
+                    }
+                }
+                (_, None) => {
                     rollout(&mut g, 0.1, rng);
                     (result(g.points[0]), g.points[0] as f64)
                 }
-                Some(p) if model.is_some() && self.model_rollout => {
+                (_, Some(p)) if model.is_some() && self.model_rollout => {
                     let (m, alpha) = model.as_mut().unwrap();
                     let solve_at = self.rollout_solve.unwrap_or(0);
                     while !g.is_over() && g.deck_len > solve_at {
@@ -574,7 +681,7 @@ impl IsmctsPlayer {
                     let p0 = if g.is_over() { g.points[0] } else { solver.solve(&g, 0) };
                     (result(p0), p0 as f64)
                 }
-                Some(p) => {
+                (_, Some(p)) => {
                     let leaf = g;
                     let solve_at = self.rollout_solve.unwrap_or(0);
                     let net = self.value.as_ref().filter(|_| !leaf.is_over() && leaf.deck_len > solve_at);

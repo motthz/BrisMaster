@@ -102,6 +102,10 @@ struct Infer {
     adapt: Option<Adapt>,
     /// Varianti da provare (`prova:`).
     opts: Opts,
+    /// Deduzione delle carte avversarie con la rete auto-allenata (`prova:rldeduz=FILE`).
+    rl_infer: Option<Arc<briscola_core::rl::RlNet>>,
+    /// Spareggio: se le due mosse migliori sono entro questo margine di visite, sceglie la rete.
+    rl_tie: Option<(Arc<briscola_core::rl::RlNet>, f64)>,
 }
 
 /// Varianti del giocatore per le prove delle idee (`prova:CHIAVE=VALORE,...@GIOCATORE`).
@@ -247,6 +251,7 @@ impl Agent for Infer {
     fn start(&mut self, order: &[Card], first: u8) {
         self.game = Some(Game::from_order(order, first));
         self.log = Log::default();
+        self.search.rl_hist.clear();
         self.me = None;
         if self.exact.is_some() {
             self.exact = Some(Exact::default());
@@ -303,7 +308,10 @@ impl Agent for Infer {
                         0..=12 => self.temp * self.opts.temp_late as f32,
                         _ => self.temp,
                     };
-                    Belief::infer(&obs, &self.log.events, &self.policy, t, self.floor, self.pool, rng)
+                    match &self.rl_infer {
+                        Some(net) => Belief::infer_rl(&obs, &self.log.events, net, &self.search.rl_hist, t, self.floor, self.pool, rng),
+                        None => Belief::infer(&obs, &self.log.events, &self.policy, t, self.floor, self.pool, rng),
+                    }
                 }
             })
         };
@@ -395,6 +403,19 @@ impl Agent for Infer {
                 .unwrap()
                 .card;
         }
+        if let Some((net, margin)) = &self.rl_tie {
+            // Mossa in dubbio (le due più visitate entro il margine): decide la rete auto-allenata.
+            let mut v: Vec<&RootChild> = root.iter().collect();
+            v.sort_by(|a, b| b.visits.partial_cmp(&a.visits).unwrap());
+            if v.len() > 1 && v[1].visits >= (1.0 - margin) * v[0].visits {
+                let near: Vec<Card> = v.iter().filter(|c| c.visits >= (1.0 - margin) * v[0].visits).map(|c| c.card).collect();
+                let pol = net.policy(&obs, &self.search.rl_hist, 1.0);
+                return *near.iter().max_by(|&&a, &&b| {
+                    let p = |c: Card| pol.iter().find(|x| x.0 == c).map_or(0.0, |x| x.1);
+                    p(a).partial_cmp(&p(b)).unwrap()
+                }).unwrap();
+            }
+        }
         root.iter().max_by(|a, b| a.visits.partial_cmp(&b.visits).unwrap()).unwrap().card
     }
     fn observe(&mut self, c: Card) {
@@ -408,6 +429,7 @@ impl Agent for Infer {
             }
         }
         self.log.before_play(g, me, c);
+        self.search.rl_hist.push((g.to_move(), c));
         g.play(c);
     }
 }
@@ -695,6 +717,8 @@ fn make_infer(rest: &str, spec: &str) -> Result<Infer, String> {
         model: None,
         adapt: None,
         opts: Opts::default(),
+        rl_infer: None,
+        rl_tie: None,
     })
 }
 
@@ -732,6 +756,23 @@ fn make_searcher(spec: &str) -> Result<Infer, String> {
                     a.search.prior = Some(prior_net()?);
                     a.search.prior_weight = num()?;
                 }
+                "rlroll" => a.search.rl = Some((crate::rl_agent::load(v)?, a.search.rl.as_ref().map_or(40, |r| r.1))),
+                "rlmosse" => {
+                    let n = num()? as u8;
+                    a.search.rl.as_mut().ok_or("rlmosse va dopo rlroll")?.1 = n;
+                }
+                "rlmix" => a.search.rl_mix = num()?,
+                "rlguida" => {
+                    a.search.rl_guide = Some(crate::rl_agent::load(v)?);
+                    if a.search.prior_weight == 0.0 {
+                        a.search.prior_weight = 1.0;
+                    }
+                }
+                "rlpeso" => a.search.prior_weight = num()?,
+                "rlspareggio" => a.rl_tie = Some((crate::rl_agent::load(v)?, a.rl_tie.as_ref().map_or(0.1, |t| t.1))),
+                "rlmargine" => a.rl_tie.as_mut().ok_or("rlmargine va dopo rlspareggio")?.1 = num()?,
+                "rldeduz" => a.rl_infer = Some(crate::rl_agent::load(v)?),
+                "rlmixfine" => a.search.rl_mix_late = Some(num()?),
                 "media" => a.opts.by_mean = v == "1",
                 "dove" => (a.search.model_tree, a.search.model_rollout) = match v {
                     "albero" => (true, false),
@@ -806,6 +847,12 @@ fn make_searcher(spec: &str) -> Result<Infer, String> {
 
 /// Crea un giocatore da SPEC, anche di una versione rilasciata (`vX.Y.Z/SPEC`).
 pub fn make_agent(spec: &str) -> Result<Box<dyn Agent>, String> {
+    if let Some(rest) = spec.strip_prefix("rlcerca:") {
+        return crate::rl_agent::make_search(rest, policy_net()?); // rete + ricerca: rlcerca:FILE:MONDI[:PROFONDITA]
+    }
+    if let Some(rest) = spec.strip_prefix("rl:") {
+        return crate::rl_agent::make(rest); // rete auto-allenata: rl:FILE[:TEMP]
+    }
     if let Some(rest) = spec.strip_prefix("reale:") {
         // reale:FILE[:TEMP] prima delle versioni: il percorso del file contiene '/'.
         return Ok(Box::new(Current(make_net_file_player(rest)?, String::new())));

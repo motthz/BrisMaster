@@ -5,6 +5,7 @@ pub mod cards;
 pub mod game;
 pub mod infer;
 pub mod net;
+pub mod rl;
 pub mod stats;
 pub mod style;
 

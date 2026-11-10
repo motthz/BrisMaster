@@ -123,6 +123,72 @@ impl Belief {
         Belief { hands, cum, weights }
     }
 
+    /// Come `infer`, ma pesa con la rete auto-allenata, che vede anche la storia: `hist` è la
+    /// storia pubblica completa fino a ora (tutte le carte giocate, con chi le ha giocate).
+    pub fn infer_rl(
+        obs: &Observation,
+        log: &[Event],
+        net: &crate::rl::RlNet,
+        hist: &[(u8, Card)],
+        temp: f32,
+        floor: f32,
+        samples: usize,
+        rng: &mut SmallRng,
+    ) -> Belief {
+        // Posizione nella storia di ogni mossa avversaria, nell'ordine del registro.
+        let at: Vec<usize> = hist.iter().enumerate().filter(|(_, &(p, _))| p != obs.me).map(|(i, _)| i).collect();
+        let mut hands = Vec::with_capacity(samples);
+        let mut weights = Vec::with_capacity(samples);
+        let mut cache: std::collections::HashMap<(usize, u64), f64> = Default::default();
+        for _ in 0..samples {
+            let world = obs.determinize(rng);
+            let now = world.hands[1 - obs.me as usize];
+            let mut held = now;
+            let mut logw = 0f64;
+            let mut j = log.iter().filter(|e| matches!(e, Event::OppMove { .. })).count();
+            for e in log.iter().rev() {
+                match *e {
+                    Event::OppDraw { trump } => {
+                        let x = if trump {
+                            obs.trump_card
+                        } else {
+                            let mut cands = held;
+                            cands.remove(obs.trump_card);
+                            cands.iter().nth(rng.gen_range(0..cands.len() as usize)).unwrap()
+                        };
+                        held.remove(x);
+                    }
+                    Event::OppMove { seen, card } => {
+                        j -= 1;
+                        held.insert(card);
+                        if held.len() > 1 && temp > 0.0 && j < at.len() {
+                            let lp = *cache.entry((j, held.0)).or_insert_with(|| {
+                                let theirs = Observation { me: 1 - seen.me, hand: held, opp_hand_len: seen.hand.len() as u8, ..seen };
+                                let pol = net.policy(&theirs, &hist[..at[j]], temp);
+                                let n = pol.len();
+                                let q = pol.iter().find(|x| x.0 == card).map_or(0.0, |x| x.1);
+                                let p = (1.0 - floor) * q + floor / n as f32;
+                                (p.max(1e-6) as f64).ln()
+                            });
+                            logw += lp;
+                        }
+                    }
+                }
+            }
+            hands.push(now);
+            weights.push(logw);
+        }
+        let max = weights.iter().copied().fold(f64::MIN, f64::max);
+        let mut cum = Vec::with_capacity(samples);
+        let mut acc = 0.0;
+        for w in weights.iter_mut() {
+            *w = (*w - max).exp();
+            acc += *w;
+            cum.push(acc);
+        }
+        Belief { hands, cum, weights }
+    }
+
     /// Una mano avversaria pescata in proporzione al peso.
     pub fn sample(&self, rng: &mut SmallRng) -> CardSet {
         let x = rng.gen::<f64>() * self.cum.last().copied().unwrap_or(0.0);

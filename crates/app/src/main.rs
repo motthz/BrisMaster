@@ -16,6 +16,9 @@ mod update;
 mod vision;
 
 fn main() -> eframe::Result {
+    // Le partite salvate in automatico dalle versioni precedenti si cancellano una volta sola:
+    // da ora si salvano solo quelle per cui si accende la registrazione.
+    record::remove_automatic_once(&record::dir());
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(format!("BrisMaster {}", update::CURRENT))

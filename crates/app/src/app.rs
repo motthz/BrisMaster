@@ -129,12 +129,17 @@ pub struct BrisApp {
     fly: Fly,
     /// Il gioco per cui la mosca ha già acceso la lettura dello schermo.
     fly_reading: Option<Gioco>,
+    /// Se le finestre dell'app sono tolte dalle foto dello schermo (e da quanti giri).
+    hidden: Option<bool>,
+    hide_tick: u32,
     active_game: Option<Gioco>,
 }
 
 impl BrisApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, "settings")).unwrap_or_default();
+        let mut settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, "settings")).unwrap_or_default();
+        // All'apertura la Psy Fly e la lettura dello schermo sono sempre spente: le accende l'utente.
+        settings.psy_fly = false;
         let mut style = (*cc.egui_ctx.global_style()).clone();
         style.visuals = egui::Visuals::dark();
         style.visuals.panel_fill = Color32::from_rgb(20, 24, 22);
@@ -160,6 +165,8 @@ impl BrisApp {
             window: None,
             fly: Fly::default(),
             fly_reading: None,
+            hidden: None,
+            hide_tick: 0,
             active_game: None,
             settings,
         };
@@ -379,6 +386,19 @@ impl eframe::App for BrisApp {
         } else if self.fly_reading != Some(self.settings.game) {
             self.vision_on(&ui.ctx().clone());
             self.fly_reading = Some(self.settings.game);
+        }
+        // Mentre si legge lo schermo le finestre di BrisMaster non devono finire nelle foto: la
+        // lettura vedrebbe le carte disegnate dall'app al posto di quelle del tavolo. (Si ripete
+        // ogni tanto: le finestre nuove, come quella compatta, nascono visibili.)
+        let reading = match self.settings.game {
+            Gioco::Briscola => self.assistant.reading(),
+            Gioco::Scopa => self.scopa.reading(),
+            _ => false,
+        };
+        self.hide_tick = self.hide_tick.wrapping_add(1);
+        if self.hidden != Some(reading) || (reading && self.hide_tick % 30 == 0) {
+            crate::psyfly::native::hide_own_windows(reading);
+            self.hidden = Some(reading);
         }
         let ui_ctx = ui.ctx().clone();
         self.ui_main(ui, now);

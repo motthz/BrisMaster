@@ -1041,6 +1041,11 @@ impl ScopaUi {
     }
 
     /// Accende la lettura dello schermo (la Psy Fly ne ha bisogno per vedere le carte).
+    /// Vero mentre si legge lo schermo.
+    pub fn reading(&self) -> bool {
+        self.assist.vision.enabled && self.assist.vision.reader.is_some()
+    }
+
     pub fn vision_on(&mut self, ctx: &egui::Context) {
         self.assist.set_vision(true, ctx);
     }

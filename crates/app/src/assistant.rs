@@ -899,6 +899,11 @@ impl Assistant {
         self.set_vision(true, ctx);
     }
 
+    /// Vero mentre si legge lo schermo.
+    pub fn reading(&self) -> bool {
+        self.vision.enabled && self.vision.reader.is_some()
+    }
+
     /// Accende la lettura dello schermo (la Psy Fly ne ha bisogno per vedere le carte).
     pub fn vision_on(&mut self, ctx: &egui::Context) {
         self.set_vision(true, ctx);

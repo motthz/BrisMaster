@@ -333,6 +333,8 @@ const AUTO_ACCEPT: u32 = 6;
 
 /// Letture con lo schermo cambiato e la partita ferma prima di ricostruirla dallo storico.
 const STALL: u32 = 8;
+/// Letture con la partita ferma e lo schermo più avanti dopo le quali si guarda indietro.
+const BEHIND: u32 = 4;
 /// Letture con la partita ferma dopo le quali si riparte da soli da quello che si vede.
 const RESTART: u32 = 12;
 
@@ -398,6 +400,8 @@ struct Vision {
     stuck: u32,
     /// L'ultima lettura (mano e carta in tavola) da cui ripartire, e da quante letture è uguale.
     anchor: (Vec<Card>, Option<Card>, u32),
+    /// La lettura (mano e carta in tavola) a cui rimettersi in pari, e da quante letture è uguale.
+    behind: (Vec<Card>, Option<Card>, u32),
     /// Dopo una ripartenza a tavolo vuoto chi apre è una supposizione (io), e da quale lettura.
     guessed_leader: Option<u64>,
     restart_after: Option<std::time::Instant>,
@@ -1172,6 +1176,11 @@ impl Assistant {
         }
         if self.history.len() != before || !differs {
             self.vision.stall = 0;
+        } else if self.vision.stuck >= BEHIND && self.catch_up(scene) {
+            // Indietro rispetto al tavolo: le prese mancanti si sono rigiocate dalle letture passate.
+            self.vision.stuck = 0;
+            self.vision.stall = 0;
+            self.vision.inconsistent = false;
         } else if self.vision.stuck >= RESTART && self.resync_from(scene, true) {
             // Ferma da troppo: nessuno ha scritto la carta che mancava, si riparte da quello che
             // si vede (le prese non viste restano segnate come tali).
@@ -1417,6 +1426,88 @@ impl Assistant {
         self.vision.status = format!(
             "Ripreso dopo un tratto in cui il tavolo non si vedeva: {done} prese non viste (le carte dell'avversario di quelle prese e i punti possono non essere giusti)"
         );
+        true
+    }
+
+    /// La partita è rimasta indietro rispetto al tavolo: si riguardano le letture passate (le mie
+    /// carte uscite dalla mano, le carte viste in tavola, le carte comparse in mano, ognuna con
+    /// quando si è vista la prima volta) e si rigiocano le prese mancanti secondo le regole, finché
+    /// la partita torna uguale a quello che si vede adesso. Vale solo se torna: mano e tavolo dello
+    /// schermo sono la verifica, quindi qui bastano anche avvistamenti brevi o poco sicuri.
+    fn catch_up(&mut self, scene: &Scene) -> bool {
+        let pos = self.pos;
+        if matches!(pos.step(), Step::Trump | Step::First | Step::Over) || self.vision.confirm.is_some() {
+            return false;
+        }
+        let read = |v: &CardView| {
+            v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN || (b.1 >= 0.0 && pos.hand.contains(b.0))).map(|b| b.0)
+        };
+        let hand: Vec<Card> = scene.hand.iter().filter_map(read).collect();
+        let table: Vec<Card> = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().filter_map(read).collect();
+        let on_table = scene.opp_slot.is_some() as usize + scene.my_slot.is_some() as usize;
+        if hand.len() != scene.hand.len() || hand.is_empty() || table.len() != on_table || table.len() > 1 {
+            self.vision.behind.2 = 0;
+            return false;
+        }
+        let t = table.first().copied();
+        let b = &mut self.vision.behind;
+        if (b.0.as_slice(), b.1) == (hand.as_slice(), t) { b.2 += 1 } else { *b = (hand.clone(), t, 1) }
+        if b.2 < 2 {
+            return false;
+        }
+        let mut target = CardSet::EMPTY;
+        for &c in &hand {
+            target.insert(c);
+        }
+        let s = &self.vision.sightings;
+        let seen = |x: &Sighting| if x.count == 0 { u64::MAX } else { x.first };
+        let mut p = pos;
+        let mut moves: Vec<Card> = Vec::new();
+        for _ in 0..14 {
+            if !moves.is_empty() && p.hand == target && p.table == t && !matches!(p.step(), Step::Draw(_)) {
+                break;
+            }
+            let allowed = p.allowed();
+            let next = match p.step() {
+                // Una carta che ho adesso (o che ho avuto in mano nel frattempo): la vista prima.
+                Step::Draw(_) => (0..40u8)
+                    .filter(|&c| allowed.contains(c) && !p.hand.contains(c) && Some(c) != t)
+                    .filter(|&c| target.contains(c) || s.in_hand(c))
+                    .min_by_key(|&c| (seen(&s.hand[c as usize]), !target.contains(c))),
+                // Una mia carta che non ho più (o che adesso è in tavola): quella uscita prima.
+                Step::MyMove => p
+                    .hand
+                    .iter()
+                    .filter(|&c| allowed.contains(c) && !target.contains(c))
+                    .min_by_key(|&c| (Some(c) == t && p.hand.len() > target.len() as u32 + 1, seen(&s.table[c as usize]))),
+                // Una carta vista in tavola che non è mai stata mia: quella comparsa prima.
+                Step::OppMove => (0..40u8)
+                    .filter(|&c| allowed.contains(c) && !target.contains(c) && !p.hand.contains(c) && s.hand[c as usize].count == 0)
+                    .filter(|&c| s.table[c as usize].count >= 1 && s.table[c as usize].margin >= SIGHT_MARGIN)
+                    .min_by_key(|&c| (Some(c) == t && p.hand.len() > target.len() as u32, seen(&s.table[c as usize]))),
+                _ => None,
+            };
+            let Some(c) = next else { return false };
+            if p.enter(c).is_none() {
+                return false;
+            }
+            moves.push(c);
+        }
+        if moves.is_empty() || p.hand != target || p.table != t || matches!(p.step(), Step::Draw(_)) {
+            return false;
+        }
+        // Torna: le stesse giocate entrano nella partita vera, una per una.
+        let n = moves.len();
+        self.vision.auto = true;
+        for &c in &moves {
+            if !self.pos.allowed().contains(c) || !self.enter(c) {
+                break;
+            }
+        }
+        self.vision.auto = false;
+        self.vision.behind.2 = 0;
+        self.vision.last = None;
+        self.vision.status = format!("Ero rimasto indietro: ho ripreso {n} giocate dalle letture precedenti");
         true
     }
 

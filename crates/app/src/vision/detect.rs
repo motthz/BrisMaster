@@ -1134,6 +1134,38 @@ pub fn forget_reading_state() {
     LAST_TRY.with(|t| t.set(0));
     LAST_N.with(|t| t.set(0));
     LAST_CARD_L.with(|l| l.set(0.0));
+    FIXTURES.with(|f| f.borrow_mut().clear());
+}
+
+thread_local! {
+    /// Pezzi dello schermo che somigliano appena a una carta (più piccoli delle carte vere e
+    /// riconosciuti senza distacco) e da quante letture di fila stanno nello stesso punto.
+    static FIXTURES: std::cell::RefCell<Vec<(f32, f32, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Toglie i falsi fissi: un disegno del sito che resta sempre lì, lettura dopo lettura, più piccolo
+/// delle carte e mai riconosciuto davvero, non è una carta in gioco.
+fn drop_fixtures(cards: &mut Vec<Found>, card_l: f32) {
+    let doubtful = |f: &Found| {
+        f.score < 0.6 && f.rect.long() < 0.9 * card_l && f.view.best(cards::CardSet::FULL).is_none_or(|b| b.1 < 0.3)
+    };
+    FIXTURES.with(|fx| {
+        let mut fx = fx.borrow_mut();
+        let near = |a: &(f32, f32, u32), f: &Found| (a.0 - f.rect.cx).abs() < 6.0 && (a.1 - f.rect.cy).abs() < 6.0;
+        let mut next: Vec<(f32, f32, u32)> = Vec::new();
+        for f in cards.iter().filter(|f| doubtful(f)) {
+            let n = fx.iter().find(|a| near(a, f)).map_or(0, |a| a.2);
+            next.push((f.rect.cx, f.rect.cy, (n + 1).min(1000)));
+        }
+        // (Una lettura in cui il pezzo non si è trovato non lo fa dimenticare subito.)
+        for a in fx.iter() {
+            if a.2 >= 8 && !next.iter().any(|b| (a.0 - b.0).abs() < 6.0 && (a.1 - b.1).abs() < 6.0) {
+                next.push((a.0, a.1, a.2 - 2));
+            }
+        }
+        cards.retain(|f| !(doubtful(f) && next.iter().any(|a| near(a, f) && a.2 >= 8)));
+        *fx = next;
+    });
 }
 
 /// La lunghezza delle carte trovate dall'ultima analisi fatta in questo thread (0 se nessuna).
@@ -1546,7 +1578,28 @@ pub fn scene(img: &Img) -> Scene {
                 && other.rect.dist(&card.rect) < 0.8 * card_l
         }) { distinct.push(card); }
     }
-    a.cards = distinct;
+    // Una scritta o una fascia che attraversa una carta la divide in due pezzi, uno sopra l'altro,
+    // ognuno ricostruito come carta intera: due sagome in piedi quasi sovrapposte, tutte e due
+    // viste solo in parte, sono la stessa carta (resta il pezzo riconosciuto meglio).
+    let mut whole: Vec<Found> = Vec::new();
+    for card in distinct {
+        let span = |f: &Found| f.view.vis[1] - f.view.vis[0];
+        let same = |o: &Found| {
+            !o.rect.landscape() && !card.rect.landscape() && span(o) < 0.6 && span(&card) < 0.6
+                && (o.rect.cx - card.rect.cx).abs() < 0.25 * card.rect.short()
+                && (o.rect.cy - card.rect.cy).abs() < 0.75 * card_l
+        };
+        if !whole.iter().any(same) { whole.push(card); }
+    }
+    // Un pezzo riconosciuto appena (un disegno del sito che somiglia a una carta) sotto tutte le
+    // carte vere non è la mano: senza di lui la riga più bassa è quella delle carte vere.
+    let weak = |f: &Found| f.score < 0.6 && f.view.best(cards::CardSet::FULL).is_none_or(|b| b.1 < 0.3);
+    let floor = whole.iter().filter(|f| !f.rect.landscape() && !weak(f)).map(|f| f.rect.cy).fold(f32::MIN, f32::max);
+    if floor > f32::MIN {
+        whole.retain(|f| !(weak(f) && f.rect.cy > floor + 0.35 * card_l));
+    }
+    drop_fixtures(&mut whole, card_l);
+    a.cards = whole;
     let mut scene = Scene::default();
     let upright = |f: &&Found| !f.rect.landscape();
     // La riga più in basso di carte in piedi della misura delle altre, anche viste solo in parte

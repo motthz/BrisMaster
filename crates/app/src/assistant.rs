@@ -1299,9 +1299,17 @@ impl Assistant {
         // La mano letta con sicurezza, uguale nelle ultime letture.
         let sure = |v: &CardView| {
             v.best(CardSet::FULL)
-                .filter(|b| b.1 >= AUTO_MARGIN || (free && b.1 >= 0.0 && pos.hand.contains(b.0)))
+                .filter(|b| {
+                    // (Ripartendo da soli vale anche una carta letta senza sicurezza, se è una che
+                    // può esserci: deve restare la stessa per più letture, vedi sotto.)
+                    b.1 >= AUTO_MARGIN
+                        || (free && !pos.played.contains(b.0) && !(Some(b.0) == pos.trump_card && pos.deck_len > 2))
+                })
                 .map(|b| b.0)
         };
+        let weak = scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot).any(|v| {
+            v.best(CardSet::FULL).is_some_and(|b| b.1 < AUTO_MARGIN && !pos.hand.contains(b.0))
+        });
         let hand: Vec<Card> = scene.hand.iter().filter_map(sure).collect();
         let now = self.vision.sightings.frame;
         let table: Vec<Card> = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().filter_map(sure).collect();
@@ -1311,7 +1319,7 @@ impl Assistant {
             let key = (hand.clone(), table.first().copied());
             let a = &mut self.vision.anchor;
             if (a.0.as_slice(), a.1) == (key.0.as_slice(), key.1) { a.2 += 1 } else { *a = (key.0, key.1, 1) }
-            a.2 >= 3 && table.len() == on_table
+            a.2 >= if weak { 6 } else { 3 } && table.len() == on_table
         } else {
             matches!(self.vision.sightings.full_hands.as_slice(),
                 [.., (fa, a), (fb, b)] if a == b && *b == hand && *fb + 1 >= now && *fa + 4 >= now)

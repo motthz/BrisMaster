@@ -1625,9 +1625,15 @@ pub fn scene(img: &Img) -> Scene {
     let mut rows: Vec<f32> = a.cards.iter().filter(upright).filter(full_size).map(|f| f.rect.cy).collect();
     rows.sort_by(|x, y| y.total_cmp(x));
     let mut top = bottom;
-    let in_rows = |top: f32| a.cards.iter().filter(upright).filter(full_size).filter(|f| f.rect.cy >= top - 0.35 * card_l).count();
+    // (Di una carta vista solo in parte, sotto una fascia, l'altezza esatta non si sa: sta nella
+    // riga anche se la sua sagoma risulta più su di mezza carta.)
+    let slack = |f: &Found| if f.view.vis[1] - f.view.vis[0] < 0.6 { 0.65 * card_l } else { 0.35 * card_l };
+    let loose = a.cards.iter().filter(upright).filter(full_size).filter(|f| f.rect.cy >= bottom - 0.35 * card_l).all(|f| slack(f) > 0.5 * card_l);
+    let slack = |f: &Found| if loose { slack(f) } else { 0.35 * card_l };
+    let in_rows = |top: f32| a.cards.iter().filter(upright).filter(full_size).filter(|f| f.rect.cy >= top - slack(f)).count();
+    let row_of: Vec<(f32, f32)> = a.cards.iter().filter(upright).filter(full_size).map(|f| (f.rect.cy, slack(f))).collect();
     for cy in rows {
-        if cy >= top - 0.35 * card_l {
+        if row_of.iter().any(|&(y, s)| y == cy && cy >= top - s) {
             continue;
         }
         let gap = top - cy - card_l;
@@ -1638,7 +1644,7 @@ pub fn scene(img: &Img) -> Scene {
         }
     }
     let in_hand = |f: &Found| {
-        !f.rect.landscape() && (0.85..1.2).contains(&(f.rect.long() / card_l)) && f.rect.cy >= top - 0.35 * card_l
+        !f.rect.landscape() && (0.85..1.2).contains(&(f.rect.long() / card_l)) && f.rect.cy >= top - slack(f)
     };
     let mut hand: Vec<&Found> = a.cards.iter().filter(|f| in_hand(f)).collect();
     // Per righe, da sinistra a destra.

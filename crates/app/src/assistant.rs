@@ -1253,15 +1253,16 @@ impl Assistant {
             let (w, h) = size(v);
             prev.iter().any(|(c, at)| {
                 Some(*c) == id(v)
-                    && (at[0] + at[2] - v.at[0] - v.at[2]).abs() < 0.24 * w
-                    && (at[1] + at[3] - v.at[1] - v.at[3]).abs() < 0.24 * h
-                    && ((at[3] - at[1]) - h).abs() < 0.08 * h
+                    && (at[0] + at[2] - v.at[0] - v.at[2]).abs() < 0.08 * w
+                    && (at[1] + at[3] - v.at[1] - v.at[3]).abs() < 0.08 * h
+                    && ((at[3] - at[1]) - h).abs() < 0.04 * h
+                    && ((at[2] - at[0]) - w).abs() < 0.04 * w
             })
         };
         let (rw, rh) = self.vision.card_size;
         let normal = |v: &CardView| {
             let (w, h) = size(v);
-            rh > 0.0 && (h / rh - 1.0).abs() < 0.06 && (w / rw - 1.0).abs() < 0.06
+            rh > 0.0 && (h / rh - 1.0).abs() < 0.025 && (w / rw - 1.0).abs() < 0.025
         };
         // La briscola scoperta, vista al suo posto, è la briscola anche quando la lettura la mette
         // in mano o in tavola (le altre carte si stanno muovendo e non si vedono).

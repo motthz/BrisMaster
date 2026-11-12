@@ -410,6 +410,8 @@ struct Vision {
     trump_at: Option<[f32; 4]>,
     /// Le carte della lettura prima (quale e dove) e la misura delle carte ferme.
     prev_views: Vec<(Card, [f32; 4], Option<u64>)>,
+    /// Da quando (ms) ogni carta in tavola è lì.
+    since: Vec<(Card, u64)>,
     card_size: (f32, f32),
     /// La lettura (mano e carta in tavola) a cui rimettersi in pari, e da quante letture è uguale.
     behind: (Vec<Card>, Option<Card>, u32),
@@ -1146,6 +1148,11 @@ impl Assistant {
             self.check_mismatch(scene);
         }
         self.vision.sightings.update(scene);
+        for &(c, t) in &self.vision.since {
+            if self.vision.sightings.table[c as usize].count > 0 {
+                self.vision.sightings.seen_ms[c as usize].get_or_insert(t);
+            }
+        }
         if prev == sig {
             self.check_hand(scene);
         }
@@ -1300,6 +1307,12 @@ impl Assistant {
         if let Some(&(w, h)) = sizes.get(sizes.len() / 2) {
             self.vision.card_size = if rh > 0.0 && (h / rh - 1.0).abs() < 0.1 { (0.7 * rw + 0.3 * w, 0.7 * rh + 0.3 * h) } else { (w, h) };
         }
+        self.vision.since = scene
+            .opp_slot
+            .iter()
+            .chain(&scene.my_slot)
+            .filter_map(|v| Some((id(v)?, since(v).flatten()?)))
+            .collect();
         self.vision.prev_views = scene
             .hand
             .iter()
@@ -1676,6 +1689,7 @@ impl Assistant {
             s.lone_mine[c] = Sighting::default();
             s.my_side[c] = Sighting::default();
             s.their_side[c] = Sighting::default();
+            s.seen_ms[c] = None;
             if !p.hand.contains(c as Card) {
                 s.hand[c] = Sighting::default();
             }
@@ -2938,6 +2952,8 @@ struct Sightings {
     /// Carte viste dalla mia parte del tavolo, e dalla parte dell'avversario, comunque sia.
     my_side: Vec<Sighting>,
     their_side: Vec<Sighting>,
+    /// Quando (ms) ogni carta è comparsa in tavola: prima ancora che fosse ferma e contasse.
+    seen_ms: Vec<Option<u64>>,
     /// Posizioni precedenti della mano: una carta salita verso il tavolo non
     /// resta in mano soltanto perché lo zoom l'ha avvicinata alle altre.
     hand_places: Vec<Option<[f32; 4]>>,
@@ -2961,6 +2977,7 @@ impl Sightings {
             self.lone_mine = vec![Sighting::default(); 40];
             self.my_side = vec![Sighting::default(); 40];
             self.their_side = vec![Sighting::default(); 40];
+            self.seen_ms = vec![None; 40];
             self.hand_places = vec![None; 40];
             self.views = vec![None; 40];
         }
@@ -3160,7 +3177,8 @@ impl Sightings {
             let mut new: Vec<Card> = (0..40u8)
                 .filter(|&c| !pos.played.contains(c) && Some(c) != pos.trump_card && self.on_table(c))
                 .collect();
-            new.sort_by_key(|&c| self.table[c as usize].first);
+            // (Per l'ordine conta quando la carta è comparsa, non quando si è fermata.)
+            new.sort_by_key(|&c| (self.seen_ms[c as usize].unwrap_or(u64::MAX), self.table[c as usize].first));
             // (Se in tavola c'è una carta che so di avere, è quella la mia di questa presa: ne gioco
             // una sola.)
             let known = new.iter().any(|&c| pos.hand.contains(c));
@@ -3174,7 +3192,8 @@ impl Sightings {
             let my_side = |c: Card| self.my_side[c as usize].count >= 1 && self.their_side[c as usize].count == 0;
             let mine = pick(&held)
                 .or_else(|| {
-                    let together = matches!(new.as_slice(), [a, b] if self.table[*a as usize].first == self.table[*b as usize].first);
+                    let when = |c: Card| (self.seen_ms[c as usize], self.table[c as usize].first);
+                    let together = matches!(new.as_slice(), [a, b] if when(*a) == when(*b));
                     pick(&my_side).filter(|_| together)
                 })
                 .or_else(|| new.get(if pos.leader == ME { 0 } else { 1 }).copied())
@@ -4642,7 +4661,7 @@ mod tests {
                 out
             };
             // Le schermate da analizzare, in ordine, con quante letture uguali in più.
-            let seq: Vec<(usize, u64)> = match sim {
+            let seq: Vec<(usize, u64, Option<u64>)> = match sim {
                 None => (0..log.len())
                     .map(|idx| {
                         // Registrazioni a ogni cambiamento: se lo schermo resta fermo l'app lo
@@ -4651,7 +4670,7 @@ mod tests {
                             (Some(t), Some(next)) => (next.saturating_sub(t) / 600).min(3),
                             _ => 0,
                         };
-                        (idx, extra)
+                        (idx, extra, None)
                     })
                     .collect(),
                 Some(cost) => {
@@ -4699,11 +4718,11 @@ mod tests {
                         }
                         out = kept;
                     }
-                    out.into_iter().map(|(i, e, _)| (i, e)).collect()
+                    out.into_iter().map(|(i, e, t)| (i, e, Some(t))).collect()
                 }
             };
             let mut card_px = 0u32;
-            for &(idx, extra) in &seq {
+            for &(idx, extra, at) in &seq {
                 let e = &log[idx];
                 let f = e["frame"].as_str().unwrap();
                 // Come nell'app: le schermate grandi si rimpiccioliscono se le carte restano grandi.
@@ -4729,7 +4748,7 @@ mod tests {
                     a.lost_table();
                 }
                 if let Some(scene) = &scene {
-                    let t = e["t"].as_u64().unwrap_or(idx as u64 * 350);
+                    let t = at.unwrap_or(e["t"].as_u64().unwrap_or(idx as u64 * 350));
                     a.vision.now_ms = Some(t);
                     a.sync(scene);
                     for k in 0..extra {

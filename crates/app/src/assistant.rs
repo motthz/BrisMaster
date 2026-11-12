@@ -1073,7 +1073,7 @@ impl Assistant {
         // riparte da quello che si vede (la presa non vista resta segnata come tale).
         if self.pos.step() == Step::OppMove && self.vision.status.starts_with("Non ho visto la carta giocata") {
             self.vision.unseen_opp += 1;
-            if self.vision.unseen_opp >= 10 {
+            if self.vision.unseen_opp >= 6 {
                 self.vision.gap = true;
             }
         } else {
@@ -1308,22 +1308,34 @@ impl Assistant {
         if new.iter().any(|&c| pos.played.contains(c) || (c == trump && pos.deck_len > 2)) {
             return false;
         }
+        // Avevo aperto io una presa rimasta a metà: quella mia carta è una delle giocate non viste.
+        // Se le carte nuove bastano già a spiegarla, le altre che mancano dalla mano non sono
+        // giocate: sono solo non lette adesso, e restano in mano.
+        let led = pos.table.is_some() && pos.step() == Step::OppMove;
+        let drawn = new.len() + drawn_and_played as usize;
+        let unread = !(exhausted || pos.deck_len == 0) && led && drawn == 1 && !gone.is_empty();
         let done = if exhausted || pos.deck_len == 0 {
             (20 - each).saturating_sub(pos.tricks)
+        } else if unread {
+            1
         } else {
-            gone.len().max(new.len() + drawn_and_played as usize) as u8
+            gone.len().max(drawn) as u8
         };
         if done == 0 {
             return false;
         }
         let mut p = pos;
+        p.hand = CardSet::EMPTY;
         for &c in &gone {
-            p.played.insert(c);
+            if unread {
+                p.hand.insert(c);
+            } else {
+                p.played.insert(c);
+            }
         }
         if let Some(x) = pos.table {
             p.played.insert(x);
         }
-        p.hand = CardSet::EMPTY;
         for &c in &hand {
             p.hand.insert(c);
         }
@@ -2690,6 +2702,19 @@ impl Sightings {
         })
     }
 
+    /// Ho aperto io e in mano c'è già la carta pescata dopo questa presa: da quale lettura.
+    fn draw_seen(&self, pos: &Position) -> Option<u64> {
+        pos.table?;
+        let allowed = pos.allowed().union(CardSet::FULL.minus(pos.played).minus(pos.hand));
+        (0..40u8)
+            .filter(|&c| {
+                allowed.contains(c) && !pos.hand.contains(c) && Some(c) != pos.table && self.in_hand(c)
+                    && !self.on_table(c) && self.recent(&self.hand[c as usize])
+            })
+            .map(|c| self.hand[c as usize].first)
+            .min()
+    }
+
     /// Una mia carta in mano è andata in tavola (senza tornare in mano) e la presa è già chiusa:
     /// in tavola non si vede più.
     fn answered(&self, pos: &Position) -> bool {
@@ -2745,8 +2770,10 @@ impl Sightings {
     /// senza sicurezza (fra quelle che può avere giocato).
     fn glimpsed_opp(&self, pos: &Position) -> Option<Card> {
         let allowed = pos.allowed();
+        let cut = self.draw_seen(pos);
         (0..40u8)
             .filter(|&c| allowed.contains(c) && !self.in_hand(c) && !pos.hand.contains(c))
+            .filter(|&c| cut.is_none_or(|f| self.opp_sight(c).first < f))
             .filter(|&c| {
                 self.opp_sight(c).count >= 1
                     && self.frame.saturating_sub(self.opp_sight(c).last) <= 20
@@ -2893,7 +2920,12 @@ impl Sightings {
     fn next_opp_play(&self, pos: &Position, scene: &Scene) -> Option<(Card, bool)> {
         let allowed = pos.allowed();
         let _ = scene;
-        let candidates = (0..40u8).filter(|&c| allowed.contains(c) && !self.in_hand(c));
+        // Una carta comparsa in tavola dopo che avevo già pescato apre la presa dopo: non è la
+        // risposta (non vista) alla mia carta.
+        let cut = self.draw_seen(pos);
+        let candidates = (0..40u8)
+            .filter(|&c| allowed.contains(c) && !self.in_hand(c))
+            .filter(|&c| cut.is_none_or(|f| self.opp_sight(c).first < f));
         if let Some(c) = candidates.clone().filter(|&c| {
             let sight = self.opp_sight(c);
             sight.sure() || (sight.count >= 1 && sight.margin >= AUTO_MARGIN && sight.last < self.frame)

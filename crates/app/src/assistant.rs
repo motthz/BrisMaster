@@ -1575,6 +1575,8 @@ impl Assistant {
             s.table[c] = Sighting::default();
             s.opponents[c] = Sighting::default();
             s.lone_mine[c] = Sighting::default();
+            s.my_side[c] = Sighting::default();
+            s.their_side[c] = Sighting::default();
             if !p.hand.contains(c as Card) {
                 s.hand[c] = Sighting::default();
             }
@@ -2834,6 +2836,9 @@ struct Sightings {
     /// Carte viste da sole dalla mia parte del tavolo: su molti siti le carte giocate stanno
     /// affiancate e la parte non dice di chi sono; contano per l'avversario se restano visibili.
     lone_mine: Vec<Sighting>,
+    /// Carte viste dalla mia parte del tavolo, e dalla parte dell'avversario, comunque sia.
+    my_side: Vec<Sighting>,
+    their_side: Vec<Sighting>,
     /// Posizioni precedenti della mano: una carta salita verso il tavolo non
     /// resta in mano soltanto perché lo zoom l'ha avvicinata alle altre.
     hand_places: Vec<Option<[f32; 4]>>,
@@ -2855,6 +2860,8 @@ impl Sightings {
             self.table = vec![Sighting::default(); 40];
             self.opponents = vec![Sighting::default(); 40];
             self.lone_mine = vec![Sighting::default(); 40];
+            self.my_side = vec![Sighting::default(); 40];
+            self.their_side = vec![Sighting::default(); 40];
             self.hand_places = vec![None; 40];
             self.views = vec![None; 40];
         }
@@ -2903,6 +2910,10 @@ impl Sightings {
         }
         if let Some((c, m)) = scene.opp_slot.as_ref().and_then(|v| v.best(CardSet::FULL)).filter(|b| b.1 >= 0.3) {
             self.opponents[c as usize].bump(f, m);
+            self.their_side[c as usize].bump(f, m);
+        }
+        if let Some((c, m)) = scene.my_slot.as_ref().and_then(|v| v.best(CardSet::FULL)).filter(|b| b.1 >= 0.3) {
+            self.my_side[c as usize].bump(f, m);
         }
         // Con due carte in tavola una è dell'avversario, da qualunque parte stia (la mia si
         // riconosce perché era in mano). Una carta sola dalla mia parte si tiene a parte.
@@ -3054,7 +3065,21 @@ impl Sightings {
             // (Se in tavola c'è una carta che so di avere, è quella la mia di questa presa: ne gioco
             // una sola.)
             let known = new.iter().any(|&c| pos.hand.contains(c));
-            let mine = new.get(if pos.leader == ME { 0 } else { 1 }).copied().filter(|_| !known);
+            // Fra due carte comparse insieme la mia è quella vista (anche una volta sola) in mano,
+            // o quella dalla mia parte del tavolo; solo senza questi indizi decide l'ordine di gioco.
+            let pick = |f: &dyn Fn(Card) -> bool| match new.as_slice() {
+                [a, b] if f(*a) != f(*b) => Some(if f(*a) { *a } else { *b }),
+                _ => None,
+            };
+            let held = |c: Card| self.hand[c as usize].count >= 1;
+            let my_side = |c: Card| self.my_side[c as usize].count >= 1 && self.their_side[c as usize].count == 0;
+            let mine = pick(&held)
+                .or_else(|| {
+                    let together = matches!(new.as_slice(), [a, b] if self.table[*a as usize].first == self.table[*b as usize].first);
+                    pick(&my_side).filter(|_| together)
+                })
+                .or_else(|| new.get(if pos.leader == ME { 0 } else { 1 }).copied())
+                .filter(|_| !known);
             if let Some(c) = mine.filter(|&c| allowed.contains(c)) {
                 return Some((c, true));
             }
@@ -4448,6 +4473,7 @@ mod tests {
         let mut dirs: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.join("verita.json").exists()).collect();
         dirs.sort();
         let (mut ok, mut n) = (0, 0);
+        let mut perfect = 0usize;
         for dir in dirs {
             let log: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(dir.join("verita.json")).unwrap()).unwrap();
             // Ogni partita come letta da sola: niente memoria dell'analisi dalla partita prima.
@@ -4555,6 +4581,11 @@ mod tests {
                             }
                         }
                         tick += 100;
+                    }
+                    // (Le schermate ancora in coda alla fine si leggono comunque, come nell'app.)
+                    while let Some((_, i)) = q.next_with() {
+                        out.push((i, 0, busy + cost));
+                        busy += cost;
                     }
                     // L'interfaccia raccoglie le letture ogni `ui` ms; la 0.5.10 teneva solo
                     // l'ultima di ogni raccolta.
@@ -4770,6 +4801,34 @@ mod tests {
             }
             n += 1;
             let _ = &mut before;
+            // Controllo severo: tutta la partita giusta, carta per carta, senza aiuti.
+            let mut real: Vec<(Card, bool, Card)> = Vec::new();
+            for e in &log {
+                let t: Vec<(Card, bool)> = e["trick"].as_array().unwrap().iter()
+                    .filter_map(|t| Some((by_name(t["card"].as_str()?)?, t["owner"].as_str()? == "Tu"))).collect();
+                if let [a, b] = t.as_slice() {
+                    if real.last() != Some(&(a.0, a.1, b.0)) { real.push((a.0, a.1, b.0)); }
+                }
+            }
+            let real_trump = by_name(log[0]["trump"].as_str().unwrap());
+            let mut why: Vec<String> = Vec::new();
+            if a.pos.step() != Step::Over { why.push(format!("ferma a {} prese", a.pos.tricks)); }
+            if a.pos.trump_card != real_trump { why.push("briscola sbagliata".into()); }
+            if !a.vision.gaps.is_empty() { why.push(format!("{} ripartenze con prese non viste", a.vision.gaps.len())); }
+            if confirms + typed > 0 { why.push(format!("{} interventi dell'utente", confirms + typed)); }
+            if !wrong.is_empty() { why.push("carte in mano sbagliate".into()); }
+            if real.len() != 20 { why.push(format!("registrazione con {} prese", real.len())); }
+            for (i, t) in a.tricks.iter().enumerate() {
+                let got = (t.lead, t.leader == ME, t.follow);
+                if real.get(i) != Some(&got) {
+                    let show = |x: &(Card, bool, Card)| format!("{}{} {}", cards::short(x.0), if x.1 { "(tu)" } else { "" }, cards::short(x.2));
+                    why.push(format!("presa {}: app {} vera {}", i + 1, show(&got), real.get(i).map(show).unwrap_or("-".into())));
+                    break;
+                }
+            }
+            if a.tricks.len() != 20 && a.pos.step() == Step::Over { why.push(format!("{} prese registrate", a.tricks.len())); }
+            perfect += why.is_empty() as usize;
+            println!("  severo: {}", if why.is_empty() { "PERFETTA".into() } else { why.join("; ") });
             // (Le proposte sbagliate corrette dall'utente non contano come errori della partita.)
             let done = a.pos.tricks == 20 && wrong.iter().all(|w| w.contains("chiede"));
             ok += done as usize;
@@ -4788,6 +4847,7 @@ mod tests {
             }
         }
         println!("== partite seguite fino in fondo: {ok}/{n}");
+        println!("== partite perfette (tutte le carte giuste, nessun intervento): {perfect}/{n}");
     }
 }
 

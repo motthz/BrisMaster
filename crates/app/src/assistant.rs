@@ -328,6 +328,9 @@ pub struct Assistant {
 /// Distacco minimo fra la carta più probabile e la seconda per inserirla senza chiedere.
 const AUTO_MARGIN: f32 = 1.4;
 
+/// Letture con una carta in attesa di conferma prima di accettarla da soli.
+const AUTO_ACCEPT: u32 = 6;
+
 /// Letture con lo schermo cambiato e la partita ferma prima di ricostruirla dallo storico.
 const STALL: u32 = 8;
 
@@ -383,6 +386,12 @@ struct Vision {
     /// La coda è elaborata a piccoli lotti per lasciare sempre rispondere l'interfaccia.
     catching_up: bool,
     inconsistent: bool,
+    /// La carta in attesa di conferma e da quante letture aspetta.
+    confirm_age: (Option<(Step, Card)>, u32),
+    /// Letture passate ad aspettare una carta dell'avversario che non si è vista.
+    unseen_opp: u32,
+    /// Letture di fila, a mazzo finito, senza più carte in gioco sullo schermo.
+    ended: u32,
     restart_after: Option<std::time::Instant>,
     frame_id: u64,
     enabled: bool,
@@ -1044,6 +1053,32 @@ impl Assistant {
     /// Inserisce nella partita quello che si vede sullo schermo, se è uguale alla lettura precedente.
     fn sync(&mut self, scene: &Scene) {
         self.vision.away = 0;
+        // Una carta in attesa di conferma non ferma la partita: se l'utente non risponde entro
+        // qualche lettura si accetta da sola (se era sbagliata la correggono i controlli dopo).
+        match self.vision.confirm.as_ref().map(|c| (c.step, c.card)) {
+            Some(key) => {
+                if self.vision.confirm_age.0 == Some(key) {
+                    self.vision.confirm_age.1 += 1;
+                } else {
+                    self.vision.confirm_age = (Some(key), 1);
+                }
+                if self.vision.confirm_age.1 >= AUTO_ACCEPT {
+                    self.vision.confirm_age = (None, 0);
+                    self.auto_accept();
+                }
+            }
+            None => self.vision.confirm_age = (None, 0),
+        }
+        // La carta dell'avversario non si è vista e nessuno la scrive: dopo un po' la partita
+        // riparte da quello che si vede (la presa non vista resta segnata come tale).
+        if self.pos.step() == Step::OppMove && self.vision.status.starts_with("Non ho visto la carta giocata") {
+            self.vision.unseen_opp += 1;
+            if self.vision.unseen_opp >= 10 {
+                self.vision.gap = true;
+            }
+        } else {
+            self.vision.unseen_opp = 0;
+        }
         let fixed = self.fix_layout(scene);
         let scene = fixed.as_ref().unwrap_or(scene);
         let best = |v: &CardView| v.best(CardSet::FULL).map(|b| b.0);
@@ -1090,6 +1125,24 @@ impl Assistant {
             if self.vision.confirm.is_some() || !self.advance(scene) {
                 break;
             }
+        }
+        // Fine partita non vista: a mazzo finito, se sullo schermo non resta nessuna carta ancora
+        // in gioco (né in mano né in tavola) per qualche lettura, la partita è finita anche se le
+        // ultime giocate non si sono viste. Si chiude da sola, segnando le prese come non viste.
+        if self.pos.deck_len == 0 && self.pos.tricks >= 17 && matches!(self.pos.step(), Step::MyMove | Step::OppMove) {
+            let trump = self.pos.trump_card;
+            let live = scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot).any(|v| {
+                v.best(CardSet::FULL).is_some_and(|(c, _)| {
+                    !self.pos.played.contains(c) && (Some(c) != trump || self.pos.hand.contains(c))
+                })
+            });
+            self.vision.ended = if live { 0 } else { self.vision.ended + 1 };
+            if self.vision.ended >= 5 {
+                self.vision.ended = 0;
+                self.finish_unseen();
+            }
+        } else {
+            self.vision.ended = 0;
         }
         // Il controllore: se lo schermo continua a cambiare ma la partita resta ferma, la partita
         // si rigioca da capo con tutto quello che si è visto finora (e le carte decise
@@ -1717,6 +1770,39 @@ impl Assistant {
     fn reject(&mut self, step: Step, card: Card) {
         self.vision.doubts.push((step, card));
         self.vision.sightings.forget(step, card);
+    }
+
+    /// Chiude la partita quando le ultime prese non si sono viste: le carte rimaste risultano
+    /// giocate, senza inventare quelle dell'avversario (i punti restano non verificati).
+    fn finish_unseen(&mut self) {
+        self.vision.gaps.push(self.history.len());
+        self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
+        let mut p = self.pos;
+        for c in p.hand.iter() {
+            p.played.insert(c);
+        }
+        if let Some(t) = p.table {
+            p.played.insert(t);
+        }
+        p.hand = CardSet::EMPTY;
+        p.table = None;
+        p.to_draw = 0;
+        p.opp_hand_len = 0;
+        p.tricks = 20;
+        self.pos = p;
+        self.changed();
+        self.vision.last = None;
+        self.vision.status = "Partita finita: le ultime prese non si sono viste (punti non verificati)".into();
+    }
+
+    /// Accetta da sola la carta proposta (senza impararne l'immagine: non è confermata).
+    fn auto_accept(&mut self) {
+        let Some(c) = self.vision.confirm.take() else { return };
+        self.vision.auto = true;
+        if c.step == self.pos.step() {
+            self.enter(c.card);
+        }
+        self.vision.auto = false;
     }
 
     fn accept_vision(&mut self) {
@@ -2499,6 +2585,9 @@ struct Sightings {
     /// Solo carte dalla parte dell'avversario: una mia carta letta male non
     /// deve diventare una giocata avversaria nello storico.
     opponents: Vec<Sighting>,
+    /// Carte viste da sole dalla mia parte del tavolo: su molti siti le carte giocate stanno
+    /// affiancate e la parte non dice di chi sono; contano per l'avversario se restano visibili.
+    lone_mine: Vec<Sighting>,
     /// Posizioni precedenti della mano: una carta salita verso il tavolo non
     /// resta in mano soltanto perché lo zoom l'ha avvicinata alle altre.
     hand_places: Vec<Option<[f32; 4]>>,
@@ -2519,6 +2608,7 @@ impl Sightings {
             self.hand = vec![Sighting::default(); 40];
             self.table = vec![Sighting::default(); 40];
             self.opponents = vec![Sighting::default(); 40];
+            self.lone_mine = vec![Sighting::default(); 40];
             self.hand_places = vec![None; 40];
             self.views = vec![None; 40];
         }
@@ -2568,6 +2658,28 @@ impl Sightings {
         if let Some((c, m)) = scene.opp_slot.as_ref().and_then(|v| v.best(CardSet::FULL)).filter(|b| b.1 >= 0.3) {
             self.opponents[c as usize].bump(f, m);
         }
+        // Con due carte in tavola una è dell'avversario, da qualunque parte stia (la mia si
+        // riconosce perché era in mano). Una carta sola dalla mia parte si tiene a parte.
+        if let Some((c, m)) = scene.my_slot.as_ref().and_then(|v| v.best(CardSet::FULL)).filter(|b| b.1 >= 0.3) {
+            if scene.opp_slot.is_some() {
+                self.opponents[c as usize].bump(f, m);
+            } else {
+                self.lone_mine[c as usize].bump(f, m);
+            }
+        }
+    }
+
+    /// Gli avvistamenti di `c` che valgono come carta giocata dall'avversario: dalla sua parte, o
+    /// in tavola insieme a un'altra, o da sola dalla mia parte se ci è rimasta (tre letture).
+    fn opp_sight(&self, c: Card) -> Sighting {
+        let (o, l) = (self.opponents[c as usize], self.lone_mine[c as usize]);
+        if l.count < 3 {
+            return o;
+        }
+        if o.count == 0 {
+            return l;
+        }
+        Sighting { count: o.count + l.count, first: o.first.min(l.first), last: o.last.max(l.last), margin: o.margin.max(l.margin) }
     }
 
     /// In mano c'è con sicurezza una carta che non ho ancora: ho già pescato dopo la presa in corso.
@@ -2636,13 +2748,13 @@ impl Sightings {
         (0..40u8)
             .filter(|&c| allowed.contains(c) && !self.in_hand(c) && !pos.hand.contains(c))
             .filter(|&c| {
-                self.opponents[c as usize].count >= 1
-                    && self.frame.saturating_sub(self.opponents[c as usize].last) <= 20
+                self.opp_sight(c).count >= 1
+                    && self.frame.saturating_sub(self.opp_sight(c).last) <= 20
             })
             .max_by_key(|&c| {
                 (
-                    self.opponents[c as usize].count.min(4),
-                    (self.opponents[c as usize].margin * 10.0) as i32,
+                    self.opp_sight(c).count.min(4),
+                    (self.opp_sight(c).margin * 10.0) as i32,
                 )
             })
     }
@@ -2783,16 +2895,16 @@ impl Sightings {
         let _ = scene;
         let candidates = (0..40u8).filter(|&c| allowed.contains(c) && !self.in_hand(c));
         if let Some(c) = candidates.clone().filter(|&c| {
-            let sight = &self.opponents[c as usize];
+            let sight = self.opp_sight(c);
             sight.sure() || (sight.count >= 1 && sight.margin >= AUTO_MARGIN && sight.last < self.frame)
-        }).min_by_key(|&c| self.opponents[c as usize].first) {
+        }).min_by_key(|&c| self.opp_sight(c).first) {
             return Some((c, true));
         }
         // Vista più volte di recente ma senza sicurezza: si chiede (una lettura sbagliata di tanto
         // tempo fa non conta).
         candidates
-            .filter(|&c| self.opponents[c as usize].count >= 2 && self.recent(&self.opponents[c as usize]))
-            .max_by_key(|&c| (self.opponents[c as usize].count, (self.opponents[c as usize].margin * 10.0) as i32))
+            .filter(|&c| self.opp_sight(c).count >= 2 && self.recent(&self.opp_sight(c)))
+            .max_by_key(|&c| (self.opp_sight(c).count, (self.opp_sight(c).margin * 10.0) as i32))
             .map(|c| (c, false))
     }
 }
@@ -4049,6 +4161,9 @@ mod tests {
     fn partite_registrate() {
         let root = std::path::PathBuf::from(std::env::var("PARTITE").expect("PARTITE=cartella"));
         let verbose = std::env::var("VERBOSO").is_ok();
+        // NESSUN_UTENTE=1: l'utente non fa niente (non conferma, non scrive): la partita deve
+        // seguirsi da sola.
+        let user = std::env::var("NESSUN_UTENTE").is_err();
         // CATTURA=ms: simula la cattura dell'app (ogni 100 ms, analisi di ms per schermata);
         // SCHERMO=larghezza: il tavolo è una finestra di uno schermo così largo.
         let sim = std::env::var("CATTURA")
@@ -4069,6 +4184,8 @@ mod tests {
         let (mut ok, mut n) = (0, 0);
         for dir in dirs {
             let log: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(dir.join("verita.json")).unwrap()).unwrap();
+            // Ogni partita come letta da sola: niente memoria dell'analisi dalla partita prima.
+            crate::vision::detect::forget_reading_state();
             let mut a = Assistant::default();
             let mut confirms = 0;
             let mut wrong = Vec::new();
@@ -4227,11 +4344,11 @@ mod tests {
                         opp_cards.push(t.0);
                     }
                 }
-                if a.vision.status.starts_with("Non trovo la briscola") && a.pos.step() == Step::Trump && a.enter(trump) {
+                if user && a.vision.status.starts_with("Non trovo la briscola") && a.pos.step() == Step::Trump && a.enter(trump) {
                     typed += 1;
                     a.vision.status.clear();
                 }
-                if a.vision.status.starts_with("Non ho visto la carta giocata") && a.pos.step() == Step::OppMove {
+                if user && a.vision.status.starts_with("Non ho visto la carta giocata") && a.pos.step() == Step::OppMove {
                     let gone = |c: Card| a.pos.played.contains(c) || a.pos.table == Some(c);
                     if let Some(&c) = opp_cards.iter().find(|&&c| !gone(c)) {
                         if a.enter(c) {
@@ -4247,7 +4364,7 @@ mod tests {
                     }
                 }
                 // L'app chiede di scrivere la pescata o la mia giocata: l'utente la scrive.
-                if a.vision.status.starts_with("Non riconosco la carta") {
+                if user && a.vision.status.starts_with("Non riconosco la carta") {
                     let allowed = a.pos.allowed();
                     let right = match a.pos.step() {
                         Step::Draw(_) => hands
@@ -4276,7 +4393,7 @@ mod tests {
                 if recent_cards.len() > 6 {
                     recent_cards.remove(0);
                 }
-                if let Some(c) = &a.vision.confirm {
+                if let Some(c) = a.vision.confirm.as_ref().filter(|_| user) {
                     let visible = c.card == trump || recent_cards.iter().any(|r| r.contains(&c.card));
                     if visible {
                         confirms += 1;

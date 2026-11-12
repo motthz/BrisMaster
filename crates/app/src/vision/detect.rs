@@ -1127,6 +1127,15 @@ thread_local! {
     static LAST_N: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Dimentica quello che l'analisi ricorda dalle schermate precedenti (prova di riserva, carte
+/// viste): per cominciare una lettura indipendente, come una partita nuova del banco di prova.
+#[cfg(test)]
+pub fn forget_reading_state() {
+    LAST_TRY.with(|t| t.set(0));
+    LAST_N.with(|t| t.set(0));
+    LAST_CARD_L.with(|l| l.set(0.0));
+}
+
 /// La lunghezza delle carte trovate dall'ultima analisi fatta in questo thread (0 se nessuna).
 pub fn last_card_l() -> f32 {
     LAST_CARD_L.with(|l| l.get())

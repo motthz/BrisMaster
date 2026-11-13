@@ -105,6 +105,8 @@ pub struct CardView {
     pub at: [f32; 4],
     /// Somiglianza con le 40 carte di ciascuno stile di riferimento (vuota se non si sa).
     pub styles: Vec<[f32; 40]>,
+    /// Lato lungo e lato corto della carta sullo schermo, in pixel (0 se non si sa).
+    pub px: [f32; 2],
 }
 
 pub const CARD_W: usize = 100;
@@ -147,8 +149,22 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
     let mut s = reference_scores(&view.sim);
     // I simboli contati sulla carta (vista intera) escludono le carte con un altro numero di
     // simboli, in qualunque mazzo: un quattro di coppe un po' storto non diventa un due.
-    let excluded = match (!view.partial).then(|| pips::count(&view.img)).flatten() {
-        Some(n) => pips::excluded(n),
+    // Il conteggio decide solo fra le carte che la lettura dà già per possibili: se nessuna delle
+    // più somiglianti ha quel numero di simboli, a sbagliare è il conteggio (simboli che si toccano
+    // su carte piccole o strette), e non vale.
+    // (Solo su carte abbastanza grandi e di proporzioni normali: su carte piccole o stirate i
+    // simboli si toccano o si spezzano e il conteggio non è sicuro.)
+    let [long, short] = view.px;
+    let countable = long >= 110.0 && short >= 66.0 && (0.52..=0.95).contains(&(short / long));
+    let excluded = match (!view.partial && countable).then(|| pips::count(&view.img)).flatten() {
+        Some(n) => {
+            let ex = pips::excluded(n);
+            let mut order: Vec<usize> = (0..40).collect();
+            order.sort_by(|&a, &b| s[b].total_cmp(&s[a]));
+            let top = s[order[0]];
+            let fits = order.iter().take(4).any(|&c| s[c] >= top - 4.0 && !ex[c] && pips::expected()[c].contains(&n));
+            if fits { ex } else { [false; 40] }
+        }
         None => [false; 40],
     };
     for (c, out) in excluded.iter().enumerate() {
@@ -170,7 +186,7 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
 
 impl CardView {
     pub fn new(img: Img, vis: [f32; 2], sim: [f32; 40]) -> CardView {
-        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim), at: [0.0; 4], styles: Vec::new() }
+        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim), at: [0.0; 4], styles: Vec::new(), px: [0.0; 2] }
     }
 
     /// La carta più probabile fra `among`, e quanto stacca la seconda.

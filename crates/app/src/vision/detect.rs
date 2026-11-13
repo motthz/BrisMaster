@@ -1577,7 +1577,10 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
             // Si cerca una carta intera attorno ai due pezzi (una parte può essere coperta).
             let (hw, hh) = if u.hh >= u.hw { (card_w, card_l) } else { (card_l, card_w) };
             let around = RotRect { hw: u.hw.max(hw / 2.0) + 0.2 * card_w, hh: u.hh.max(hh / 2.0) + 0.2 * card_w, ..u };
-            let found = as_full(img, &u).or_else(|| scan(img, &paper, &around, card_l, card_w).into_iter().next());
+            // (O una carta vista solo in parte: la briscola sotto il mazzo, spezzata dal disegno.)
+            let found = as_full(img, &u)
+                .or_else(|| scan(img, &paper, &around, card_l, card_w).into_iter().next())
+                .or_else(|| as_partial(img, &u, card_l, card_w));
             if let Some(f) = found {
                 cards.push(f);
                 (joined[i], joined[j]) = (true, true);

@@ -1358,6 +1358,15 @@ mod bench {
             screen::diagnose(&img).save_png(std::path::Path::new(&out)).unwrap();
         }
         println!("card_l {:.0}", a.card_l);
+        if let Ok(prima) = std::env::var("SCENA") {
+            for p in prima.split(',').filter(|p| !p.is_empty()) {
+                let im = capture::load_png(std::path::Path::new(p)).unwrap();
+                let _ = detect::scene(&im);
+            }
+            let sc = detect::scene(&img);
+            let show = |v: &CardView| format!("{}({:.1})", cards::short(v.best(cards::CardSet::FULL).unwrap().0), v.best(cards::CardSet::FULL).unwrap().1);
+            println!("scena: B {:?} A {:?} T {:?} M {:?}", sc.trump.as_ref().map(show), sc.opp_slot.as_ref().map(show), sc.my_slot.as_ref().map(show), sc.hand.iter().map(show).collect::<Vec<_>>());
+        }
         for (i, f) in a.cards.iter().enumerate() {
             let (c, m) = f.view.best(cards::CardSet::FULL).unwrap();
             if let Ok(dir) = std::env::var("CARTE") {

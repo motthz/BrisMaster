@@ -1922,7 +1922,7 @@ fn lerp_color(a: Color32, b: Color32, k: f32) -> Color32 {
 /// Su Windows la finestra della mosca va messa a pixel veri sul monitor del gioco, e non deve
 /// finire nelle foto dello schermo (la lettura non deve vedere la mosca).
 #[cfg(windows)]
-mod native {
+pub mod native {
     use super::Geom;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowW, SetWindowDisplayAffinity, SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, WDA_EXCLUDEFROMCAPTURE,
@@ -1947,6 +1947,25 @@ mod native {
         Ok(())
     }
 
+    /// Toglie (o rimette) tutte le finestre di BrisMaster dalle foto dello schermo: la lettura non
+    /// deve mai vedere le carte disegnate dall'app stessa al posto di quelle del tavolo.
+    pub fn hide_own_windows(hide: bool) {
+        use windows_sys::Win32::Foundation::{HWND, LPARAM};
+        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, WDA_NONE};
+        unsafe extern "system" fn each(hwnd: HWND, hide: LPARAM) -> i32 {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid == GetCurrentProcessId() {
+                SetWindowDisplayAffinity(hwnd, if hide != 0 { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE });
+            }
+            1
+        }
+        unsafe {
+            EnumWindows(Some(each), hide as LPARAM);
+        }
+    }
+
     /// Dove sta il mouse sul desktop (pixel veri) e se il tasto sinistro è premuto.
     pub fn cursor() -> Option<(f32, f32, bool)> {
         use windows_sys::Win32::Foundation::POINT;
@@ -1964,11 +1983,13 @@ mod native {
 }
 
 #[cfg(not(windows))]
-mod native {
+pub mod native {
     use super::Geom;
     pub fn place(_title: &str, _g: Geom) -> Result<(), String> {
         Ok(())
     }
+
+    pub fn hide_own_windows(_hide: bool) {}
 
     /// Fuori da Windows la mosca non vede il mouse.
     pub fn cursor() -> Option<(f32, f32, bool)> {

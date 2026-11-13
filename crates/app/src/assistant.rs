@@ -1836,7 +1836,21 @@ impl Assistant {
                     .next_my_play(&pos, scene)
                     .or_else(|| sights.missed_my_play(&pos))
             }
-            Step::OppMove => sights.next_opp_play(&pos, scene),
+            Step::OppMove => {
+                // La mia carta data per giocata senza averla mai vista in tavola è di nuovo in mano
+                // (era solo coperta dalle altre): la giocata si annulla.
+                if let Some(t) = pos.table {
+                    let h = &sights.hand[t as usize];
+                    let back = sights.table[t as usize].count == 0 && h.last == sights.frame && h.margin >= AUTO_MARGIN
+                        && scene.hand.iter().any(|v| v.best(CardSet::FULL).is_some_and(|b| b.0 == t && b.1 >= AUTO_MARGIN));
+                    if back && self.history.last().is_some_and(|e| e.0.hand.contains(t)) {
+                        self.undo_entries();
+                        self.vision.last = None;
+                        return true;
+                    }
+                }
+                sights.next_opp_play(&pos, scene)
+            }
         };
         let (card, sure) = if let Some(e) = event {
             e
@@ -3259,7 +3273,9 @@ impl Sightings {
         let n = pos.hand.len() as usize;
         let fits = (b.len() == n && new == 1) || (b.len() + 1 == n && new == 0 && pos.deck_len == 0);
         match missing.as_slice() {
-            [c] if fits => Some(*c),
+            // (A mazzo finito la mano si accorcia e basta: prima di dire che la carta è uscita
+            // deve mancare da un po', perché una carta coperta dalle altre torna a vedersi.)
+            [c] if fits && (new == 1 || self.hand[*c as usize].last + 8 <= self.frame) => Some(*c),
             _ => None,
         }
     }

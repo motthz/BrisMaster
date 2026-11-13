@@ -411,6 +411,7 @@ struct Vision {
     /// Le carte della lettura prima (quale e dove) e la misura delle carte ferme.
     prev_views: Vec<(Card, [f32; 4])>,
     card_size: (f32, f32),
+    table_size: (f32, f32),
     /// La lettura (mano e carta in tavola) a cui rimettersi in pari, e da quante letture è uguale.
     behind: (Vec<Card>, Option<Card>, u32),
     /// Dopo una ripartenza a tavolo vuoto chi apre è una supposizione (io), e da quale lettura.
@@ -1399,13 +1400,18 @@ impl Assistant {
                     && ((at[2] - at[0]) - w).abs() < 0.04 * w
             })
         };
-        let (rw, rh) = self.vision.card_size;
-        let normal = |v: &CardView| {
+        // La misura delle carte ferme, a parte per la mano e per il tavolo (su molti siti le carte
+        // giocate sono più piccole o più grandi di quelle in mano).
+        let (hand_size, table_size) = (self.vision.card_size, self.vision.table_size);
+        let timed = self.vision.now_ms.is_some();
+        let normal_in = |v: &CardView, (rw, rh): (f32, f32)| {
             let (w, h) = size(v);
             // (Senza l'ora della lettura, nelle prove a uno stato per lettura, basta una misura simile.)
-            let slack = if self.vision.now_ms.is_some() { 0.025 } else { 0.06 };
+            let slack = if timed { 0.025 } else { 0.06 };
             rh > 0.0 && (h / rh - 1.0).abs() < slack && (w / rw - 1.0).abs() < slack
         };
+        let normal = |v: &CardView| normal_in(v, hand_size);
+        let normal_table = |v: &CardView| normal_in(v, table_size) || (table_size.1 <= 0.0 && normal(v));
         // La briscola scoperta, vista al suo posto, è la briscola anche quando la lettura la mette
         // in mano o in tavola (le altre carte si stanno muovendo e non si vedono).
         let trump = self.pos.trump_card;
@@ -1421,19 +1427,26 @@ impl Assistant {
         };
         // (Una carta di cui non si sa il posto sullo schermo non si può giudicare: resta.)
         let keep = |v: &CardView| !is_trump(v) && (still(v) || normal(v) || size(v).1 <= 0.0);
+        let keep_table = |v: &CardView| !is_trump(v) && (still(v) || normal_table(v) || size(v).1 <= 0.0);
         let moved = scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot).find(|v| is_trump(v)).cloned();
         let out = Scene {
             trump: scene.trump.clone().or(moved),
-            opp_slot: scene.opp_slot.clone().filter(|v| keep(v)),
-            my_slot: scene.my_slot.clone().filter(|v| keep(v)),
+            opp_slot: scene.opp_slot.clone().filter(|v| keep_table(v)),
+            my_slot: scene.my_slot.clone().filter(|v| keep_table(v)),
             hand: scene.hand.iter().filter(|v| keep(v)).cloned().collect(),
         };
         // La misura delle carte ferme (cambia piano se cambia lo zoom).
-        let mut sizes: Vec<(f32, f32)> = scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot).filter(|v| still(v)).map(size).collect();
-        sizes.sort_by(|a, b| a.1.total_cmp(&b.1));
-        if let Some(&(w, h)) = sizes.get(sizes.len() / 2) {
-            self.vision.card_size = if rh > 0.0 && (h / rh - 1.0).abs() < 0.1 { (0.7 * rw + 0.3 * w, 0.7 * rh + 0.3 * h) } else { (w, h) };
-        }
+        let update = |cur: (f32, f32), views: Vec<&CardView>| {
+            let mut sizes: Vec<(f32, f32)> = views.into_iter().filter(|v| still(v)).map(size).collect();
+            sizes.sort_by(|a, b| a.1.total_cmp(&b.1));
+            match sizes.get(sizes.len() / 2) {
+                Some(&(w, h)) if cur.1 > 0.0 && (h / cur.1 - 1.0).abs() < 0.1 => (0.7 * cur.0 + 0.3 * w, 0.7 * cur.1 + 0.3 * h),
+                Some(&s) => s,
+                None => cur,
+            }
+        };
+        self.vision.card_size = update(hand_size, scene.hand.iter().collect());
+        self.vision.table_size = update(table_size, scene.opp_slot.iter().chain(&scene.my_slot).collect());
         self.vision.prev_views = scene
             .hand
             .iter()

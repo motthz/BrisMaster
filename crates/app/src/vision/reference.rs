@@ -6,6 +6,8 @@
 //!   è anche quello disegnato nell'app.
 //! - `assets/carte_napoletane_classiche.jpg`: un secondo disegno, dai colori più scuri (anche
 //!   questo di pubblico dominio, "Carte napoletane al completo.jpg" di Wikimedia Commons).
+//! - `assets/carte_napoletane_brisva.jpg`: il mazzo del tavolo su cui gioca l'utente (immagini
+//!   fornite dall'utente, che ne ha autorizzato l'uso): carte senza bordo bianco, a tutta figura.
 //!
 //! Una carta raddrizzata si confronta con ciascuna in miniatura: luminosità e due differenze di
 //! colore (rosso-verde, giallo-blu), con la correlazione normalizzata, che non bada a quanto lo
@@ -25,7 +27,7 @@ struct Style {
     margin: (f32, f32),
 }
 
-const STYLES: [Style; 2] = [
+const STYLES: [Style; 3] = [
     Style {
         bytes: include_bytes!("../../assets/carte_napoletane_wiki.jpg"),
         format: image::ImageFormat::Jpeg,
@@ -35,6 +37,11 @@ const STYLES: [Style; 2] = [
         bytes: include_bytes!("../../assets/carte_napoletane_classiche.jpg"),
         format: image::ImageFormat::Jpeg,
         margin: (0.03, 0.02),
+    },
+    Style {
+        bytes: include_bytes!("../../assets/carte_napoletane_brisva.jpg"),
+        format: image::ImageFormat::Jpeg,
+        margin: (0.0, 0.0),
     },
 ];
 /// Quante carte di riferimento ci sono in tutto (40 per stile).
@@ -611,7 +618,12 @@ impl Match {
 
     /// Le carte più somiglianti, con ritagli vicini e spostati. Non serve se nessuna somiglia
     /// abbastanza: non è una carta.
-    pub fn refine(mut self) -> [f32; 40] {
+    pub fn refine(self) -> [f32; 40] {
+        self.refine_styles().0
+    }
+
+    /// Come `refine`, con in più la somiglianza con ciascuno stile.
+    pub fn refine_styles(mut self) -> ([f32; 40], Vec<[f32; 40]>) {
         if self.top() >= HOPELESS {
             let mut order: Vec<usize> = (0..NT).collect();
             order.sort_by(|&x, &y| self.best[y].0.total_cmp(&self.best[x].0));
@@ -647,14 +659,83 @@ impl Match {
                 }
             }
         }
-        // Per ogni carta vale lo stile che le somiglia di più.
+        // Per ogni carta vale lo stile che le somiglia di più (poi la scena intera sceglie lo
+        // stile del sito: `site_style`).
+        let mut per_style = vec![[f32::MIN; 40]; NT / 40];
         let mut out = [f32::MIN; 40];
         for (k, b) in self.best.iter().enumerate() {
+            per_style[k / 40][k % 40] = b.0;
             out[k % 40] = out[k % 40].max(b.0);
         }
-        out
+        (out, per_style)
     }
 }
+
+/// Di quanto pesa meno uno stile diverso da quello del sito, una volta riconosciuto.
+const STYLE_PENALTY: f32 = 0.15;
+
+thread_local! {
+    /// Gli ultimi voti per stile delle carte viste (vedi `site_style`): solo i più recenti, così
+    /// se si cambia sito lo stile si riconosce di nuovo. (Per thread: la lettura dello schermo
+    /// avviene sempre nello stesso.)
+    static VOTES: std::cell::RefCell<std::collections::VecDeque<usize>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+/// Quanti voti recenti si tengono.
+const RECENT_VOTES: usize = 12;
+
+/// Lo stile del mazzo del sito: ogni carta vista intera e riconosciuta con sicurezza in uno stile
+/// (somiglianza alta, ben staccata dalle altre carte dello stesso stile e dagli altri stili) vota;
+/// i voti recenti si tengono fra una lettura e l'altra. Vale lo stile con quasi tutti i voti, se
+/// ne ha almeno due.
+pub fn site_style(seen: &[&[[f32; 40]]]) -> Option<usize> {
+    VOTES.with(|v| {
+        let mut v = v.borrow_mut();
+        for per in seen {
+            let tops: Vec<(f32, f32)> = per
+                .iter()
+                .map(|sims| {
+                    let mut x: Vec<f32> = sims.to_vec();
+                    x.sort_by(|a, b| b.total_cmp(a));
+                    (x[0], x[0] - x[1])
+                })
+                .collect();
+            let Some(b) = (0..tops.len()).max_by(|&a, &b| tops[a].0.total_cmp(&tops[b].0)) else { continue };
+            let runner = tops.iter().enumerate().filter(|(i, _)| *i != b).map(|(_, p)| p.0).fold(f32::MIN, f32::max);
+            if tops[b].0 >= 0.85 && tops[b].1 >= 0.08 && tops[b].0 - runner >= 0.06 {
+                v.push_back(b);
+                if v.len() > RECENT_VOTES {
+                    v.pop_front();
+                }
+            }
+        }
+        let mut count = vec![0usize; NT / 40];
+        for &x in v.iter() {
+            count[x] += 1;
+        }
+        let (i, &top) = count.iter().enumerate().max_by_key(|(_, n)| **n)?;
+        (top >= 4 && top * 100 >= v.len() * 85).then_some(i)
+    })
+}
+
+/// Dimentica lo stile del sito riconosciuto finora (un'altra lettura indipendente).
+pub fn forget_style() {
+    VOTES.with(|v| v.borrow_mut().clear());
+}
+
+/// La somiglianza di una carta tenendo conto dello stile del sito: gli altri stili pesano meno.
+pub fn with_style(per_style: &[[f32; 40]], style: usize) -> [f32; 40] {
+    let mut out = [f32::MIN; 40];
+    for (st, sims) in per_style.iter().enumerate() {
+        let penalty = if st == style { 0.0 } else { STYLE_PENALTY };
+        for c in 0..40 {
+            out[c] = out[c].max(sims[c] - penalty);
+        }
+    }
+    out
+}
+
+
 
 #[cfg(test)]
 mod tests {

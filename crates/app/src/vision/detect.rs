@@ -681,10 +681,11 @@ impl Try {
 
     /// Confronto completo.
     fn finish(self, img: &Img) -> Found {
-        let sim = self.m.refine();
+        let (sim, styles) = self.m.refine_styles();
         let score = sim.iter().copied().fold(f32::MIN, f32::max);
         let inside = table_inside(img, &self.rect, &self.card, self.vis);
         let mut view = CardView::new(self.card, self.vis, sim);
+        view.styles = styles;
         view.partial |= self.cols != WHOLE;
         view.at = self.rect.bounds(img);
         Found { rect: self.rect, view, score, inside }
@@ -1135,6 +1136,7 @@ pub fn forget_reading_state() {
     LAST_N.with(|t| t.set(0));
     LAST_CARD_L.with(|l| l.set(0.0));
     FIXTURES.with(|f| f.borrow_mut().clear());
+    super::reference::forget_style();
 }
 
 thread_local! {

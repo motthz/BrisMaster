@@ -102,6 +102,8 @@ pub struct CardView {
     /// Dove sta la carta intera nella schermata letta: sinistra, alto, destra, basso, in frazioni
     /// della schermata (serve alla Psy Fly per volarci sopra).
     pub at: [f32; 4],
+    /// Somiglianza con le 40 carte di ciascuno stile di riferimento (vuota se non si sa).
+    pub styles: Vec<[f32; 40]>,
 }
 
 pub const CARD_W: usize = 100;
@@ -151,7 +153,7 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
 
 impl CardView {
     pub fn new(img: Img, vis: [f32; 2], sim: [f32; 40]) -> CardView {
-        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim), at: [0.0; 4] }
+        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim), at: [0.0; 4], styles: Vec::new() }
     }
 
     /// La carta più probabile fra `among`, e quanto stacca la seconda.
@@ -200,6 +202,24 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
     // Il confronto è costoso: lavora su una fotografia della memoria, senza
     // trattenere il mutex usato anche dall'interfaccia per apprendere le carte.
     let mem = mem.lock().unwrap_or_else(|e| e.into_inner()).isolated();
+    // Il mazzo del sito, dalle carte viste intere di questa lettura (e da quelle prima): le carte
+    // si confrontano soprattutto con quello.
+    let whole: Vec<&[[f32; 40]]> = scene
+        .opp_slot
+        .iter()
+        .chain(&scene.my_slot)
+        .chain(&scene.hand)
+        .filter(|v| !v.partial && !v.styles.is_empty())
+        .map(|v| v.styles.as_slice())
+        .collect();
+    let st = reference::site_style(&whole);
+    if let Some(st) = st {
+        for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
+            if !v.styles.is_empty() {
+                v.sim = reference::with_style(&v.styles, st);
+            }
+        }
+    }
     for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
         recognize(v, &mem);
     }
@@ -1051,6 +1071,11 @@ mod tests {
 
     #[test]
     fn reads_real_screenshot() {
+        // (L'app legge lo schermo di continuo: dopo qualche lettura sa quale mazzo usa il sito.)
+        crate::vision::reference::forget_style();
+        for _ in 0..3 {
+            screenshot();
+        }
         let s = screenshot();
         check(&s);
         assert!(s.trump.as_ref().unwrap().partial);
@@ -1058,7 +1083,10 @@ mod tests {
         // briscola vista a metà, finché non è in memoria, si fa confermare).
         for v in s.opp_slot.iter().chain(&s.my_slot).chain(&s.hand) {
             let (c, margin) = v.best(CardSet::FULL).unwrap();
-            assert!(margin >= 1.4, "{} distacco {margin}", cards::name(c));
+            let mut sc: Vec<(Card, f32)> = (0..40u8).map(|k| (k, v.scores[k as usize])).collect();
+            sc.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let top: Vec<(String, f32)> = sc[..3].iter().map(|x| (cards::name(x.0), x.1)).collect();
+            assert!(margin >= 1.4, "{} distacco {margin} {top:?}", cards::name(c));
         }
     }
 

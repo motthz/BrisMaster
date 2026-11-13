@@ -76,6 +76,28 @@ pub fn card_image(style: usize, c: cards::Card) -> Img {
     sheet.crop(col * cw + 1, row * ch + 1, (col + 1) * cw - 1, (row + 1) * ch - 1)
 }
 
+/// Tutte le carte di riferimento di tutti gli stili, raddrizzate alla misura delle carte lette
+/// (CARD_W x CARD_H).
+pub fn reference_cards() -> Vec<(cards::Card, Img)> {
+    let mut out = Vec::new();
+    for style in &STYLES {
+        let sheet = sheet(style);
+        for c in 0..40u8 {
+            let (x0, y0, x1, y1) = cell_rect(&sheet, style, c);
+            let mut img = Img::new(CARD_W, CARD_H);
+            for y in 0..CARD_H {
+                for x in 0..CARD_W {
+                    let sx = x0 + (x as f32 + 0.5) * (x1 - x0) / CARD_W as f32 - 0.5;
+                    let sy = y0 + (y as f32 + 0.5) * (y1 - y0) / CARD_H as f32 - 0.5;
+                    img.px[y * CARD_W + x] = sheet.sample(sx, sy);
+                }
+            }
+            out.push((c, img));
+        }
+    }
+    out
+}
+
 /// Il rettangolo (x0, y0, x1, y1) della carta `c` nel foglio, senza il margine dello stile.
 fn cell_rect(sheet: &Img, style: &Style, c: cards::Card) -> (f32, f32, f32, f32) {
     let (cw, ch) = (sheet.w as f32 / 10.0, sheet.h as f32 / 4.0);

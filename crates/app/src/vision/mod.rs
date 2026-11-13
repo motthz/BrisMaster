@@ -8,6 +8,7 @@ pub mod detect;
 pub mod live;
 pub mod memory;
 pub mod reference;
+pub mod pips;
 pub mod screen;
 #[cfg(test)]
 pub(crate) mod synth;
@@ -119,6 +120,9 @@ const EXACT: f32 = 0.95;
 const EXACT_GAP: f32 = 0.88;
 const EXACT_BONUS: f32 = 1.0;
 
+/// Quanto scende il punteggio di una carta esclusa dal numero di simboli contati.
+const PIP_PENALTY: f32 = 3.0;
+
 /// Punteggi delle 40 carte dalla somiglianza con le carte di riferimento.
 fn reference_scores(sim: &[f32; 40]) -> [f32; 40] {
     let mut s = sim.map(|v| v * SCALE);
@@ -141,9 +145,22 @@ use std::sync::{Arc, Condvar, Mutex};
 /// carte già viste su questo sito (che quando c'è decide).
 pub fn recognize(view: &mut CardView, mem: &Memory) {
     let mut s = reference_scores(&view.sim);
+    // I simboli contati sulla carta (vista intera) escludono le carte con un altro numero di
+    // simboli, in qualunque mazzo: un quattro di coppe un po' storto non diventa un due.
+    let excluded = match (!view.partial).then(|| pips::count(&view.img)).flatten() {
+        Some(n) => pips::excluded(n),
+        None => [false; 40],
+    };
+    for (c, out) in excluded.iter().enumerate() {
+        if *out {
+            s[c] -= PIP_PENALTY;
+        }
+    }
+    // (Nemmeno la memoria delle carte viste può dare una carta esclusa: un'immagine ricordata
+    // sotto il nome sbagliato non deve ripetere l'errore.)
     for (c, sim) in mem.similarity(&view.img, view.vis).iter().enumerate() {
         if let Some(v) = *sim {
-            if v >= memory::SAME {
+            if v >= memory::SAME && !excluded[c] {
                 s[c] += 6.0 + (v - memory::SAME) * 20.0;
             }
         }
@@ -1341,16 +1358,21 @@ mod bench {
             screen::diagnose(&img).save_png(std::path::Path::new(&out)).unwrap();
         }
         println!("card_l {:.0}", a.card_l);
-        for f in &a.cards {
+        for (i, f) in a.cards.iter().enumerate() {
             let (c, m) = f.view.best(cards::CardSet::FULL).unwrap();
+            if let Ok(dir) = std::env::var("CARTE") {
+                f.view.img.save_png(&std::path::Path::new(&dir).join(format!("carta{i}.png"))).unwrap();
+                println!("  simboli carta{i}: {:?}", pips::count(&f.view.img));
+            }
             println!(
-                "card ({:.0},{:.0}) {:.0}x{:.0} land {} vis {:.2?} score {:.3} {} {:.2}",
+                "card ({:.0},{:.0}) {:.0}x{:.0} land {} vis {:.2?} parz {} score {:.3} {} {:.2}",
                 f.rect.cx,
                 f.rect.cy,
                 2.0 * f.rect.hw,
                 2.0 * f.rect.hh,
                 f.rect.landscape(),
                 f.view.vis,
+                f.view.partial,
                 f.score,
                 cards::name(c),
                 m

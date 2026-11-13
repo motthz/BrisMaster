@@ -4633,7 +4633,7 @@ mod tests {
                 out
             };
             // Le schermate da analizzare, in ordine, con quante letture uguali in più.
-            let seq: Vec<(usize, u64)> = match sim {
+            let seq: Vec<(usize, u64, Option<u64>)> = match sim {
                 None => (0..log.len())
                     .map(|idx| {
                         // Registrazioni a ogni cambiamento: se lo schermo resta fermo l'app lo
@@ -4642,7 +4642,7 @@ mod tests {
                             (Some(t), Some(next)) => (next.saturating_sub(t) / 600).min(3),
                             _ => 0,
                         };
-                        (idx, extra)
+                        (idx, extra, None)
                     })
                     .collect(),
                 Some(cost) => {
@@ -4690,11 +4690,11 @@ mod tests {
                         }
                         out = kept;
                     }
-                    out.into_iter().map(|(i, e, _)| (i, e)).collect()
+                    out.into_iter().map(|(i, e, t)| (i, e, Some(t))).collect()
                 }
             };
             let mut card_px = 0u32;
-            for &(idx, extra) in &seq {
+            for &(idx, extra, at) in &seq {
                 let e = &log[idx];
                 let f = e["frame"].as_str().unwrap();
                 // Come nell'app: le schermate grandi si rimpiccioliscono se le carte restano grandi.
@@ -4720,7 +4720,7 @@ mod tests {
                     a.lost_table();
                 }
                 if let Some(scene) = &scene {
-                    let t = e["t"].as_u64().unwrap_or(idx as u64 * 350);
+                    let t = at.unwrap_or(e["t"].as_u64().unwrap_or(idx as u64 * 350));
                     a.vision.now_ms = Some(t);
                     a.sync(scene);
                     for k in 0..extra {

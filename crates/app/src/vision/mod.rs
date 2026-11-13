@@ -324,7 +324,7 @@ pub struct Reader<S> {
 /// non deve far perdere nessuna carta.
 const CAPTURE_EVERY: std::time::Duration = std::time::Duration::from_millis(16);
 
-impl<S: Located + Send + 'static> Reader<S> {
+impl<S: Located + Send + Clone + 'static> Reader<S> {
     /// `read` trova e riconosce le carte di un gioco; `every` è l'intervallo massimo fra due letture
     /// quando lo schermo non cambia.
     pub fn start(
@@ -421,6 +421,10 @@ impl<S: Located + Send + 'static> Reader<S> {
         let age = lag_ms.clone();
         let completed = last_result.clone();
         std::thread::spawn(move || {
+            // L'ultima schermata analizzata (impronta) e cosa ci si era letto: una schermata
+            // uguale non si analizza di nuovo (al più tre volte di fila: quello che l'app impara
+            // dalle conferme può cambiare la lettura).
+            let mut seen: Option<(Vec<u8>, Option<S>, u32)> = None;
             while !flag.load(Ordering::Relaxed) {
                 let reading = match wait_frame(&queue, &flag, &err_rx) {
                     Err(error) => Reading::Error(error),
@@ -428,7 +432,17 @@ impl<S: Located + Send + 'static> Reader<S> {
                     Ok(Some((table, (k, at, frame_id, _), captured))) => {
                         // Un errore nella lettura di una schermata non deve fermare le letture
                         // dopo: si mostra e si continua.
-                        let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&table, &mem)));
+                        let sig = signature(&table);
+                        let same = seen.as_ref().is_some_and(|(old, _, n)| *n < 3 && difference(old, &sig) < 0.05 && changed_cells(old, &sig) == 0);
+                        let scene = if same {
+                            let s = seen.as_mut().unwrap();
+                            s.2 += 1;
+                            Ok(s.1.clone())
+                        } else {
+                            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&table, &mem)));
+                            seen = r.as_ref().ok().map(|s| (sig, s.clone(), 0));
+                            r
+                        };
                         // La misura delle carte decide quanto rimpicciolire le schermate dopo.
                         card_px.store((detect::last_card_l() * k as f32).round() as u32, Ordering::Relaxed);
                         *frame.lock().unwrap_or_else(|e| e.into_inner()) = Some(table.clone());

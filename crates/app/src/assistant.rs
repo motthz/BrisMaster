@@ -406,6 +406,10 @@ struct Vision {
     last_tick: Option<u64>,
     tick: bool,
     t0: Option<std::time::Instant>,
+    /// Punti dello schermo dove una carta si sta girando o sta arrivando, e fino a quando (ms).
+    turning: Vec<([f32; 4], u64)>,
+    /// Le letture recenti di ogni punto: dove, quale carta, con che distacco, quando (ms).
+    votes: Vec<([f32; 4], Card, f32, u64)>,
     /// Dove sta la briscola scoperta sullo schermo.
     trump_at: Option<[f32; 4]>,
     /// Le carte della lettura prima (quale e dove) e la misura delle carte ferme.
@@ -1137,7 +1141,7 @@ impl Assistant {
             // una partita in corso.
             if self.new_deal(scene) {
                 self.vision.new_deal += tick;
-                if self.vision.new_deal >= 4 || self.pos.step() == Step::Over {
+                if self.vision.new_deal >= 6 || self.pos.step() == Step::Over {
                     self.reset();
                 }
             } else {
@@ -1360,7 +1364,48 @@ impl Assistant {
             })
         };
         // (Una carta di cui non si sa il posto sullo schermo non si può giudicare: resta.)
-        let keep = |v: &CardView| !is_trump(v) && (still(v) || normal(v) || size(v).1 <= 0.0);
+        // Una carta che si sta girando o sta arrivando (non ferma, e stretta o piccola rispetto
+        // alle carte ferme) mostra il dorso o una striscia: non si legge, e nel suo punto non si
+        // legge niente per un attimo, finché non ha finito.
+        let now = self.vision.now_ms;
+        let near = |a: &[f32; 4], v: &CardView| {
+            let (w, h) = size(v);
+            (a[0] + a[2] - v.at[0] - v.at[2]).abs() < w && (a[1] + a[3] - v.at[1] - v.at[3]).abs() < h
+        };
+        if let Some(t) = now {
+            self.vision.turning.retain(|(_, until)| *until > t);
+            if rh > 0.0 {
+                for v in scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot) {
+                    let (w, h) = size(v);
+                    let odd = (h / rh - 1.0).abs() > 0.06 || (w / rw - 1.0).abs() > 0.06;
+                    if odd && h > 0.0 && !still(v) && !is_trump(v) {
+                        self.vision.turning.push((v.at, t + 350));
+                    }
+                }
+            }
+        }
+        let turning = &self.vision.turning;
+        let quiet = |v: &CardView| !turning.iter().any(|(a, _)| near(a, v));
+        // Lettura a maggioranza: in ogni punto vale la carta letta più a lungo nell'ultimo secondo
+        // e mezzo; una lettura diversa di passaggio in mezzo a tante uguali non conta.
+        let votes = &self.vision.votes;
+        let majority = |v: &CardView| {
+            let Some(c) = id(v) else { return true };
+            let (mut mine, mut best_other) = (0.0f32, 0.0f32);
+            let mut tally = [0.0f32; 40];
+            for (_, k, m, _) in votes.iter().filter(|x| near(&x.0, v)) {
+                tally[*k as usize] += 1.0 + m.min(8.0) / 4.0;
+            }
+            for (k, &x) in tally.iter().enumerate() {
+                if k as Card == c { mine = x } else { best_other = best_other.max(x) }
+            }
+            // (La lettura in corso vota anche lei.)
+            let m = v.best(CardSet::FULL).map_or(0.0, |b| b.1);
+            mine + 1.0 + m.min(8.0) / 4.0 >= best_other
+        };
+        let keep = |v: &CardView| {
+            !is_trump(v) && ((quiet(v) && majority(v) && (still(v) || normal(v))) || size(v).1 <= 0.0)
+        };
         let moved = scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot).find(|v| is_trump(v)).cloned();
         let out = Scene {
             trump: scene.trump.clone().or(moved),
@@ -1373,6 +1418,20 @@ impl Assistant {
         sizes.sort_by(|a, b| a.1.total_cmp(&b.1));
         if let Some(&(w, h)) = sizes.get(sizes.len() / 2) {
             self.vision.card_size = if rh > 0.0 && (h / rh - 1.0).abs() < 0.1 { (0.7 * rw + 0.3 * w, 0.7 * rh + 0.3 * h) } else { (w, h) };
+        }
+        if let Some(t) = now {
+            let fresh: Vec<([f32; 4], Card, f32, u64)> = scene
+                .hand
+                .iter()
+                .chain(&scene.opp_slot)
+                .chain(&scene.my_slot)
+                .filter_map(|v| v.best(CardSet::FULL).map(|b| (v.at, b.0, b.1, t)))
+                .collect();
+            // (Un punto rimasto vuoto dimentica le letture: la carta dopo è un'altra carta.)
+            self.vision.votes.retain(|v| v.3 + 1500 > t && fresh.iter().any(|f| {
+                (f.0[0] + f.0[2] - v.0[0] - v.0[2]).abs() < f.0[2] - f.0[0] && (f.0[1] + f.0[3] - v.0[1] - v.0[3]).abs() < f.0[3] - f.0[1]
+            }));
+            self.vision.votes.extend(fresh);
         }
         self.vision.prev_views = scene
             .hand
@@ -2097,7 +2156,10 @@ impl Assistant {
         let distinct = ids.iter().enumerate().all(|(i, a)| a.is_some() && !ids[..i].contains(a)) && !ids.contains(&best(t));
         let fresh = scene.hand.len() == 3 && distinct && scene.opp_slot.is_none() && scene.my_slot.is_none();
         // Una carta della mano nuova è già stata giocata in questa partita: è un'altra partita.
-        let replayed = scene.hand.iter().filter_map(sure).any(|c| self.pos.played.contains(c));
+        // (Due, non una: una carta sola può essere letta male.)
+        let replayed = scene.hand.iter().filter_map(sure).filter(|&c| self.pos.played.contains(c)).count() >= 2;
+        // Tutte e tre lette con sicurezza: tre carte che si stanno girando non sono una mano nuova.
+        let all_sure = scene.hand.iter().filter_map(sure).count() == 3;
         // Briscola diversa: dalla carta riconosciuta (regge anche se cambia lo sfondo), o, se non
         // è sicura, dall'immagine.
         let very_sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= 2.0 * AUTO_MARGIN).map(|b| b.0);
@@ -2119,7 +2181,7 @@ impl Assistant {
         // male (il sette per il sei) non basta a ricominciare.
         let new_hand = scene.hand.iter().filter_map(sure).all(|c| !self.pos.hand.contains(c));
         let deck_over = self.pos.deck_len == 0;
-        fresh && (self.pos.step() == Step::Over || (new_hand && (deck_over || other_trump || replayed)))
+        fresh && (self.pos.step() == Step::Over || (all_sure && new_hand && (deck_over || other_trump || replayed)))
     }
 
     /// Conta le letture in cui lo schermo contraddice la partita inserita (un'altra briscola, una

@@ -1262,7 +1262,9 @@ impl Assistant {
         let (rw, rh) = self.vision.card_size;
         let normal = |v: &CardView| {
             let (w, h) = size(v);
-            rh > 0.0 && (h / rh - 1.0).abs() < 0.025 && (w / rw - 1.0).abs() < 0.025
+            // (Senza l'ora della lettura, nelle prove a uno stato per lettura, basta una misura simile.)
+            let slack = if self.vision.now_ms.is_some() { 0.025 } else { 0.06 };
+            rh > 0.0 && (h / rh - 1.0).abs() < slack && (w / rw - 1.0).abs() < slack
         };
         // La briscola scoperta, vista al suo posto, è la briscola anche quando la lettura la mette
         // in mano o in tavola (le altre carte si stanno muovendo e non si vedono).
@@ -1277,7 +1279,8 @@ impl Assistant {
                 (at[0] + at[2] - v.at[0] - v.at[2]).abs() < w && (at[1] + at[3] - v.at[1] - v.at[3]).abs() < h
             })
         };
-        let keep = |v: &CardView| !is_trump(v) && (still(v) || normal(v));
+        // (Una carta di cui non si sa il posto sullo schermo non si può giudicare: resta.)
+        let keep = |v: &CardView| !is_trump(v) && (still(v) || normal(v) || size(v).1 <= 0.0);
         let moved = scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot).find(|v| is_trump(v)).cloned();
         let out = Scene {
             trump: scene.trump.clone().or(moved),

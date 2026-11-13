@@ -1165,6 +1165,7 @@ impl Assistant {
         // L'ultima carta dell'avversario inserita è smentita dallo schermo: si corregge.
         if prev == sig {
             self.fix_last(scene);
+            self.fix_my_play(scene);
         }
         // I conti delle carte devono tornare sempre: se no, niente consigli finché non tornano.
         if !self.counts_ok() {
@@ -1316,6 +1317,53 @@ impl Assistant {
         self.vision.auto = false;
         if ok {
             self.vision.status = format!("Corretta una carta letta male: era {}, non {}", cards::name(y), cards::name(x));
+        }
+        ok
+    }
+
+    /// La mia ultima giocata è smentita: la carta data per giocata è di nuovo in mano, letta con
+    /// sicurezza, e in tavola c'è (o c'era subito dopo) un'altra delle carte che avevo. Una carta
+    /// della mano, sollevata o letta per un attimo fuori dalla riga, era stata presa per giocata.
+    fn fix_my_play(&mut self, scene: &Scene) -> bool {
+        let sure = |v: &CardView| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0);
+        let hand: Vec<Card> = scene.hand.iter().filter_map(sure).collect();
+        let table: Vec<Card> = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().filter_map(sure).collect();
+        // L'ultima giocata mia, al più una presa fa.
+        let Some(i) = (0..self.history.len()).rev().take(6).find(|&i| {
+            let e = &self.history[i];
+            !e.3 && e.0.step() == Step::MyMove && self.pos.tricks <= e.0.tricks + 1
+        }) else { return false };
+        let at = self.history[i].0;
+        let after = self.history.get(i + 1).map_or(self.pos, |e| e.0);
+        let Some(x) = at.hand.iter().find(|&c| !after.hand.contains(c)) else { return false };
+        // Di nuovo in mano, con sicurezza e più tardi dell'ultima volta in tavola.
+        let s = &self.vision.sightings;
+        if !hand.contains(&x) || s.hand[x as usize].last < s.table[x as usize].last || self.pos.hand.contains(x) {
+            return false;
+        }
+        // Al suo posto è uscita un'altra carta di quella mano: in tavola adesso, o sparita dalla mano.
+        let Some(y) = at.hand.iter().find(|&c| {
+            c != x && !hand.contains(&c) && (table.contains(&c) || s.on_table(c)) && s.table[c as usize].first >= s.table[x as usize].first
+        }) else { return false };
+        while self.history.len() > i {
+            self.undo_entries();
+        }
+        if self.pos.step() != Step::MyMove || !self.pos.allowed().contains(y) {
+            return false;
+        }
+        self.vision.sightings.table[x as usize] = Sighting::default();
+        self.vision.last = None;
+        self.vision.auto = true;
+        let ok = self.enter(y);
+        self.vision.auto = false;
+        // Le prese dopo si rifanno da quello che si è visto.
+        for _ in 0..12 {
+            if self.vision.confirm.is_some() || !self.advance(scene) {
+                break;
+            }
+        }
+        if ok {
+            self.vision.status = format!("Corretta la mia giocata: era {}, non {}", cards::name(y), cards::name(x));
         }
         ok
     }

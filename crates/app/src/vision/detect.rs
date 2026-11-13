@@ -1100,10 +1100,47 @@ fn uncover_fan(img: &Img, hand: &mut [Found], card_l: f32) {
 /// Una carta intera letta senza sicurezza: si prova girata fino a 10 gradi e spostata fino a
 /// quasi metà carta, e se un'altra posizione somiglia chiaramente di più si rilegge lì.
 fn refine_pose(img: &Img, f: &Found) -> Option<Found> {
+    if f.score >= 0.95 {
+        return None;
+    }
+    refine_pose_any(img, f)
+}
+
+/// Una carta letta uguale a quella accanto: si cerca allontanandola da quella (fino a mezza carta,
+/// un po' girata), intera, e vale se lì si legge un'altra carta.
+fn relocate_twin(img: &Img, f: &Found, from: &RotRect) -> Option<Found> {
+    let r = f.rect;
+    let w = r.short();
+    let dir = if r.cx >= from.cx { 1.0 } else { -1.0 };
+    let quick = |rect: &RotRect| reference::quick_tops(&warp(img, rect), &[WHOLE])[0];
+    let turn = |v: (f32, f32), deg: f32| {
+        let (sin, cos) = deg.to_radians().sin_cos();
+        (v.0 * cos - v.1 * sin, v.0 * sin + v.1 * cos)
+    };
+    let mut best: Option<(f32, RotRect)> = None;
+    for deg in [-10.0f32, -7.0, -4.0, 0.0, 4.0, 7.0, 10.0] {
+        let v = turn(r.v, deg);
+        for dx in [0.1f32, 0.2, 0.3, 0.4, 0.5] {
+            for dy in [-0.1f32, 0.0, 0.1] {
+                let rect = RotRect { cx: r.cx + dir * dx * w, cy: r.cy + dy * w, u: (v.1, -v.0), v, ..r };
+                let s = quick(&rect);
+                if best.is_none_or(|b| s > b.0) {
+                    best = Some((s, rect));
+                }
+            }
+        }
+    }
+    let g = Try::with_cols(img, best?.1, WHOLE, WHOLE).finish(img);
+    let same = g.view.best(briscola_core::cards::CardSet::FULL).map(|b| b.0) == f.view.best(briscola_core::cards::CardSet::FULL).map(|b| b.0);
+    (!same).then_some(g)
+}
+
+/// Come `refine_pose`, anche per una carta letta con sicurezza.
+fn refine_pose_any(img: &Img, f: &Found) -> Option<Found> {
     // (Anche una carta creduta coperta di lato, con la sua striscia: se intera somiglia di più,
     // era intera.)
     let strip = f.view.partial && f.view.vis == WHOLE;
-    if f.score >= 0.95 || (f.view.partial && !strip) || f.rect.landscape() {
+    if (f.view.partial && !strip) || f.rect.landscape() {
         return None;
     }
     let r = f.rect;
@@ -1664,10 +1701,26 @@ pub fn scene(img: &Img) -> Scene {
     let mut distinct: Vec<Found> = Vec::new();
     for card in a.cards {
         let id = card.view.best(cards::CardSet::FULL).map(|b| b.0);
-        if !distinct.iter().any(|other| {
-            id.is_some() && id == other.view.best(cards::CardSet::FULL).map(|b| b.0)
-                && other.rect.dist(&card.rect) < 0.8 * card_l
-        }) { distinct.push(card); }
+        let twin = |c: &Found, other: &Found| {
+            let i = c.view.best(cards::CardSet::FULL).map(|b| b.0);
+            i.is_some() && i == other.view.best(cards::CardSet::FULL).map(|b| b.0) && other.rect.dist(&c.rect) < 0.8 * card_l
+        };
+        let _ = id;
+        if !distinct.iter().any(|other| twin(&card, other)) {
+            distinct.push(card);
+            continue;
+        }
+        // La stessa carta due volte, vicina: la copia più debole è spesso un'altra carta accanto
+        // (quasi bianca, come un asso) letta insieme a un pezzo di quella. Si riprova spostata:
+        // se lì c'è un'altra carta, si tiene.
+        let away = distinct.iter().find(|other| twin(&card, other)).map(|o| o.rect);
+        let moved = away
+            .filter(|_| card.view.vis == WHOLE && !card.rect.landscape())
+            .and_then(|a| relocate_twin(img, &card, &a))
+            .filter(|g| g.score >= 0.85 && !distinct.iter().any(|other| twin(g, other)));
+        if let Some(g) = moved {
+            distinct.push(g);
+        }
     }
     // Una scritta o una fascia che attraversa una carta la divide in due pezzi, uno sopra l'altro,
     // ognuno ricostruito come carta intera: due sagome in piedi quasi sovrapposte, tutte e due

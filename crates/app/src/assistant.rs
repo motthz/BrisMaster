@@ -1162,6 +1162,17 @@ impl Assistant {
         } else {
             self.vision.no_trump = 0;
         }
+        // L'ultima carta dell'avversario inserita è smentita dallo schermo: si corregge.
+        if prev == sig {
+            self.fix_last(scene);
+        }
+        // I conti delle carte devono tornare sempre: se no, niente consigli finché non tornano.
+        if !self.counts_ok() {
+            self.vision.inconsistent = true;
+            if !self.rebuild(scene) {
+                self.vision.status = "I conti delle carte non tornano: controllo lo storico e rileggo lo schermo.".into();
+            }
+        }
         // Poi gli eventi dedotti da quello che si è visto, nell'ordine in cui il gioco li vuole.
         let before = self.history.len();
         for _ in 0..12 {
@@ -1240,6 +1251,64 @@ impl Assistant {
             }
         }
         self.vision.seen = Some(sig);
+    }
+
+    /// Nello stesso punto dove si era letta l'ultima carta inserita per l'avversario ora si legge,
+    /// più a lungo e con più sicurezza, una carta diversa: la prima era una lettura sbagliata
+    /// (una carta che finiva di girarsi o di schiarirsi). Si toglie e si mette quella giusta.
+    fn fix_last(&mut self, scene: &Scene) -> bool {
+        let Some((x, _, len)) = self.vision.last.as_ref().map(|l| (l.0, (), l.2)) else { return false };
+        let Some(entry) = self.history.get(len) else { return false };
+        // Solo se dopo non è entrato altro che le carte obbligate, e se era una giocata avversaria.
+        if entry.0.step() != Step::OppMove || self.history[len + 1..].iter().any(|e| !e.3) {
+            return false;
+        }
+        let allowed = entry.0.allowed();
+        let s = &self.vision.sightings;
+        let seen = |c: Card| scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot)
+            .any(|v| v.best(CardSet::FULL).is_some_and(|b| b.0 == c));
+        if seen(x) {
+            return false;
+        }
+        let (tx, f) = (s.table[x as usize], s.frame);
+        let y = [&scene.opp_slot, &scene.my_slot].into_iter().flatten()
+            .filter_map(|v| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0))
+            .find(|&y| {
+                let ty = s.table[y as usize];
+                y != x && allowed.contains(y) && s.hand[y as usize].count == 0
+                    && ty.last == f && ty.count >= tx.count.max(3) && ty.margin > tx.margin
+                    && ty.first > tx.first && ty.first <= tx.last + 2
+            });
+        let Some(y) = y else { return false };
+        while self.history.len() > len {
+            self.undo_entries();
+        }
+        let s = &mut self.vision.sightings;
+        for list in [&mut s.table, &mut s.opponents, &mut s.lone_mine, &mut s.my_side, &mut s.their_side] {
+            list[x as usize] = Sighting::default();
+        }
+        self.vision.last = None;
+        self.vision.auto = true;
+        let ok = self.enter(y);
+        self.vision.auto = false;
+        if ok {
+            self.vision.status = format!("Corretta una carta letta male: era {}, non {}", cards::name(y), cards::name(x));
+        }
+        ok
+    }
+
+    /// I conti che in una partita tornano sempre: nessuna carta in due posti, al più tre carte in
+    /// mano, il mazzo che scende di due a presa e (se tutte le prese si sono viste) due carte
+    /// uscite per presa.
+    fn counts_ok(&self) -> bool {
+        let p = &self.pos;
+        if p.trump_card.is_none() || p.first.is_none() {
+            return true;
+        }
+        let overlap = p.hand.iter().any(|c| p.played.contains(c)) || p.table.is_some_and(|t| p.hand.contains(t) || p.played.contains(t));
+        let deck = p.deck_len == 34u8.saturating_sub(2 * p.tricks);
+        let out = !self.vision.gaps.is_empty() || p.played.len() as u8 == 2 * p.tricks;
+        !overlap && p.hand.len() <= 3 && deck && out
     }
 
     /// Toglie dalla lettura le carte in movimento: una carta che sta entrando, girandosi o
@@ -1404,8 +1473,7 @@ impl Assistant {
                 .filter(|b| {
                     // (Ripartendo da soli vale anche una carta letta senza sicurezza, se è una che
                     // può esserci: deve restare la stessa per più letture, vedi sotto.)
-                    b.1 >= AUTO_MARGIN
-                        || (free && !pos.played.contains(b.0) && !(Some(b.0) == pos.trump_card && pos.deck_len > 2))
+                    b.1 >= AUTO_MARGIN || (free && b.1 >= 0.0 && pos.hand.contains(b.0))
                 })
                 .map(|b| b.0)
         };
@@ -1576,7 +1644,7 @@ impl Assistant {
                 // Una carta vista in tavola che non è mai stata mia: quella comparsa prima.
                 Step::OppMove => (0..40u8)
                     .filter(|&c| allowed.contains(c) && !target.contains(c) && !p.hand.contains(c) && s.hand[c as usize].count == 0)
-                    .filter(|&c| s.table[c as usize].count >= 1 && s.table[c as usize].margin >= SIGHT_MARGIN)
+                    .filter(|&c| s.on_table(c))
                     .min_by_key(|&c| (Some(c) == t && p.hand.len() > target.len() as u32, seen(&s.table[c as usize]))),
                 _ => None,
             };
@@ -2153,6 +2221,14 @@ impl Assistant {
     /// Accetta da sola la carta proposta (senza impararne l'immagine: non è confermata).
     fn auto_accept(&mut self) {
         let Some(c) = self.vision.confirm.take() else { return };
+        // Solo la briscola, che resta ferma sotto gli occhi per tutta la partita: una carta
+        // giocata o pescata letta senza sicurezza non entra mai da sola. Se nessuno la conferma,
+        // quella presa resta non vista e la partita riparte da quello che si vede.
+        if c.step != Step::Trump {
+            self.vision.doubts.push((c.step, c.card));
+            self.vision.gap = true;
+            return;
+        }
         self.vision.auto = true;
         if c.step == self.pos.step() {
             self.enter(c.card);

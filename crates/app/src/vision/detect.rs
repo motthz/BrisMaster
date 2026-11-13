@@ -681,10 +681,11 @@ impl Try {
 
     /// Confronto completo.
     fn finish(self, img: &Img) -> Found {
-        let sim = self.m.refine();
+        let (sim, styles) = self.m.refine_styles();
         let score = sim.iter().copied().fold(f32::MIN, f32::max);
         let inside = table_inside(img, &self.rect, &self.card, self.vis);
         let mut view = CardView::new(self.card, self.vis, sim);
+        view.styles = styles;
         view.partial |= self.cols != WHOLE;
         view.at = self.rect.bounds(img);
         Found { rect: self.rect, view, score, inside }
@@ -967,13 +968,16 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
         }
         tried += 1;
         // Si affina intorno: un po' spostata e girata (la griglia è grossolana).
-        let (sin, cos) = 4f32.to_radians().sin_cos();
-        let turn = |v: (f32, f32), s: f32| (v.0 * cos - s * v.1 * sin, s * v.0 * sin + v.1 * cos);
+        // (Fino a 10 gradi: le mani a ventaglio inclinano le carte ai lati.)
+        let turn = |v: (f32, f32), deg: f32| {
+            let (sin, cos) = deg.to_radians().sin_cos();
+            (v.0 * cos - v.1 * sin, v.0 * sin + v.1 * cos)
+        };
         let mut near = vec![rect];
         for dy in [-0.5f32, 0.0, 0.5] {
             for dx in [-0.5f32, 0.0, 0.5] {
-                for s in [-1.0f32, 0.0, 1.0] {
-                    let v = if s == 0.0 { rect.v } else { turn(rect.v, s) };
+                for deg in [-10.0f32, -7.0, -4.0, 0.0, 4.0, 7.0, 10.0] {
+                    let v = if deg == 0.0 { rect.v } else { turn(rect.v, deg) };
                     let (cx, cy) = (rect.cx + dx * step, rect.cy + dy * step);
                     near.push(RotRect { cx, cy, u: (v.1, -v.0), v, ..rect });
                 }
@@ -1048,6 +1052,129 @@ fn row_cards(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
             f.accepted(SCAN_ACCEPT) || (mean >= 0.72 && f.score >= SCAN_ACCEPT && margin >= 1.0 && traits(&f.view.img, f.view.vis).1 >= MIN_INK)
         })
         .collect()
+}
+
+/// Mano a ventaglio o sovrapposta: due carte vicine della stessa riga che si coprono in parte.
+/// Una delle due copre l'altra, e quella sotto si vede solo per la striscia libera: si provano
+/// le due ipotesi (copre quella di destra o quella di sinistra), confrontando della carta sotto
+/// solo la parte visibile, e si tiene quella che somiglia di più, se somiglia più che vederle
+/// intere. Una carta vista intera per sbaglio (il quattro di coppe con due coppe coperte) somiglia
+/// a un'altra carta (il due di coppe); vista per la parte giusta torna sé stessa.
+fn uncover_fan(img: &Img, hand: &mut [Found], card_l: f32) {
+    for i in 0..hand.len().saturating_sub(1) {
+        let (a, b) = (&hand[i], &hand[i + 1]);
+        if (a.rect.cy - b.rect.cy).abs() > 0.5 * card_l || a.rect.landscape() || b.rect.landscape() {
+            continue;
+        }
+        let w = 0.5 * (a.rect.short() + b.rect.short());
+        let overlap = w - (b.rect.cx - a.rect.cx).abs();
+        if overlap < 0.06 * w || overlap > 0.7 * w {
+            continue;
+        }
+        let seen = ((w - overlap) / w).clamp(0.3, 0.95);
+        // La striscia visibile di una carta coperta da destra o da sinistra (sul suo asse, che può
+        // essere girato rispetto allo schermo: si provano tutte e due e vale la migliore).
+        let strip = |f: &Found, right_covered: bool| -> Found {
+            let r = f.rect;
+            let screen_right = r.u.0 >= 0.0;
+            let cols = if right_covered == screen_right { [0.0, seen] } else { [1.0 - seen, 1.0] };
+            let mut g = Try::with_cols(img, r, f.view.vis, cols).finish(img);
+            g.view.at = f.view.at;
+            g
+        };
+        let left = (a.rect.cx <= b.rect.cx) as usize;
+        let (li, ri) = if left == 1 { (i, i + 1) } else { (i + 1, i) };
+        let base = hand[li].score + hand[ri].score;
+        let left_under = strip(&hand[li], true);
+        let right_under = strip(&hand[ri], false);
+        let h1 = left_under.score + hand[ri].score;
+        let h2 = hand[li].score + right_under.score;
+        if h1 >= h2 && h1 > base + 0.01 {
+            hand[li] = left_under;
+        } else if h2 > h1 && h2 > base + 0.01 {
+            hand[ri] = right_under;
+        }
+    }
+}
+
+/// Una carta intera letta senza sicurezza: si prova girata fino a 10 gradi e spostata fino a
+/// quasi metà carta, e se un'altra posizione somiglia chiaramente di più si rilegge lì.
+fn refine_pose(img: &Img, f: &Found) -> Option<Found> {
+    if f.score >= 0.95 {
+        return None;
+    }
+    refine_pose_any(img, f)
+}
+
+/// Una carta letta uguale a quella accanto: si cerca allontanandola da quella (fino a mezza carta,
+/// un po' girata), intera, e vale se lì si legge un'altra carta.
+fn relocate_twin(img: &Img, f: &Found, from: &RotRect) -> Option<Found> {
+    let r = f.rect;
+    let w = r.short();
+    let dir = if r.cx >= from.cx { 1.0 } else { -1.0 };
+    let quick = |rect: &RotRect| reference::quick_tops(&warp(img, rect), &[WHOLE])[0];
+    let turn = |v: (f32, f32), deg: f32| {
+        let (sin, cos) = deg.to_radians().sin_cos();
+        (v.0 * cos - v.1 * sin, v.0 * sin + v.1 * cos)
+    };
+    let mut best: Option<(f32, RotRect)> = None;
+    for deg in [-10.0f32, -7.0, -4.0, 0.0, 4.0, 7.0, 10.0] {
+        let v = turn(r.v, deg);
+        for dx in [0.1f32, 0.2, 0.3, 0.4, 0.5] {
+            for dy in [-0.1f32, 0.0, 0.1] {
+                let rect = RotRect { cx: r.cx + dir * dx * w, cy: r.cy + dy * w, u: (v.1, -v.0), v, ..r };
+                let s = quick(&rect);
+                if best.is_none_or(|b| s > b.0) {
+                    best = Some((s, rect));
+                }
+            }
+        }
+    }
+    let g = Try::with_cols(img, best?.1, WHOLE, WHOLE).finish(img);
+    let same = g.view.best(briscola_core::cards::CardSet::FULL).map(|b| b.0) == f.view.best(briscola_core::cards::CardSet::FULL).map(|b| b.0);
+    (!same).then_some(g)
+}
+
+/// Come `refine_pose`, anche per una carta letta con sicurezza.
+fn refine_pose_any(img: &Img, f: &Found) -> Option<Found> {
+    // (Anche una carta creduta coperta di lato, con la sua striscia: se intera somiglia di più,
+    // era intera.)
+    let strip = f.view.partial && f.view.vis == WHOLE;
+    if (f.view.partial && !strip) || f.rect.landscape() {
+        return None;
+    }
+    let r = f.rect;
+    let w = r.short();
+    let quick = |rect: &RotRect| reference::quick_tops(&warp(img, rect), &[WHOLE])[0];
+    let turn = |v: (f32, f32), deg: f32| {
+        let (sin, cos) = deg.to_radians().sin_cos();
+        (v.0 * cos - v.1 * sin, v.0 * sin + v.1 * cos)
+    };
+    let base = quick(&r);
+    let mut best = (base, r);
+    for deg in [-10.0f32, -7.0, -4.0, 0.0, 4.0, 7.0, 10.0] {
+        let v = turn(r.v, deg);
+        for dx in [-0.4f32, -0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4] {
+            for dy in [-0.12f32, 0.0, 0.12] {
+                if deg == 0.0 && dx == 0.0 && dy == 0.0 {
+                    continue;
+                }
+                let rect = RotRect { cx: r.cx + dx * w, cy: r.cy + dy * w, u: (v.1, -v.0), v, ..r };
+                let s = quick(&rect);
+                if s > best.0 {
+                    best = (s, rect);
+                }
+            }
+        }
+    }
+    if best.0 < base + 0.03 {
+        return None;
+    }
+    let g = Try::with_cols(img, best.1, WHOLE, WHOLE).finish(img);
+    if g.score <= f.score + if strip { 0.02 } else { 0.0 } {
+        return None;
+    }
+    Some(g)
 }
 
 /// Somiglianza minima per una carta trovata facendo scorrere la finestra.
@@ -1134,7 +1261,9 @@ pub fn forget_reading_state() {
     LAST_TRY.with(|t| t.set(0));
     LAST_N.with(|t| t.set(0));
     LAST_CARD_L.with(|l| l.set(0.0));
+    STEADY.with(|s| s.set((0.0, 0.0)));
     FIXTURES.with(|f| f.borrow_mut().clear());
+    super::reference::forget_style();
 }
 
 thread_local! {
@@ -1220,7 +1349,25 @@ pub fn analyze(img: &Img) -> Analysis {
     LAST_TRY.with(|t| t.set(if a.cards.is_empty() { 0 } else { k }));
     LAST_N.with(|t| t.set(a.cards.len()));
     LAST_CARD_L.with(|l| l.set(if a.cards.is_empty() { 0.0 } else { a.card_l }));
+    // La misura delle carte quando se ne riconoscono bene almeno tre della stessa misura.
+    let good: Vec<&Found> = a.cards.iter().filter(|c| c.score >= 0.9 && !c.view.partial && !c.rect.landscape()).collect();
+    if good.len() >= 3 {
+        let mid = |mut v: Vec<f32>| {
+            v.sort_by(|a, b| a.total_cmp(b));
+            v[v.len() / 2]
+        };
+        let l = mid(good.iter().map(|c| c.rect.long()).collect());
+        let w = mid(good.iter().map(|c| c.rect.short()).collect());
+        if good.iter().all(|c| (c.rect.long() / l - 1.0).abs() < 0.1) {
+            STEADY.with(|s| s.set((l, w)));
+        }
+    }
     a
+}
+
+thread_local! {
+    /// La misura (lunghezza, larghezza) delle carte riconosciute bene nelle letture prima.
+    static STEADY: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
 }
 
 fn analyze_inner(img: &Img, p: &Paper) -> Analysis {
@@ -1264,8 +1411,12 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
     // Zone che non sono una carta intera: forse più carte che si toccano (la mano a ventaglio).
     // Si erode di più, finché la zona si divide in pezzi della misura delle carte già trovate (o,
     // se non ce ne sono ancora, in pezzi lunghi almeno metà della zona) che sono carte.
-    let known_l = (!cards.is_empty()).then(|| median(cards.iter().map(|c| c.rect.long()).collect()));
-    let known_w = (!cards.is_empty()).then(|| median(cards.iter().map(|c| c.rect.short()).collect()));
+    // (Se in questa schermata non c'è ancora nessuna carta da sola, vale la misura delle carte
+    // delle letture prima: la mano attaccata a qualcos'altro di bianco, come un avatar, non sembra
+    // fatta di carte più grandi.)
+    let steady = STEADY.with(|s| s.get());
+    let known_l = (!cards.is_empty()).then(|| median(cards.iter().map(|c| c.rect.long()).collect())).or((steady.0 > 0.0).then_some(steady.0));
+    let known_w = (!cards.is_empty()).then(|| median(cards.iter().map(|c| c.rect.short()).collect())).or((steady.1 > 0.0).then_some(steady.1));
     let mut levels: Vec<(usize, Vec<Blob>)> = Vec::new();
     let mut leftover = Vec::new();
     let mut was_split = false;
@@ -1426,7 +1577,10 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
             // Si cerca una carta intera attorno ai due pezzi (una parte può essere coperta).
             let (hw, hh) = if u.hh >= u.hw { (card_w, card_l) } else { (card_l, card_w) };
             let around = RotRect { hw: u.hw.max(hw / 2.0) + 0.2 * card_w, hh: u.hh.max(hh / 2.0) + 0.2 * card_w, ..u };
-            let found = as_full(img, &u).or_else(|| scan(img, &paper, &around, card_l, card_w).into_iter().next());
+            // (O una carta vista solo in parte: la briscola sotto il mazzo, spezzata dal disegno.)
+            let found = as_full(img, &u)
+                .or_else(|| scan(img, &paper, &around, card_l, card_w).into_iter().next())
+                .or_else(|| as_partial(img, &u, card_l, card_w));
             if let Some(f) = found {
                 cards.push(f);
                 (joined[i], joined[j]) = (true, true);
@@ -1573,10 +1727,26 @@ pub fn scene(img: &Img) -> Scene {
     let mut distinct: Vec<Found> = Vec::new();
     for card in a.cards {
         let id = card.view.best(cards::CardSet::FULL).map(|b| b.0);
-        if !distinct.iter().any(|other| {
-            id.is_some() && id == other.view.best(cards::CardSet::FULL).map(|b| b.0)
-                && other.rect.dist(&card.rect) < 0.8 * card_l
-        }) { distinct.push(card); }
+        let twin = |c: &Found, other: &Found| {
+            let i = c.view.best(cards::CardSet::FULL).map(|b| b.0);
+            i.is_some() && i == other.view.best(cards::CardSet::FULL).map(|b| b.0) && other.rect.dist(&c.rect) < 0.8 * card_l
+        };
+        let _ = id;
+        if !distinct.iter().any(|other| twin(&card, other)) {
+            distinct.push(card);
+            continue;
+        }
+        // La stessa carta due volte, vicina: la copia più debole è spesso un'altra carta accanto
+        // (quasi bianca, come un asso) letta insieme a un pezzo di quella. Si riprova spostata:
+        // se lì c'è un'altra carta, si tiene.
+        let away = distinct.iter().find(|other| twin(&card, other)).map(|o| o.rect);
+        let moved = away
+            .filter(|_| card.view.vis == WHOLE && !card.rect.landscape())
+            .and_then(|a| relocate_twin(img, &card, &a))
+            .filter(|g| g.score >= 0.85 && !distinct.iter().any(|other| twin(g, other)));
+        if let Some(g) = moved {
+            distinct.push(g);
+        }
     }
     // Una scritta o una fascia che attraversa una carta la divide in due pezzi, uno sopra l'altro,
     // ognuno ricostruito come carta intera: due sagome in piedi quasi sovrapposte, tutte e due
@@ -1599,6 +1769,14 @@ pub fn scene(img: &Img) -> Scene {
         whole.retain(|f| !(weak(f) && f.rect.cy > floor + 0.35 * card_l));
     }
     drop_fixtures(&mut whole, card_l);
+    // Le carte lette senza sicurezza si riprovano un po' girate e spostate: il rettangolo trovato
+    // può essere storto (le carte ai lati di un ventaglio) o preso a metà con la carta accanto.
+    let poses = par_map(&whole, |f| Some(refine_pose(img, f)));
+    for (f, better) in whole.iter_mut().zip(poses) {
+        if let Some(Some(g)) = better {
+            *f = g;
+        }
+    }
     a.cards = whole;
     let mut scene = Scene::default();
     let upright = |f: &&Found| !f.rect.landscape();
@@ -1700,6 +1878,8 @@ pub fn scene(img: &Img) -> Scene {
             scene.my_slot = Some(low.view.clone());
         }
     }
+    let mut hand: Vec<Found> = hand.into_iter().cloned().collect();
+    uncover_fan(img, &mut hand, card_l);
     scene.hand = hand.iter().map(|f| f.view.clone()).collect();
     scene
 }

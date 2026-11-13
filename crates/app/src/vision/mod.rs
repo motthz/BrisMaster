@@ -8,6 +8,7 @@ pub mod detect;
 pub mod live;
 pub mod memory;
 pub mod reference;
+pub mod pips;
 pub mod screen;
 #[cfg(test)]
 pub(crate) mod synth;
@@ -102,6 +103,8 @@ pub struct CardView {
     /// Dove sta la carta intera nella schermata letta: sinistra, alto, destra, basso, in frazioni
     /// della schermata (serve alla Psy Fly per volarci sopra).
     pub at: [f32; 4],
+    /// Somiglianza con le 40 carte di ciascuno stile di riferimento (vuota se non si sa).
+    pub styles: Vec<[f32; 40]>,
 }
 
 pub const CARD_W: usize = 100;
@@ -116,6 +119,9 @@ const SCALE: f32 = 8.0;
 const EXACT: f32 = 0.95;
 const EXACT_GAP: f32 = 0.88;
 const EXACT_BONUS: f32 = 1.0;
+
+/// Quanto scende il punteggio di una carta esclusa dal numero di simboli contati.
+const PIP_PENALTY: f32 = 3.0;
 
 /// Punteggi delle 40 carte dalla somiglianza con le carte di riferimento.
 fn reference_scores(sim: &[f32; 40]) -> [f32; 40] {
@@ -139,9 +145,22 @@ use std::sync::{Arc, Condvar, Mutex};
 /// carte già viste su questo sito (che quando c'è decide).
 pub fn recognize(view: &mut CardView, mem: &Memory) {
     let mut s = reference_scores(&view.sim);
+    // I simboli contati sulla carta (vista intera) escludono le carte con un altro numero di
+    // simboli, in qualunque mazzo: un quattro di coppe un po' storto non diventa un due.
+    let excluded = match (!view.partial).then(|| pips::count(&view.img)).flatten() {
+        Some(n) => pips::excluded(n),
+        None => [false; 40],
+    };
+    for (c, out) in excluded.iter().enumerate() {
+        if *out {
+            s[c] -= PIP_PENALTY;
+        }
+    }
+    // (Nemmeno la memoria delle carte viste può dare una carta esclusa: un'immagine ricordata
+    // sotto il nome sbagliato non deve ripetere l'errore.)
     for (c, sim) in mem.similarity(&view.img, view.vis).iter().enumerate() {
         if let Some(v) = *sim {
-            if v >= memory::SAME {
+            if v >= memory::SAME && !excluded[c] {
                 s[c] += 6.0 + (v - memory::SAME) * 20.0;
             }
         }
@@ -151,7 +170,7 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
 
 impl CardView {
     pub fn new(img: Img, vis: [f32; 2], sim: [f32; 40]) -> CardView {
-        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim), at: [0.0; 4] }
+        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim), at: [0.0; 4], styles: Vec::new() }
     }
 
     /// La carta più probabile fra `among`, e quanto stacca la seconda.
@@ -200,6 +219,24 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
     // Il confronto è costoso: lavora su una fotografia della memoria, senza
     // trattenere il mutex usato anche dall'interfaccia per apprendere le carte.
     let mem = mem.lock().unwrap_or_else(|e| e.into_inner()).isolated();
+    // Il mazzo del sito, dalle carte viste intere di questa lettura (e da quelle prima): le carte
+    // si confrontano soprattutto con quello.
+    let whole: Vec<&[[f32; 40]]> = scene
+        .opp_slot
+        .iter()
+        .chain(&scene.my_slot)
+        .chain(&scene.hand)
+        .filter(|v| !v.partial && !v.styles.is_empty())
+        .map(|v| v.styles.as_slice())
+        .collect();
+    let st = reference::site_style(&whole);
+    if let Some(st) = st {
+        for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
+            if !v.styles.is_empty() {
+                v.sim = reference::with_style(&v.styles, st);
+            }
+        }
+    }
     for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
         recognize(v, &mem);
     }
@@ -324,7 +361,7 @@ pub struct Reader<S> {
 /// non deve far perdere nessuna carta.
 const CAPTURE_EVERY: std::time::Duration = std::time::Duration::from_millis(16);
 
-impl<S: Located + Send + 'static> Reader<S> {
+impl<S: Located + Send + Clone + 'static> Reader<S> {
     /// `read` trova e riconosce le carte di un gioco; `every` è l'intervallo massimo fra due letture
     /// quando lo schermo non cambia.
     pub fn start(
@@ -421,6 +458,10 @@ impl<S: Located + Send + 'static> Reader<S> {
         let age = lag_ms.clone();
         let completed = last_result.clone();
         std::thread::spawn(move || {
+            // L'ultima schermata analizzata (impronta) e cosa ci si era letto: una schermata
+            // uguale non si analizza di nuovo (al più tre volte di fila: quello che l'app impara
+            // dalle conferme può cambiare la lettura).
+            let mut seen: Option<(Vec<u8>, Option<S>, u32)> = None;
             while !flag.load(Ordering::Relaxed) {
                 let reading = match wait_frame(&queue, &flag, &err_rx) {
                     Err(error) => Reading::Error(error),
@@ -428,7 +469,17 @@ impl<S: Located + Send + 'static> Reader<S> {
                     Ok(Some((table, (k, at, frame_id, _), captured))) => {
                         // Un errore nella lettura di una schermata non deve fermare le letture
                         // dopo: si mostra e si continua.
-                        let scene = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&table, &mem)));
+                        let sig = signature(&table);
+                        let same = seen.as_ref().is_some_and(|(old, _, n)| *n < 3 && difference(old, &sig) < 0.05 && changed_cells(old, &sig) == 0);
+                        let scene = if same {
+                            let s = seen.as_mut().unwrap();
+                            s.2 += 1;
+                            Ok(s.1.clone())
+                        } else {
+                            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&table, &mem)));
+                            seen = r.as_ref().ok().map(|s| (sig, s.clone(), 0));
+                            r
+                        };
                         // La misura delle carte decide quanto rimpicciolire le schermate dopo.
                         card_px.store((detect::last_card_l() * k as f32).round() as u32, Ordering::Relaxed);
                         *frame.lock().unwrap_or_else(|e| e.into_inner()) = Some(table.clone());
@@ -1037,6 +1088,11 @@ mod tests {
 
     #[test]
     fn reads_real_screenshot() {
+        // (L'app legge lo schermo di continuo: dopo qualche lettura sa quale mazzo usa il sito.)
+        crate::vision::reference::forget_style();
+        for _ in 0..3 {
+            screenshot();
+        }
         let s = screenshot();
         check(&s);
         assert!(s.trump.as_ref().unwrap().partial);
@@ -1044,7 +1100,10 @@ mod tests {
         // briscola vista a metà, finché non è in memoria, si fa confermare).
         for v in s.opp_slot.iter().chain(&s.my_slot).chain(&s.hand) {
             let (c, margin) = v.best(CardSet::FULL).unwrap();
-            assert!(margin >= 1.4, "{} distacco {margin}", cards::name(c));
+            let mut sc: Vec<(Card, f32)> = (0..40u8).map(|k| (k, v.scores[k as usize])).collect();
+            sc.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let top: Vec<(String, f32)> = sc[..3].iter().map(|x| (cards::name(x.0), x.1)).collect();
+            assert!(margin >= 1.4, "{} distacco {margin} {top:?}", cards::name(c));
         }
     }
 
@@ -1299,16 +1358,30 @@ mod bench {
             screen::diagnose(&img).save_png(std::path::Path::new(&out)).unwrap();
         }
         println!("card_l {:.0}", a.card_l);
-        for f in &a.cards {
+        if let Ok(prima) = std::env::var("SCENA") {
+            for p in prima.split(',').filter(|p| !p.is_empty()) {
+                let im = capture::load_png(std::path::Path::new(p)).unwrap();
+                let _ = detect::scene(&im);
+            }
+            let sc = detect::scene(&img);
+            let show = |v: &CardView| format!("{}({:.1})", cards::short(v.best(cards::CardSet::FULL).unwrap().0), v.best(cards::CardSet::FULL).unwrap().1);
+            println!("scena: B {:?} A {:?} T {:?} M {:?}", sc.trump.as_ref().map(show), sc.opp_slot.as_ref().map(show), sc.my_slot.as_ref().map(show), sc.hand.iter().map(show).collect::<Vec<_>>());
+        }
+        for (i, f) in a.cards.iter().enumerate() {
             let (c, m) = f.view.best(cards::CardSet::FULL).unwrap();
+            if let Ok(dir) = std::env::var("CARTE") {
+                f.view.img.save_png(&std::path::Path::new(&dir).join(format!("carta{i}.png"))).unwrap();
+                println!("  simboli carta{i}: {:?}", pips::count(&f.view.img));
+            }
             println!(
-                "card ({:.0},{:.0}) {:.0}x{:.0} land {} vis {:.2?} score {:.3} {} {:.2}",
+                "card ({:.0},{:.0}) {:.0}x{:.0} land {} vis {:.2?} parz {} score {:.3} {} {:.2}",
                 f.rect.cx,
                 f.rect.cy,
                 2.0 * f.rect.hw,
                 2.0 * f.rect.hh,
                 f.rect.landscape(),
                 f.view.vis,
+                f.view.partial,
                 f.score,
                 cards::name(c),
                 m

@@ -3852,8 +3852,9 @@ mod tests {
         assert_eq!(a.pos.hand.len(), 3);
         assert_eq!(a.pos.step(), Step::MyMove);
         let sea = read_briscola(&shot("solitalian_mare.jpg"), &mem).expect("mare");
-        // La partita nuova si riconosce dopo qualche lettura uguale (circa un secondo e mezzo).
-        for _ in 0..3 {
+        // La partita nuova si riconosce dopo qualche lettura uguale (circa due secondi): una
+        // lettura confusa di passaggio non deve far ricominciare la partita.
+        for _ in 0..4 {
             show(&mut a, &sea);
         }
         assert_eq!(a.pos.trump_card, Some(c(3, 1)), "briscola della partita nuova");
@@ -3941,7 +3942,7 @@ mod tests {
         // Il sito distribuisce di nuovo: briscola diversa.
         let new_hand = vec![seen(c(2, 0), 4.0), seen(c(3, 4), 4.0), seen(c(1, 5), 4.0)];
         let deal = Scene { trump: Some(seen(c(1, 2), 4.0)), hand: new_hand, ..Default::default() };
-        for _ in 0..3 {
+        for _ in 0..4 {
             show(&mut a, &deal);
         }
         assert_eq!(a.pos.trump_card, Some(c(1, 2)));

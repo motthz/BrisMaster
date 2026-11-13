@@ -1270,6 +1270,17 @@ impl Assistant {
         if seen(x) {
             return false;
         }
+        // La presa di quella carta è ancora in tavola: se rispondeva alla mia, la mia si vede
+        // ancora lì; se apriva, non ho ancora risposto.
+        let on_table = |c: Card| [&scene.opp_slot, &scene.my_slot].into_iter().flatten()
+            .any(|v| v.best(CardSet::FULL).is_some_and(|b| b.0 == c));
+        let same_trick = match entry.0.table {
+            Some(m) => on_table(m),
+            None => self.pos.table == Some(x),
+        };
+        if !same_trick {
+            return false;
+        }
         let (tx, f) = (s.table[x as usize], s.frame);
         let y = [&scene.opp_slot, &scene.my_slot].into_iter().flatten()
             .filter_map(|v| v.best(CardSet::FULL).filter(|b| b.1 >= AUTO_MARGIN).map(|b| b.0))
@@ -1277,7 +1288,7 @@ impl Assistant {
                 let ty = s.table[y as usize];
                 y != x && allowed.contains(y) && s.hand[y as usize].count == 0
                     && ty.last == f && ty.count >= tx.count.max(3) && ty.margin > tx.margin
-                    && ty.first > tx.first && ty.first <= tx.last + 2
+                    && ty.first > tx.first && ty.first <= tx.last + 1
             });
         let Some(y) = y else { return false };
         while self.history.len() > len {

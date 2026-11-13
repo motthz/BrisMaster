@@ -412,6 +412,8 @@ struct Vision {
     prev_views: Vec<(Card, [f32; 4])>,
     card_size: (f32, f32),
     table_size: (f32, f32),
+    /// I centri delle caselle del tavolo dove si sono viste carte ferme.
+    slots: Vec<[f32; 2]>,
     /// La lettura (mano e carta in tavola) a cui rimettersi in pari, e da quante letture è uguale.
     behind: (Vec<Card>, Option<Card>, u32),
     /// Dopo una ripartenza a tavolo vuoto chi apre è una supposizione (io), e da quale lettura.
@@ -1427,7 +1429,16 @@ impl Assistant {
         };
         // (Una carta di cui non si sa il posto sullo schermo non si può giudicare: resta.)
         let keep = |v: &CardView| !is_trump(v) && (still(v) || normal(v) || size(v).1 <= 0.0);
-        let keep_table = |v: &CardView| !is_trump(v) && (still(v) || normal_table(v) || size(v).1 <= 0.0);
+        // Le caselle del tavolo dove si sono viste carte ferme: una carta lì non si sta muovendo,
+        // anche se il contorno (un asso quasi bianco, un bordo colorato) la fa sembrare più grande.
+        let slots = self.vision.slots.clone();
+        let in_slot = |v: &CardView| {
+            let (w, h) = size(v);
+            let (cx, cy) = ((v.at[0] + v.at[2]) / 2.0, (v.at[1] + v.at[3]) / 2.0);
+            slots.iter().any(|s| (s[0] - cx).abs() < 0.1 * w && (s[1] - cy).abs() < 0.1 * h)
+                && table_size.1 > 0.0 && (h / table_size.1 - 1.0).abs() < 0.15 && (w / table_size.0 - 1.0).abs() < 0.2
+        };
+        let keep_table = |v: &CardView| !is_trump(v) && (still(v) || normal_table(v) || in_slot(v) || size(v).1 <= 0.0);
         let moved = scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot).find(|v| is_trump(v)).cloned();
         let out = Scene {
             trump: scene.trump.clone().or(moved),
@@ -1447,6 +1458,16 @@ impl Assistant {
         };
         self.vision.card_size = update(hand_size, scene.hand.iter().collect());
         self.vision.table_size = update(table_size, scene.opp_slot.iter().chain(&scene.my_slot).collect());
+        for v in scene.opp_slot.iter().chain(&scene.my_slot).filter(|v| still(v) && normal_table(v)) {
+            let c = [(v.at[0] + v.at[2]) / 2.0, (v.at[1] + v.at[3]) / 2.0];
+            let (w, h) = size(v);
+            let n = self.vision.slots.len();
+            match self.vision.slots.iter_mut().find(|s| (s[0] - c[0]).abs() < 0.3 * w && (s[1] - c[1]).abs() < 0.3 * h) {
+                Some(s) => *s = [0.8 * s[0] + 0.2 * c[0], 0.8 * s[1] + 0.2 * c[1]],
+                None if n < 4 => self.vision.slots.push(c),
+                None => {}
+            }
+        }
         self.vision.prev_views = scene
             .hand
             .iter()

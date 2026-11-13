@@ -1261,6 +1261,7 @@ pub fn forget_reading_state() {
     LAST_TRY.with(|t| t.set(0));
     LAST_N.with(|t| t.set(0));
     LAST_CARD_L.with(|l| l.set(0.0));
+    STEADY.with(|s| s.set((0.0, 0.0)));
     FIXTURES.with(|f| f.borrow_mut().clear());
     super::reference::forget_style();
 }
@@ -1348,7 +1349,25 @@ pub fn analyze(img: &Img) -> Analysis {
     LAST_TRY.with(|t| t.set(if a.cards.is_empty() { 0 } else { k }));
     LAST_N.with(|t| t.set(a.cards.len()));
     LAST_CARD_L.with(|l| l.set(if a.cards.is_empty() { 0.0 } else { a.card_l }));
+    // La misura delle carte quando se ne riconoscono bene almeno tre della stessa misura.
+    let good: Vec<&Found> = a.cards.iter().filter(|c| c.score >= 0.9 && !c.view.partial && !c.rect.landscape()).collect();
+    if good.len() >= 3 {
+        let mid = |mut v: Vec<f32>| {
+            v.sort_by(|a, b| a.total_cmp(b));
+            v[v.len() / 2]
+        };
+        let l = mid(good.iter().map(|c| c.rect.long()).collect());
+        let w = mid(good.iter().map(|c| c.rect.short()).collect());
+        if good.iter().all(|c| (c.rect.long() / l - 1.0).abs() < 0.1) {
+            STEADY.with(|s| s.set((l, w)));
+        }
+    }
     a
+}
+
+thread_local! {
+    /// La misura (lunghezza, larghezza) delle carte riconosciute bene nelle letture prima.
+    static STEADY: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
 }
 
 fn analyze_inner(img: &Img, p: &Paper) -> Analysis {
@@ -1392,8 +1411,12 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
     // Zone che non sono una carta intera: forse più carte che si toccano (la mano a ventaglio).
     // Si erode di più, finché la zona si divide in pezzi della misura delle carte già trovate (o,
     // se non ce ne sono ancora, in pezzi lunghi almeno metà della zona) che sono carte.
-    let known_l = (!cards.is_empty()).then(|| median(cards.iter().map(|c| c.rect.long()).collect()));
-    let known_w = (!cards.is_empty()).then(|| median(cards.iter().map(|c| c.rect.short()).collect()));
+    // (Se in questa schermata non c'è ancora nessuna carta da sola, vale la misura delle carte
+    // delle letture prima: la mano attaccata a qualcos'altro di bianco, come un avatar, non sembra
+    // fatta di carte più grandi.)
+    let steady = STEADY.with(|s| s.get());
+    let known_l = (!cards.is_empty()).then(|| median(cards.iter().map(|c| c.rect.long()).collect())).or((steady.0 > 0.0).then_some(steady.0));
+    let known_w = (!cards.is_empty()).then(|| median(cards.iter().map(|c| c.rect.short()).collect())).or((steady.1 > 0.0).then_some(steady.1));
     let mut levels: Vec<(usize, Vec<Blob>)> = Vec::new();
     let mut leftover = Vec::new();
     let mut was_split = false;

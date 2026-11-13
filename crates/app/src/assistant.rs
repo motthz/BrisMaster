@@ -409,7 +409,7 @@ struct Vision {
     /// Dove sta la briscola scoperta sullo schermo.
     trump_at: Option<[f32; 4]>,
     /// Le carte della lettura prima (quale e dove) e la misura delle carte ferme.
-    prev_views: Vec<(Card, [f32; 4], Option<u64>)>,
+    prev_views: Vec<(Card, [f32; 4])>,
     card_size: (f32, f32),
     /// La lettura (mano e carta in tavola) a cui rimettersi in pari, e da quante letture è uguale.
     behind: (Vec<Card>, Option<Card>, u32),
@@ -1249,24 +1249,15 @@ impl Assistant {
         let id = |v: &CardView| v.best(CardSet::FULL).map(|b| b.0);
         let size = |v: &CardView| (v.at[2] - v.at[0], v.at[3] - v.at[1]);
         let prev = std::mem::take(&mut self.vision.prev_views);
-        let now = self.vision.now_ms;
-        // Da quando la carta è lì, uguale: la prima lettura in cui si è vista così.
-        let since = |v: &CardView| {
+        let still = |v: &CardView| {
             let (w, h) = size(v);
-            prev.iter().find(|(c, at, _)| {
+            prev.iter().any(|(c, at)| {
                 Some(*c) == id(v)
                     && (at[0] + at[2] - v.at[0] - v.at[2]).abs() < 0.08 * w
                     && (at[1] + at[3] - v.at[1] - v.at[3]).abs() < 0.08 * h
                     && ((at[3] - at[1]) - h).abs() < 0.04 * h
                     && ((at[2] - at[0]) - w).abs() < 0.04 * w
-            }).map(|p| p.2)
-        };
-        // Ferma: uguale e nello stesso punto da almeno 400 ms (una carta che finisce di girarsi o
-        // di schiarirsi si legge per un attimo come un'altra, anche due letture di fila).
-        let still = |v: &CardView| match (since(v), now) {
-            (Some(Some(t0)), Some(t)) => t.saturating_sub(t0) >= 400,
-            (Some(_), None) => true,
-            _ => false,
+            })
         };
         let (rw, rh) = self.vision.card_size;
         let normal = |v: &CardView| {
@@ -1286,7 +1277,7 @@ impl Assistant {
                 (at[0] + at[2] - v.at[0] - v.at[2]).abs() < w && (at[1] + at[3] - v.at[1] - v.at[3]).abs() < h
             })
         };
-        let keep = |v: &CardView| !is_trump(v) && (still(v) || (now.is_none() && normal(v)));
+        let keep = |v: &CardView| !is_trump(v) && (still(v) || normal(v));
         let moved = scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot).find(|v| is_trump(v)).cloned();
         let out = Scene {
             trump: scene.trump.clone().or(moved),
@@ -1305,7 +1296,7 @@ impl Assistant {
             .iter()
             .chain(&scene.opp_slot)
             .chain(&scene.my_slot)
-            .filter_map(|v| Some((id(v)?, v.at, since(v).unwrap_or(now))))
+            .filter_map(|v| Some((id(v)?, v.at)))
             .collect();
         out
     }

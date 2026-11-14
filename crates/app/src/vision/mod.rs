@@ -168,6 +168,8 @@ struct Focus {
     samples: u32,
     /// La disposizione salvata è già stata letta, e quando si è salvata l'ultima volta.
     loaded: bool,
+    /// Letture di fila in cui la zona non bastava (un altro sito, la finestra spostata).
+    misses: u32,
     saved: Option<std::time::Instant>,
 }
 
@@ -312,7 +314,11 @@ fn focused_scene_inner(img: &Img) -> Scene {
                     v.at = [ox + v.at[0] * sx, oy + v.at[1] * sy, ox + v.at[2] * sx, oy + v.at[3] * sy];
                 }
             }
-            FOCUS.with(|f| f.borrow_mut().since_full += 1);
+            FOCUS.with(|f| {
+                let mut f = f.borrow_mut();
+                f.since_full += 1;
+                f.misses = 0;
+            });
             if std::env::var_os("TEMPI").is_some() {
                 eprintln!("  ritaglio {}x{} di {}x{}", x1 - x0, y1 - y0, img.w, img.h);
             }
@@ -320,8 +326,19 @@ fn focused_scene_inner(img: &Img) -> Scene {
         }
     }
     let scene = detect::scene(img);
+    let cropped = plan.is_some();
     FOCUS.with(|f| {
         let mut f = f.borrow_mut();
+        // La zona non basta più per tre letture di fila: si dimentica e si impara di nuovo.
+        if cropped {
+            f.misses += 1;
+            if f.misses >= 3 {
+                f.boxes.clear();
+                f.seen_opp = false;
+                f.seen_mine = false;
+                f.misses = 0;
+            }
+        }
         f.since_full = 0;
         f.last_count = count(&scene);
         f.seen_opp |= scene.opp_slot.is_some();

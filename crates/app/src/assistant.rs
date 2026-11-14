@@ -1437,6 +1437,22 @@ impl Assistant {
             next.push((v.at, v.scores));
         }
         self.vision.acc_views = next;
+        // Mentre non si pesca la mano ha solo carte mie: una carta "nuova" dello stesso seme di una
+        // mia carta che in questa lettura non si vede è quella, letta male.
+        if matches!(self.pos.step(), Step::MyMove | Step::OppMove) && out.hand.len() == self.pos.hand.len() as usize {
+            let best = |v: &CardView| v.best(CardSet::FULL).map(|b| b.0);
+            let read: Vec<Option<Card>> = out.hand.iter().map(best).collect();
+            let unseen: Vec<Card> = self.pos.hand.iter().filter(|c| !read.contains(&Some(*c))).collect();
+            for v in out.hand.iter_mut() {
+                let Some(c) = best(v) else { continue };
+                if self.pos.hand.contains(c) {
+                    continue;
+                }
+                if let [k] = unseen.iter().copied().filter(|&k| cards::suit(k) == cards::suit(c)).collect::<Vec<_>>().as_slice() {
+                    v.scores[*k as usize] = v.scores[*k as usize].max(v.scores[c as usize] + 1.0);
+                }
+            }
+        }
         let out_of_game = self.pos.played;
         let table = self.pos.table;
         for v in out.trump.iter_mut().chain(out.opp_slot.iter_mut()).chain(out.my_slot.iter_mut()).chain(out.hand.iter_mut()) {
@@ -3296,6 +3312,23 @@ impl Sightings {
         let allowed = pos.allowed().union(CardSet::FULL.minus(pos.played).minus(pos.hand));
         (0..40u8).any(|c| {
             allowed.contains(c) && !pos.hand.contains(c) && Some(c) != pos.table && self.in_hand(c) && !self.on_table(c)
+                && self.misread_of(pos, c).is_none()
+        })
+    }
+
+    /// La carta `c`, che non ho, è una mia carta letta male: sta proprio dove stava una mia carta
+    /// dello stesso seme che adesso non si vede (un due letto tre mentre il ventaglio si
+    /// ridispone), e quella non è mai andata in tavola.
+    fn misread_of(&self, pos: &Position, c: Card) -> Option<Card> {
+        let here = self.hand_places[c as usize]?;
+        pos.hand.iter().find(|&k| {
+            let Some(p) = self.hand_places[k as usize] else { return false };
+            let w = (p[2] - p[0]).max(here[2] - here[0]);
+            cards::suit(k) == cards::suit(c)
+                && ((p[0] + p[2]) - (here[0] + here[2])).abs() / 2.0 < 0.35 * w
+                && self.table[k as usize].count == 0
+                && self.hand[k as usize].last < self.hand[c as usize].last
+                && self.hand[c as usize].first > self.hand[k as usize].first
         })
     }
 
@@ -3520,6 +3553,12 @@ impl Sightings {
         let new = b.iter().filter(|c| !pos.hand.contains(**c)).count();
         let n = pos.hand.len() as usize;
         let fits = (b.len() == n && new == 1) || (b.len() + 1 == n && new == 0 && pos.deck_len == 0);
+        // (Una carta "nuova" che è solo una mia carta letta male non dice niente.)
+        if let Some(&fresh) = b.iter().find(|c| !pos.hand.contains(**c)) {
+            if self.misread_of(pos, fresh).is_some() {
+                return None;
+            }
+        }
         match missing.as_slice() {
             // (A mazzo finito la mano si accorcia e basta: prima di dire che la carta è uscita
             // deve mancare da un po', perché una carta coperta dalle altre torna a vedersi.)
@@ -5143,6 +5182,9 @@ mod tests {
                         a.pos.hand.iter().map(cards::short).collect::<Vec<_>>().join(" "),
                         a.pos.table.map(cards::short)
                     );
+                    if std::env::var_os("STATO").is_some() && !a.vision.status.is_empty() {
+                        println!("      stato: {}", a.vision.status);
+                    }
                 }
                 let prev_hand = std::mem::replace(&mut before, truth_hand.clone());
                 before.extend(prev_hand);

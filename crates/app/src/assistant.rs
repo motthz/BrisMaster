@@ -333,8 +333,6 @@ const AUTO_ACCEPT: u32 = 6;
 
 /// Letture con lo schermo cambiato e la partita ferma prima di ricostruirla dallo storico.
 const STALL: u32 = 8;
-/// Quanto pesa meno, nella lettura, una carta già uscita dal gioco.
-const RULE_PENALTY: f32 = 4.0;
 /// Letture con la partita ferma e lo schermo più avanti dopo le quali si guarda indietro.
 const BEHIND: u32 = 4;
 /// Letture con la partita ferma dopo le quali si riparte da soli da quello che si vede.
@@ -1411,8 +1409,8 @@ impl Assistant {
     /// nello stesso punto della lettura prima) o con la misura delle carte ferme viste finora.
     /// Le letture di una carta ferma nello stesso punto si sommano: una lettura sbagliata di
     /// passaggio (una carta che si sta schiarendo, girando, coprendo per un attimo) in mezzo a
-    /// tante giuste non cambia la carta. E le carte già uscite dal gioco, per le regole, non
-    /// possono essere lì: pesano molto meno.
+    /// tante giuste non cambia la carta. (Una penalità alle carte già uscite dal gioco rendeva
+    /// definitivo ogni errore già entrato nella partita: non c'è.)
     fn smooth(&mut self, scene: &Scene) -> Scene {
         let mut out = scene.clone();
         let size = |v: &CardView| (v.at[2] - v.at[0], v.at[3] - v.at[1]);
@@ -1443,7 +1441,9 @@ impl Assistant {
             let best = |v: &CardView| v.best(CardSet::FULL).map(|b| b.0);
             let read: Vec<Option<Card>> = out.hand.iter().map(best).collect();
             let unseen: Vec<Card> = self.pos.hand.iter().filter(|c| !read.contains(&Some(*c))).collect();
-            for v in out.hand.iter_mut() {
+            // (Una carta sola diversa: una mano tutta nuova è una partita nuova, non errori.)
+            let strangers = read.iter().filter(|c| c.is_none_or(|c| !self.pos.hand.contains(c))).count();
+            for v in out.hand.iter_mut().filter(|_| strangers == 1) {
                 let Some(c) = best(v) else { continue };
                 if self.pos.hand.contains(c) {
                     continue;
@@ -1461,13 +1461,6 @@ impl Assistant {
                 if let [k] = candidates.as_slice() {
                     v.scores[*k as usize] = v.scores[*k as usize].max(v.scores[c as usize] + 1.0);
                 }
-            }
-        }
-        let out_of_game = self.pos.played;
-        let table = self.pos.table;
-        for v in out.trump.iter_mut().chain(out.opp_slot.iter_mut()).chain(out.my_slot.iter_mut()).chain(out.hand.iter_mut()) {
-            for c in out_of_game.iter().filter(|&c| Some(c) != table) {
-                v.scores[c as usize] -= RULE_PENALTY;
             }
         }
         out

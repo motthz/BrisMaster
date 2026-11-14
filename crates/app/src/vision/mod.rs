@@ -306,7 +306,11 @@ fn focused_scene_inner(img: &Img) -> Scene {
         detect::set_offset(0.0, 0.0);
         // Nella zona c'è almeno quello che c'era all'ultima lettura completa: vale. (Una carta in
         // meno può essere uscita davvero, o tagliata dal bordo della zona: si rilegge tutto.)
-        if count(&scene) >= expected && count(&scene) > 0 {
+        // (E nessuna carta tocca il bordo della zona: una carta tagliata dal ritaglio, o una zona
+        // che non è più quella giusta, si rilegge su tutto lo schermo.)
+        let inside = |v: &CardView| v.at[0] > 0.01 && v.at[1] > 0.01 && v.at[2] < 0.99 && v.at[3] < 0.99;
+        let clear = scene.trump.iter().chain(&scene.opp_slot).chain(&scene.my_slot).chain(&scene.hand).all(|v| v.at[2] <= v.at[0] || inside(v));
+        if clear && count(&scene) >= expected && count(&scene) > 0 {
             let (sx, sy) = ((x1 - x0) as f32 / img.w as f32, (y1 - y0) as f32 / img.h as f32);
             let (ox, oy) = (x0 as f32 / img.w as f32, y0 as f32 / img.h as f32);
             for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {

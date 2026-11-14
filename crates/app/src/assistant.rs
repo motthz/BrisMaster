@@ -1448,7 +1448,17 @@ impl Assistant {
                 if self.pos.hand.contains(c) {
                     continue;
                 }
-                if let [k] = unseen.iter().copied().filter(|&k| cards::suit(k) == cards::suit(c)).collect::<Vec<_>>().as_slice() {
+                // (Solo una mia carta mai vista in tavola, e che stava proprio in quel punto.)
+                let sights = &self.vision.sightings;
+                let w = v.at[2] - v.at[0];
+                let here = (v.at[0] + v.at[2]) / 2.0;
+                let candidates: Vec<Card> = unseen
+                    .iter()
+                    .copied()
+                    .filter(|&k| cards::suit(k) == cards::suit(c) && sights.table.get(k as usize).is_none_or(|t| t.count == 0))
+                    .filter(|&k| sights.hand_places.get(k as usize).copied().flatten().is_some_and(|p| ((p[0] + p[2]) / 2.0 - here).abs() < 0.35 * w))
+                    .collect();
+                if let [k] = candidates.as_slice() {
                     v.scores[*k as usize] = v.scores[*k as usize].max(v.scores[c as usize] + 1.0);
                 }
             }

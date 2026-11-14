@@ -1153,6 +1153,17 @@ impl Assistant {
             self.check_mismatch(scene);
         }
         self.vision.sightings.update(scene);
+        // Una carta in più nella mano piena, mentre non si pesca, è un fantasma.
+        if matches!(self.pos.step(), Step::MyMove | Step::OppMove) && self.pos.hand.len() == 3 && scene.hand.len() > 3 {
+            let extra: Vec<Card> = unmatched_hand(scene, &self.pos).iter().filter_map(|v| v.best(CardSet::FULL).map(|b| b.0)).collect();
+            let s = &mut self.vision.sightings;
+            if s.phantoms.len() < 40 {
+                s.phantoms = vec![0; 40];
+            }
+            for c in extra.into_iter().filter(|&c| Some(c) != self.pos.trump_card && !self.pos.hand.contains(c)) {
+                s.phantoms[c as usize] += 1;
+            }
+        }
         if prev == sig {
             self.check_hand(scene);
         }
@@ -2492,6 +2503,20 @@ impl Assistant {
                 let o = s.opp_sight(card);
                 o.count >= 4 && o.margin >= 1.0 && o.last == s.frame
             }
+            // Una mia carta sparita dalla mano da tre letture, con le altre lette con sicurezza e
+            // proprio quelle che la partita dice: l'ho giocata (il sito la fa volare in tavola).
+            Step::MyMove => {
+                let rest: Vec<Card> = self.pos.hand.iter().filter(|&c| c != card).collect();
+                self.pos.hand.contains(card)
+                    && s.hand.get(card as usize).is_some_and(|h| h.last + 3 <= s.frame)
+                    && s.full_hands.iter().rev().take(3).filter(|(f, h)| *f + 3 > s.frame && {
+                        let mut h = h.clone();
+                        h.sort_unstable();
+                        let mut r = rest.clone();
+                        r.sort_unstable();
+                        h == r
+                    }).count() >= 3
+            }
             _ => false,
         }
     }
@@ -3288,6 +3313,9 @@ struct Sightings {
     /// Carte viste da sole dalla mia parte del tavolo: su molti siti le carte giocate stanno
     /// affiancate e la parte non dice di chi sono; contano per l'avversario se restano visibili.
     lone_mine: Vec<Sighting>,
+    /// Carte lette in mano in più quando la mano era già piena (non si pescava): un pezzo del
+    /// sito preso per carta, non una carta mia. Non si prendono per pescate.
+    phantoms: Vec<u32>,
     /// Carte viste dalla mia parte del tavolo, e dalla parte dell'avversario, comunque sia.
     my_side: Vec<Sighting>,
     their_side: Vec<Sighting>,
@@ -3520,8 +3548,9 @@ impl Sightings {
         let allowed = pos.allowed();
         let opening = pos.tricks == 0 && pos.first == Some(ME) && pos.table.is_none();
         let lead = if opening { self.first_table_card(pos) } else { None };
+        let phantom = |c: Card| self.phantoms.get(c as usize).is_some_and(|&n| n >= 2);
         let sure = (0..40u8)
-            .filter(|&c| allowed.contains(c) && self.in_hand(c))
+            .filter(|&c| allowed.contains(c) && self.in_hand(c) && !phantom(c))
             .min_by_key(|&c| self.hand[c as usize].first);
         // Devo ancora pescare ma la presa dopo è già cominciata: per l'ordine di gioco la mia carta
         // è la prima comparsa in tavola se apro io, la seconda se apre l'avversario. Se non è fra
@@ -3569,7 +3598,7 @@ impl Sightings {
                 let h = &self.hand[c as usize];
                 // (Se poi è comparsa in tavola, anche lì incerta, aspettare non serve più.)
                 let played = self.glimpsed(c) && self.recent(&self.table[c as usize]);
-                allowed.contains(c) && ((h.count >= 20 && self.recent(h)) || (h.count >= 3 && played))
+                allowed.contains(c) && !phantom(c) && ((h.count >= 20 && self.recent(h)) || (h.count >= 3 && played))
             })
             .max_by_key(|&c| (self.hand[c as usize].count, (self.hand[c as usize].margin * 10.0) as i32))
             .map(|c| (c, false))

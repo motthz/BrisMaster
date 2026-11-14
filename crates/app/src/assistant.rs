@@ -333,6 +333,8 @@ const AUTO_ACCEPT: u32 = 6;
 
 /// Letture con lo schermo cambiato e la partita ferma prima di ricostruirla dallo storico.
 const STALL: u32 = 8;
+/// Quanto pesa meno, nella lettura, una carta già uscita dal gioco.
+const RULE_PENALTY: f32 = 4.0;
 /// Letture con la partita ferma e lo schermo più avanti dopo le quali si guarda indietro.
 const BEHIND: u32 = 4;
 /// Letture con la partita ferma dopo le quali si riparte da soli da quello che si vede.
@@ -408,6 +410,10 @@ struct Vision {
     t0: Option<std::time::Instant>,
     /// Dove sta la briscola scoperta sullo schermo.
     trump_at: Option<[f32; 4]>,
+    /// Le carte già imparate in questa partita, e dove (vedi `sync`).
+    learned: Vec<(Card, [i32; 2])>,
+    /// Le carte della lettura prima, dove stavano e i loro punteggi accumulati (vedi `smooth`).
+    acc_views: Vec<([f32; 4], [f32; 40])>,
     /// Le carte della lettura prima (quale e dove) e la misura delle carte ferme.
     prev_views: Vec<(Card, [f32; 4])>,
     card_size: (f32, f32),
@@ -1196,6 +1202,21 @@ impl Assistant {
                 break;
             }
         }
+        // Il mazzo del sito si impara dalle carte certe: in mano per la partita, lette con largo
+        // distacco, da più letture. Ogni posto e inclinazione nuovi della stessa carta sono un
+        // esempio in più. (Le immagini restano solo sul computer, in carte_viste.json.)
+        for v in &scene.hand {
+            let Some((c, m)) = v.best(CardSet::FULL) else { continue };
+            if v.partial || m < 2.0 * AUTO_MARGIN || !self.pos.hand.contains(c) || self.vision.sightings.hand[c as usize].count < 4 {
+                continue;
+            }
+            let spot = [(v.at[0] * 20.0) as i32, (v.at[1] * 20.0) as i32];
+            if self.vision.learned.iter().any(|&(k, p)| k == c && p == spot) {
+                continue;
+            }
+            self.vision.learned.push((c, spot));
+            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&v.img, v.vis, c);
+        }
         // Fine partita non vista: a mazzo finito, se sullo schermo non resta nessuna carta ancora
         // in gioco (né in mano né in tavola) per qualche lettura, la partita è finita anche se le
         // ultime giocate non si sono viste. Si chiude da sola, segnando le prese come non viste.
@@ -1388,7 +1409,47 @@ impl Assistant {
     /// Toglie dalla lettura le carte in movimento: una carta che sta entrando, girandosi o
     /// scivolando sul tavolo si legge spesso come un'altra. Vale solo una carta ferma (uguale e
     /// nello stesso punto della lettura prima) o con la misura delle carte ferme viste finora.
+    /// Le letture di una carta ferma nello stesso punto si sommano: una lettura sbagliata di
+    /// passaggio (una carta che si sta schiarendo, girando, coprendo per un attimo) in mezzo a
+    /// tante giuste non cambia la carta. E le carte già uscite dal gioco, per le regole, non
+    /// possono essere lì: pesano molto meno.
+    fn smooth(&mut self, scene: &Scene) -> Scene {
+        let mut out = scene.clone();
+        let size = |v: &CardView| (v.at[2] - v.at[0], v.at[3] - v.at[1]);
+        let prev = std::mem::take(&mut self.vision.acc_views);
+        let mut next = Vec::new();
+        for v in out.opp_slot.iter_mut().chain(out.my_slot.iter_mut()).chain(out.hand.iter_mut()) {
+            let (w, h) = size(v);
+            if h <= 0.0 {
+                continue;
+            }
+            let same = prev.iter().find(|(at, _)| {
+                (at[0] + at[2] - v.at[0] - v.at[2]).abs() < 0.12 * w
+                    && (at[1] + at[3] - v.at[1] - v.at[3]).abs() < 0.12 * h
+                    && ((at[2] - at[0]) / w - 1.0).abs() < 0.06
+                    && ((at[3] - at[1]) / h - 1.0).abs() < 0.06
+            });
+            if let Some((_, acc)) = same {
+                for c in 0..40 {
+                    v.scores[c] = 0.5 * acc[c] + 0.5 * v.scores[c];
+                }
+            }
+            next.push((v.at, v.scores));
+        }
+        self.vision.acc_views = next;
+        let out_of_game = self.pos.played;
+        let table = self.pos.table;
+        for v in out.trump.iter_mut().chain(out.opp_slot.iter_mut()).chain(out.my_slot.iter_mut()).chain(out.hand.iter_mut()) {
+            for c in out_of_game.iter().filter(|&c| Some(c) != table) {
+                v.scores[c as usize] -= RULE_PENALTY;
+            }
+        }
+        out
+    }
+
     fn settle(&mut self, scene: &Scene) -> Scene {
+        let smoothed = self.smooth(scene);
+        let scene = &smoothed;
         let id = |v: &CardView| v.best(CardSet::FULL).map(|b| b.0);
         let size = |v: &CardView| (v.at[2] - v.at[0], v.at[3] - v.at[1]);
         let prev = std::mem::take(&mut self.vision.prev_views);

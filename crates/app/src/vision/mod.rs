@@ -9,6 +9,7 @@ pub mod live;
 pub mod memory;
 pub mod reference;
 pub mod pips;
+pub mod layout;
 pub mod screen;
 #[cfg(test)]
 pub(crate) mod synth;
@@ -143,6 +144,203 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, sync_channel, Receiver, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 
+thread_local! {
+    /// Dove stanno le carte sullo schermo (vedi `focused_scene`).
+    static FOCUS: std::cell::RefCell<Focus> = std::cell::RefCell::new(Focus::default());
+}
+
+/// La zona dello schermo dove si sono viste le carte nelle ultime letture complete (frazioni:
+/// sinistra, alto, destra, basso), e quante letture sono passate dall'ultima lettura completa.
+#[derive(Default)]
+struct Focus {
+    boxes: std::collections::VecDeque<[f32; 4]>,
+    since_full: u32,
+    size: (usize, usize),
+    /// Carte viste nell'ultima lettura completa.
+    last_count: usize,
+    /// Se le letture complete hanno già visto una carta in ciascuna delle due caselle del tavolo:
+    /// solo allora la zona comprende tutto il tavolo e si può ritagliare.
+    seen_opp: bool,
+    seen_mine: bool,
+    /// Centro della casella dell'avversario e della mia, imparati dalle prese con due carte.
+    opp: Option<[f32; 2]>,
+    mine: Option<[f32; 2]>,
+    samples: u32,
+    /// La disposizione salvata è già stata letta, e quando si è salvata l'ultima volta.
+    loaded: bool,
+    saved: Option<std::time::Instant>,
+}
+
+impl Focus {
+    fn layout(&self) -> layout::Layout {
+        layout::Layout {
+            size: self.size,
+            boxes: self.boxes.iter().copied().collect(),
+            seen_opp: self.seen_opp,
+            seen_mine: self.seen_mine,
+            opp: self.opp,
+            mine: self.mine,
+            samples: self.samples,
+        }
+    }
+}
+
+fn center(v: &CardView) -> [f32; 2] {
+    [(v.at[0] + v.at[2]) / 2.0, (v.at[1] + v.at[3]) / 2.0]
+}
+
+/// La carta sola in tavola va nella casella più vicina fra quelle imparate (su molti siti la metà
+/// del tavolo non dice di chi è); con due carte si impara dove sta ciascuna casella.
+fn place_table(scene: &mut Scene) {
+    FOCUS.with(|f| {
+        let mut f = f.borrow_mut();
+        match (&scene.opp_slot, &scene.my_slot) {
+            (Some(o), Some(m)) => {
+                let (co, cm) = (center(o), center(m));
+                let ema = |old: Option<[f32; 2]>, new: [f32; 2]| match old {
+                    Some(p) => [0.8 * p[0] + 0.2 * new[0], 0.8 * p[1] + 0.2 * new[1]],
+                    None => new,
+                };
+                f.opp = Some(ema(f.opp, co));
+                f.mine = Some(ema(f.mine, cm));
+                f.samples = f.samples.saturating_add(1);
+            }
+            (one_opp, one_mine) if one_opp.is_some() != one_mine.is_some() => {
+                let (Some(o), Some(m)) = (f.opp, f.mine) else { return };
+                if f.samples < 5 || ((o[0] - m[0]).abs() + (o[1] - m[1]).abs()) < 0.02 {
+                    return;
+                }
+                let v = one_opp.as_ref().or(one_mine.as_ref()).unwrap();
+                let c = center(v);
+                let d = |p: [f32; 2]| (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2);
+                let mine_is_nearer = d(m) < d(o);
+                if mine_is_nearer && scene.opp_slot.is_some() {
+                    scene.my_slot = scene.opp_slot.take();
+                } else if !mine_is_nearer && scene.my_slot.is_some() {
+                    scene.opp_slot = scene.my_slot.take();
+                }
+            }
+            _ => {}
+        }
+    });
+}
+
+/// Quante letture al più fra una lettura di tutto lo schermo e l'altra.
+const FULL_EVERY: u32 = 24;
+
+/// Dimentica la zona delle carte (una lettura indipendente, come una partita nuova del banco).
+pub fn forget_focus() {
+    FOCUS.with(|f| *f.borrow_mut() = Focus::default());
+}
+
+/// La zona delle carte di questa lettura, in frazioni dello schermo (`None` se non ci sono carte).
+fn scene_box(scene: &Scene) -> Option<[f32; 4]> {
+    let mut b: Option<[f32; 4]> = None;
+    for v in scene.trump.iter().chain(&scene.opp_slot).chain(&scene.my_slot).chain(&scene.hand) {
+        if v.at[2] <= v.at[0] {
+            continue;
+        }
+        b = Some(match b {
+            None => v.at,
+            Some(x) => [x[0].min(v.at[0]), x[1].min(v.at[1]), x[2].max(v.at[2]), x[3].max(v.at[3])],
+        });
+    }
+    b
+}
+
+fn count(scene: &Scene) -> usize {
+    scene.trump.is_some() as usize + scene.opp_slot.is_some() as usize + scene.my_slot.is_some() as usize + scene.hand.len()
+}
+
+/// Si legge solo la zona dove stanno le carte (con un margine di una carta tutto intorno): il
+/// resto dello schermo (chat, punteggi, pubblicità) non si analizza. Ogni tanto, e se nella zona
+/// si trova meno di quello che c'era, si rilegge tutto lo schermo e la zona si aggiorna.
+fn focused_scene(img: &Img) -> Scene {
+    let mut scene = focused_scene_inner(img);
+    place_table(&mut scene);
+    scene
+}
+
+fn focused_scene_inner(img: &Img) -> Scene {
+    // La disposizione imparata le altre volte su questo schermo (solo dal file sul computer).
+    FOCUS.with(|f| {
+        let mut f = f.borrow_mut();
+        if !f.loaded || f.size != (img.w, img.h) {
+            *f = Focus { size: (img.w, img.h), loaded: true, ..Focus::default() };
+            if let Some(l) = layout::load((img.w, img.h)) {
+                f.boxes = l.boxes.into_iter().collect();
+                f.seen_opp = l.seen_opp;
+                f.seen_mine = l.seen_mine;
+                f.opp = l.opp;
+                f.mine = l.mine;
+                f.samples = l.samples;
+            }
+        }
+    });
+    let plan = FOCUS.with(|f| {
+        let f = f.borrow();
+        if f.size != (img.w, img.h) || f.boxes.len() < 3 || f.since_full >= FULL_EVERY || !(f.seen_opp && f.seen_mine) {
+            return None;
+        }
+        let mut u = f.boxes[0];
+        for b in f.boxes.iter() {
+            u = [u[0].min(b[0]), u[1].min(b[1]), u[2].max(b[2]), u[3].max(b[3])];
+        }
+        // Margine: una carta (la lunghezza delle carte è circa l'altezza della mano).
+        let card = f.boxes.iter().map(|b| b[3] - b[1]).fold(0.0f32, f32::max).min(0.3) * img.h as f32 / img.w.max(1) as f32;
+        let (mx, my) = (card.max(0.04) * 0.8, (card * img.w as f32 / img.h.max(1) as f32).max(0.04) * 0.5);
+        // (Sulla griglia di 1/64 dello schermo, così il ritaglio non cambia a ogni lettura.)
+        let q = |v: f32, up: bool| if up { (v * 64.0).ceil() / 64.0 } else { (v * 64.0).floor() / 64.0 };
+        let r = [q((u[0] - mx).max(0.0), false), q((u[1] - my).max(0.0), false), q((u[2] + mx).min(1.0), true), q((u[3] + 1.6 * my).min(1.0), true)];
+        // Se la zona è quasi tutto lo schermo non serve ritagliare.
+        ((r[2] - r[0]) * (r[3] - r[1]) < 0.7).then_some((r, f.last_count))
+    });
+    if let Some((r, expected)) = plan {
+        let (x0, y0) = ((r[0] * img.w as f32) as usize, (r[1] * img.h as f32) as usize);
+        let (x1, y1) = ((r[2] * img.w as f32) as usize, (r[3] * img.h as f32) as usize);
+        let crop = img.crop(x0, y0, x1, y1);
+        detect::set_offset(x0 as f32, y0 as f32);
+        let mut scene = detect::scene(&crop);
+        detect::set_offset(0.0, 0.0);
+        // Nella zona c'è almeno quello che c'era all'ultima lettura completa: vale. (Una carta in
+        // meno può essere uscita davvero, o tagliata dal bordo della zona: si rilegge tutto.)
+        if count(&scene) >= expected && count(&scene) > 0 {
+            let (sx, sy) = ((x1 - x0) as f32 / img.w as f32, (y1 - y0) as f32 / img.h as f32);
+            let (ox, oy) = (x0 as f32 / img.w as f32, y0 as f32 / img.h as f32);
+            for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
+                if v.at[2] > v.at[0] {
+                    v.at = [ox + v.at[0] * sx, oy + v.at[1] * sy, ox + v.at[2] * sx, oy + v.at[3] * sy];
+                }
+            }
+            FOCUS.with(|f| f.borrow_mut().since_full += 1);
+            if std::env::var_os("TEMPI").is_some() {
+                eprintln!("  ritaglio {}x{} di {}x{}", x1 - x0, y1 - y0, img.w, img.h);
+            }
+            return scene;
+        }
+    }
+    let scene = detect::scene(img);
+    FOCUS.with(|f| {
+        let mut f = f.borrow_mut();
+        f.since_full = 0;
+        f.last_count = count(&scene);
+        f.seen_opp |= scene.opp_slot.is_some();
+        f.seen_mine |= scene.my_slot.is_some();
+        if let Some(b) = scene_box(&scene) {
+            f.boxes.push_back(b);
+            if f.boxes.len() > 30 {
+                f.boxes.pop_front();
+            }
+        }
+        // Si salva sul computer al più ogni mezzo minuto.
+        if f.saved.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(30)) && f.boxes.len() >= 3 {
+            f.saved = Some(std::time::Instant::now());
+            layout::save(&f.layout());
+        }
+    });
+    scene
+}
+
 /// Punteggi della carta: somiglianza con le carte di riferimento, più quella con le immagini delle
 /// carte già viste su questo sito (che quando c'è decide).
 pub fn recognize(view: &mut CardView, mem: &Memory) {
@@ -227,7 +425,7 @@ pub enum Reading<S> {
 /// Lettura per la briscola: trova le carte e le riconosce (None se non c'è nessuna carta scoperta).
 /// La memoria resta bloccata solo mentre si confrontano le carte trovate, non durante la ricerca.
 pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
-    let mut scene = detect::scene(img);
+    let mut scene = focused_scene(img);
     let found = scene.trump.is_some() || !scene.hand.is_empty() || scene.opp_slot.is_some() || scene.my_slot.is_some();
     if !found {
         return None;
@@ -478,6 +676,9 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
             // uguale non si analizza di nuovo (al più tre volte di fila: quello che l'app impara
             // dalle conferme può cambiare la lettura).
             let mut seen: Option<(Vec<u8>, Option<S>, u32)> = None;
+            // Le zone delle carte delle ultime letture: la cattura guarda i cambi solo lì.
+            let mut boxes: std::collections::VecDeque<[f32; 4]> = Default::default();
+            let mut empty = 0u32;
             while !flag.load(Ordering::Relaxed) {
                 let reading = match wait_frame(&queue, &flag, &err_rx) {
                     Err(error) => Reading::Error(error),
@@ -522,6 +723,20 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                                 // Analysis may lag capture; never revive an old frame as fresh.
                                 sp.tracked = Some(captured);
                                 let spots = s.spots();
+                                if let Some(b) = spots.iter().copied().reduce(|a, b| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]) {
+                                    empty = 0;
+                                    boxes.push_back(b);
+                                    if boxes.len() > 40 {
+                                        boxes.pop_front();
+                                    }
+                                    if boxes.len() >= 10 {
+                                        let u = boxes.iter().copied().reduce(|a, b| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]).unwrap();
+                                        let card = spots.iter().map(|r| r[3] - r[1]).fold(0.0f32, f32::max).max(0.05);
+                                        let focus = [(u[0] - card).max(0.0), (u[1] - card).max(0.0), (u[2] + card).min(1.0), (u[3] + card).min(1.0)];
+                                        let q = |v: f32| (v * 32.0).round() / 32.0;
+                                        queue.0.lock().unwrap_or_else(|e| e.into_inner()).set_focus(Some(focus.map(q)));
+                                    }
+                                }
                                 sp.cards = spots.iter().filter_map(|&r| live::CardTrack::new(&table, r)).collect();
                                 sp.template = track::union(&spots).and_then(|u| track::Template::new(&table, u));
                                 sp.shift = [0.0, 0.0];
@@ -536,6 +751,12 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                                 Reading::Scene(s, frame_id)
                             }
                             Ok(None) => {
+                                // Niente carte per un po': si torna a guardare tutto lo schermo.
+                                empty += 1;
+                                if empty >= 5 {
+                                    boxes.clear();
+                                    queue.0.lock().unwrap_or_else(|e| e.into_inner()).set_focus(None);
+                                }
                                 found.lock().unwrap_or_else(|e| e.into_inner()).misses = MISSES;
                                 // Senza un'area scelta, prova il monitor successivo.
                                 if screen::area().lock().unwrap_or_else(|e| e.into_inner()).rect.is_none() {
@@ -648,6 +869,8 @@ pub struct Frames<T = ()> {
     last: Option<Vec<u8>>,
     pushed: Option<std::time::Instant>,
     every: std::time::Duration,
+    /// La zona delle carte (frazioni): i cambi fuori (orologi, chat, pubblicità) non contano.
+    focus: Option<[f32; 4]>,
 }
 
 /// Quante schermate al più restano in attesa.
@@ -669,12 +892,27 @@ impl Frames {
 
 impl<T> Frames<T> {
     pub fn new(every: std::time::Duration) -> Frames<T> {
-        Frames { frames: Default::default(), last: None, pushed: None, every }
+        Frames { frames: Default::default(), last: None, pushed: None, every, focus: None }
     }
 
     /// Come `offer`, con un dato attaccato alla schermata.
+    /// Guarda i cambi solo nella zona `focus` (frazioni dello schermo; `None`: tutto). Una
+    /// schermata ferma si offre comunque a intervalli regolari, quindi niente si perde del tutto.
+    pub fn set_focus(&mut self, focus: Option<[f32; 4]>) {
+        if self.focus != focus {
+            self.focus = focus;
+            self.last = None;
+        }
+    }
+
     pub fn offer_with(&mut self, img: Img, tag: T, now: std::time::Instant) -> bool {
-        let sig = signature(&img);
+        let sig = match self.focus {
+            Some(r) => {
+                let (w, h) = (img.w as f32, img.h as f32);
+                signature(&img.crop((r[0] * w) as usize, (r[1] * h) as usize, (r[2] * w).ceil() as usize, (r[3] * h).ceil() as usize))
+            }
+            None => signature(&img),
+        };
         // Cambiata: nel complesso, o anche solo in un pezzo piccolo (una carta su un monitor 4K
         // con il gioco in finestra cambia poche celle dell'impronta, ma tanto).
         let changed = self.last.as_ref().is_none_or(|l| difference(l, &sig) >= 1.5 || changed_cells(l, &sig) >= 2);
@@ -1379,7 +1617,9 @@ mod bench {
                 let im = capture::load_png(std::path::Path::new(p)).unwrap();
                 let _ = detect::scene(&im);
             }
+            let t1 = std::time::Instant::now();
             let sc = detect::scene(&img);
+            println!("scena in {:?}", t1.elapsed());
             let show = |v: &CardView| format!("{}({:.1})", cards::short(v.best(cards::CardSet::FULL).unwrap().0), v.best(cards::CardSet::FULL).unwrap().1);
             println!("scena: B {:?} A {:?} T {:?} M {:?}", sc.trump.as_ref().map(show), sc.opp_slot.as_ref().map(show), sc.my_slot.as_ref().map(show), sc.hand.iter().map(show).collect::<Vec<_>>());
         }

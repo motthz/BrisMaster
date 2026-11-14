@@ -1153,14 +1153,28 @@ fn refine_pose_any(img: &Img, f: &Found) -> Option<Found> {
     };
     let base = quick(&r);
     let mut best = (base, r);
-    for deg in [-10.0f32, -7.0, -4.0, 0.0, 4.0, 7.0, 10.0] {
+    let at = |deg: f32, dx: f32, dy: f32| {
         let v = turn(r.v, deg);
-        for dx in [-0.4f32, -0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4] {
-            for dy in [-0.12f32, 0.0, 0.12] {
-                if deg == 0.0 && dx == 0.0 && dy == 0.0 {
-                    continue;
-                }
-                let rect = RotRect { cx: r.cx + dx * w, cy: r.cy + dy * w, u: (v.1, -v.0), v, ..r };
+        RotRect { cx: r.cx + dx * w, cy: r.cy + dy * w, u: (v.1, -v.0), v, ..r }
+    };
+    // In due giri: prima posizioni rade (girata o spostata), poi fitte attorno alla migliore.
+    let mut coarse = (base, 0.0f32, 0.0f32, 0.0f32);
+    for deg in [-8.0f32, -4.0, 0.0, 4.0, 8.0] {
+        for dx in [-0.35f32, -0.2, 0.0, 0.2, 0.35] {
+            if deg == 0.0 && dx == 0.0 {
+                continue;
+            }
+            let s = quick(&at(deg, dx, 0.0));
+            if s > coarse.0 {
+                coarse = (s, deg, dx, 0.0);
+            }
+        }
+    }
+    let (_, d0, x0, _) = coarse;
+    for deg in [d0 - 2.5, d0, d0 + 2.5] {
+        for dx in [x0 - 0.08, x0, x0 + 0.08] {
+            for dy in [-0.1f32, 0.0, 0.1] {
+                let rect = at(deg, dx, dy);
                 let s = quick(&rect);
                 if s > best.0 {
                     best = (s, rect);
@@ -1265,6 +1279,7 @@ pub fn forget_reading_state() {
     STEADY.with(|s| s.set((0.0, 0.0, 0)));
     FIXTURES.with(|f| f.borrow_mut().clear());
     super::reference::forget_style();
+    super::forget_focus();
 }
 
 thread_local! {
@@ -1273,19 +1288,31 @@ thread_local! {
     static FIXTURES: std::cell::RefCell<Vec<(f32, f32, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+thread_local! {
+    /// Dove comincia sullo schermo l'immagine che si sta leggendo (un ritaglio: vedi `set_offset`).
+    static OFFSET: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
+}
+
+/// L'immagine che si legge è un ritaglio dello schermo che comincia in (x, y).
+pub fn set_offset(x: f32, y: f32) {
+    OFFSET.with(|o| o.set((x, y)));
+}
+
 /// Toglie i falsi fissi: un disegno del sito che resta sempre lì, lettura dopo lettura, più piccolo
 /// delle carte e mai riconosciuto davvero, non è una carta in gioco.
 fn drop_fixtures(cards: &mut Vec<Found>, card_l: f32) {
     let doubtful = |f: &Found| {
         f.score < 0.6 && f.rect.long() < 0.9 * card_l && f.view.best(cards::CardSet::FULL).is_none_or(|b| b.1 < 0.3)
     };
+    // (Le posizioni sono sullo schermo intero: la lettura può essere di un ritaglio.)
+    let (ox, oy) = OFFSET.with(|o| o.get());
     FIXTURES.with(|fx| {
         let mut fx = fx.borrow_mut();
-        let near = |a: &(f32, f32, u32), f: &Found| (a.0 - f.rect.cx).abs() < 6.0 && (a.1 - f.rect.cy).abs() < 6.0;
+        let near = |a: &(f32, f32, u32), f: &Found| (a.0 - f.rect.cx - ox).abs() < 6.0 && (a.1 - f.rect.cy - oy).abs() < 6.0;
         let mut next: Vec<(f32, f32, u32)> = Vec::new();
         for f in cards.iter().filter(|f| doubtful(f)) {
             let n = fx.iter().find(|a| near(a, f)).map_or(0, |a| a.2);
-            next.push((f.rect.cx, f.rect.cy, (n + 1).min(1000)));
+            next.push((f.rect.cx + ox, f.rect.cy + oy, (n + 1).min(1000)));
         }
         // (Una lettura in cui il pezzo non si è trovato non lo fa dimenticare subito.)
         for a in fx.iter() {
@@ -1669,7 +1696,11 @@ fn best<'a>(cards: impl Iterator<Item = &'a Found>) -> Option<&'a Found> {
 
 /// Divide le carte scoperte trovate sullo schermo fra briscola, tavolo e mano.
 pub fn scene(img: &Img) -> Scene {
+    let ta = std::time::Instant::now();
     let mut a = analyze(img);
+    if std::env::var_os("TEMPI").is_some() {
+        eprintln!("  analisi: {:?}", ta.elapsed());
+    }
     // Le carte possono essere quasi senza colori anche se il tavolo è colorato.
     // Anche una lettura incompleta di poche carte non deve impedire la ripiega:
     // si misura il colore nelle carte, non nello sfondo.
@@ -1778,7 +1809,11 @@ pub fn scene(img: &Img) -> Scene {
     drop_fixtures(&mut whole, card_l);
     // Le carte lette senza sicurezza si riprovano un po' girate e spostate: il rettangolo trovato
     // può essere storto (le carte ai lati di un ventaglio) o preso a metà con la carta accanto.
+    let tp = std::time::Instant::now();
     let poses = par_map(&whole, |f| Some(refine_pose(img, f)));
+    if std::env::var_os("TEMPI").is_some() {
+        eprintln!("  posa: {:?} per {} carte", tp.elapsed(), whole.len());
+    }
     for (f, better) in whole.iter_mut().zip(poses) {
         if let Some(Some(g)) = better {
             *f = g;

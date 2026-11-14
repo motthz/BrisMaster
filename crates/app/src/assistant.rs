@@ -721,7 +721,7 @@ impl Assistant {
 
     fn screen_is_behind(&self) -> bool {
         self.vision.catching_up || self.vision.restart_after.is_some()
-            || self.vision.reader.as_ref().is_some_and(|r| self.vision.inconsistent || (self.vision.lost && self.vision.gap) || r.lag() > std::time::Duration::from_millis(1500))
+            || self.vision.reader.as_ref().is_some_and(|r| self.vision.inconsistent || (self.vision.lost && self.vision.gap) || r.lag() > std::time::Duration::from_millis(2500))
     }
 
     /// Un canale chiuso o un calcolo troppo lungo non lasciano il consiglio in attesa per sempre.
@@ -2698,6 +2698,11 @@ impl Assistant {
     pub fn side_ui(&mut self, ui: &mut egui::Ui, samples: &mut u32, compact: bool) {
         let ctx = ui.ctx().clone();
         self.poll_vision(&ctx);
+        // Un'analisi bloccata o indietro di troppo si riavvia da sola, tenendo la partita.
+        if self.vision.restart_after.is_none() && self.vision.reader.as_ref().is_some_and(|r| r.lag() >= std::time::Duration::from_secs(8)) {
+            self.vision.status = "La lettura era rimasta indietro: la riavvio conservando la partita.".into();
+            self.vision.restart_after = Some(std::time::Instant::now());
+        }
         if self.vision.restart_after.is_some_and(|t| t <= std::time::Instant::now()) {
             self.restart_vision(&ctx);
         }
@@ -4878,6 +4883,8 @@ mod tests {
             // Ogni partita come letta da sola: niente memoria dell'analisi dalla partita prima.
             crate::vision::detect::forget_reading_state();
             let mut a = Assistant::default();
+            // Il consiglio sospeso nel mio turno (letture, e il tratto più lungo di fila in ms).
+            let (mut my_reads, mut blocked_reads, mut block_from, mut block_max) = (0u32, 0u32, None::<u64>, 0u64);
             let mut confirms = 0;
             let mut wrong = Vec::new();
             let mut before: Vec<Card> = Vec::new();
@@ -5035,6 +5042,18 @@ mod tests {
                     for k in 0..extra {
                         a.vision.now_ms = Some(t + 600 * (k + 1));
                         a.sync(scene);
+                    }
+                    if a.pos.step() == Step::MyMove {
+                        my_reads += 1;
+                        if a.vision.inconsistent || a.vision.confirm.is_some() || (a.vision.lost && a.vision.gap) {
+                            blocked_reads += 1;
+                            let from = *block_from.get_or_insert(t);
+                            block_max = block_max.max(t.saturating_sub(from));
+                        } else {
+                            block_from = None;
+                        }
+                    } else {
+                        block_from = None;
                     }
                 }
                 // Le carte dell'avversario viste davvero finora (per scriverle quando l'app le chiede).
@@ -5237,6 +5256,7 @@ mod tests {
             if a.tricks.len() != 20 && a.pos.step() == Step::Over { why.push(format!("{} prese registrate", a.tricks.len())); }
             perfect += why.is_empty() as usize;
             println!("  severo: {}", if why.is_empty() { "PERFETTA".into() } else { why.join("; ") });
+            println!("  consiglio sospeso: {blocked_reads}/{my_reads} letture del mio turno, al più {:.1} s di fila", block_max as f32 / 1000.0);
             // (Le proposte sbagliate corrette dall'utente non contano come errori della partita.)
             let done = a.pos.tricks == 20 && wrong.iter().all(|w| w.contains("chiede"));
             ok += done as usize;

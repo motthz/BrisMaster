@@ -860,19 +860,73 @@ fn colored(img: &Img, r: &RotRect) -> f32 {
 /// a una carta, lontane fra loro almeno mezza carta.
 fn scan(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
     // Lo schermo cambia poco fra una lettura e l'altra: se la zona è identica a una già esaminata
-    // (stessi pixel, stessa misura delle carte) si riusa il risultato.
+    // (stessi pixel, stessa misura delle carte) si riusa il risultato. Anche se è solo quasi
+    // identica (un riflesso, un'ombra che si muove, la compressione dello schermo): nessun pezzo
+    // della zona cambiato in modo visibile.
     let key = region_key(img, r, card_l);
-    static CACHE: std::sync::Mutex<Vec<(u64, Vec<Found>)>> = std::sync::Mutex::new(Vec::new());
-    if let Some((_, found)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
-        return found.clone();
+    let (bbox, thumb) = region_thumb(img, r);
+    let l = card_l.round() as i32;
+    type Entry = (u64, [usize; 4], i32, Vec<u8>, Vec<Found>);
+    static CACHE: std::sync::Mutex<Vec<Entry>> = std::sync::Mutex::new(Vec::new());
+    {
+        let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let near = |e: &&Entry| {
+            e.2 == l && e.1.iter().zip(&bbox).all(|(a, b)| a.abs_diff(*b) <= 2) && same_thumb(&e.3, &thumb)
+        };
+        if let Some(e) = cache.iter().find(|e| e.0 == key).or_else(|| cache.iter().rev().find(near)) {
+            return e.4.clone();
+        }
     }
     let found = scan_region(img, paper, r, card_l, card_w);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    cache.push((key, found.clone()));
+    cache.push((key, bbox, l, thumb, found.clone()));
     if cache.len() > 24 {
         cache.remove(0);
     }
     found
+}
+
+/// Il riquadro dritto della zona e la sua immagine rimpicciolita (24 x 24, grigi).
+fn region_thumb(img: &Img, r: &RotRect) -> ([usize; 4], Vec<u8>) {
+    let ext_x = r.hw * r.u.0.abs() + r.hh * r.v.0.abs();
+    let ext_y = r.hw * r.u.1.abs() + r.hh * r.v.1.abs();
+    let (x0, x1) = ((r.cx - ext_x).max(0.0) as usize, ((r.cx + ext_x) as usize).min(img.w));
+    let (y0, y1) = ((r.cy - ext_y).max(0.0) as usize, ((r.cy + ext_y) as usize).min(img.h));
+    const N: usize = 24;
+    let mut out = vec![0u8; N * N * 3];
+    if x1 <= x0 || y1 <= y0 {
+        return ([x0, y0, x1, y1], out);
+    }
+    for j in 0..N {
+        for i in 0..N {
+            let (ax, bx) = (x0 + i * (x1 - x0) / N, (x0 + (i + 1) * (x1 - x0) / N).max(x0 + i * (x1 - x0) / N + 1).min(x1));
+            let (ay, by) = (y0 + j * (y1 - y0) / N, (y0 + (j + 1) * (y1 - y0) / N).max(y0 + j * (y1 - y0) / N + 1).min(y1));
+            let mut sum = [0u32; 3];
+            let mut n = 0u32;
+            for y in ay..by {
+                for x in ax..bx {
+                    let p = img.px[y * img.w + x];
+                    for c in 0..3 {
+                        sum[c] += p[c] as u32;
+                    }
+                    n += 1;
+                }
+            }
+            for c in 0..3 {
+                out[(j * N + i) * 3 + c] = (sum[c] / n.max(1)) as u8;
+            }
+        }
+    }
+    ([x0, y0, x1, y1], out)
+}
+
+/// Due zone uguali a occhio: in media quasi identiche e nessun pezzo cambiato in modo visibile.
+fn same_thumb(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let total: u32 = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as u32).sum();
+    total <= a.len() as u32 * 2 && a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 14)
 }
 
 /// Impronta dei pixel nel riquadro della zona (e della misura delle carte).
@@ -1362,8 +1416,12 @@ pub fn analyze(img: &Img) -> Analysis {
     let last_n = LAST_N.with(|t| t.get());
     let mut best: Option<(usize, Analysis)> = None;
     for k in std::iter::once(first).chain((0..TRIES).filter(|&k| k != first)) {
+        let tk = std::time::Instant::now();
         let Some(a) = run(k) else { continue };
         let n = a.cards.len();
+        if std::env::var_os("TEMPI").is_some() {
+            eprintln!("    prova {k}: {} carte in {:?} ({}x{})", n, tk.elapsed(), img.w, img.h);
+        }
         if best.as_ref().is_none_or(|(_, b)| n > b.cards.len() && (k == 0 || n >= 2)) {
             best = Some((k, a));
         }
@@ -1400,13 +1458,23 @@ thread_local! {
     static STEADY: std::cell::Cell<(f32, f32, u32)> = const { std::cell::Cell::new((0.0, 0.0, 0)) };
 }
 
+fn mark(tm: &mut (std::time::Instant, String), what: &str) {
+    if std::env::var_os("TEMPI").is_some() {
+        tm.1 += &format!(" {what} {}", tm.0.elapsed().as_millis());
+        tm.0 = std::time::Instant::now();
+        eprintln!("      {}", tm.1);
+    }
+}
+
 fn analyze_inner(img: &Img, p: &Paper) -> Analysis {
     analyze_shaped(img, p, card_shaped)
 }
 
 fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysis {
+    let mut tm = (std::time::Instant::now(), String::new());
     let paper: Vec<bool> = img.px.iter().map(|&px| p.is(px)).collect();
     let base = blobs_r(img, &paper, 1);
+    mark(&mut tm, "zone");
     let mut cards: Vec<Found> = Vec::new();
     let mut rest: Vec<Blob> = Vec::new();
     let light: Vec<Blob> = base.iter().copied().filter(|b| {
@@ -1428,6 +1496,7 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
         n >= 16 && dark * 2 >= n
     }).collect();
     let found = par_map(&light, |b| shaped(&b.rect).then(|| as_full(img, &b.rect)).flatten());
+    mark(&mut tm, "intere");
     for (b, f) in light.into_iter().zip(found) {
         match f {
             Some(f) => cards.push(f),
@@ -1527,6 +1596,7 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
     if cards.is_empty() {
         return Analysis { cards, card_l: 0.0, table: None, blobs: base };
     }
+    mark(&mut tm, "divise");
     // Quello che resta togliendo le carte trovate: la carta che ne toccava un'altra (e che
     // l'erosione ha spezzato perché il disegno arriva ai bordi) torna intera. Serve solo se una
     // zona è stata divisa o ne tocca una riconosciuta.
@@ -1554,6 +1624,7 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
         levels.push((3, blobs_r(img, &paper, 3)));
     }
     let thin = &levels.iter().find(|(k, _)| *k == 3).unwrap().1;
+    mark(&mut tm, "resto");
     for q in thin.iter().filter(|q| q.light()) {
         // Già esaminato se sta in una zona chiara come una carta (non nella cornice di un dorso).
         let known = base.iter().filter(|b| b.light() && b.white > 0.3).any(|b| b.rect.contains(q.rect.cx, q.rect.cy))
@@ -1579,51 +1650,56 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
     // un adesivo, da una scritta): due pezzi vicini che insieme hanno la misura di una carta si
     // riprovano come una carta sola.
     leftover.retain(|b| !cards.iter().any(|c| c.rect.contains(b.rect.cx, b.rect.cy)));
+    // (Le coppie si provano tutte insieme, su più processori: ogni prova dipende solo dai pixel;
+    // poi si prendono in ordine, saltando i pezzi già usati, come una dopo l'altra.)
+    let pairs: Vec<(usize, usize)> = (0..leftover.len())
+        .flat_map(|i| (i + 1..leftover.len()).map(move |j| (i, j)))
+        .filter(|&(i, j)| leftover[i].rect.dist(&leftover[j].rect) <= card_w)
+        .collect();
+    let tried = par_chunks(&pairs, |&(i, j)| {
+        let (a, b) = (&leftover[i].rect, &leftover[j].rect);
+        let pts: Vec<(f32, f32)> = (0..4).flat_map(|k| [a.outline(k as f32, 1.0, 0.0), b.outline(k as f32, 1.0, 0.0)]).collect();
+        let u = min_area_rect(pts)?;
+        // Due pezzi che insieme sono una fila di carte sovrapposte (la mano attraversata da una
+        // fascia): alti come una carta e larghi più di una. Si cercano tutte le carte della fila.
+        let row = (0.8..=1.25).contains(&(u.short() / card_l)) && (1.3..=4.5).contains(&(u.long() / card_w));
+        if row {
+            let around = RotRect { hw: u.hw + 0.15 * card_w, hh: u.hh + 0.15 * card_w, ..u };
+            let mut found = row_cards(img, &u, card_l, card_w);
+            for f in scan(img, &paper, &around, card_l, card_w) {
+                if !found.iter().any(|g| g.rect.dist(&f.rect) < 0.3 * card_w) {
+                    found.push(f);
+                }
+            }
+            return (!found.is_empty()).then_some(found);
+        }
+        if !(0.6..=1.2).contains(&(u.long() / card_l)) || !(0.6..=1.25).contains(&(u.short() / card_w)) {
+            return None;
+        }
+        // Si cerca una carta intera attorno ai due pezzi (una parte può essere coperta).
+        let (hw, hh) = if u.hh >= u.hw { (card_w, card_l) } else { (card_l, card_w) };
+        let around = RotRect { hw: u.hw.max(hw / 2.0) + 0.2 * card_w, hh: u.hh.max(hh / 2.0) + 0.2 * card_w, ..u };
+        // (O una carta vista solo in parte: la briscola sotto il mazzo, spezzata dal disegno.)
+        as_full(img, &u)
+            .or_else(|| scan(img, &paper, &around, card_l, card_w).into_iter().next())
+            .or_else(|| as_partial(img, &u, card_l, card_w))
+            .map(|f| vec![f])
+    });
     let mut joined = vec![false; leftover.len()];
-    for i in 0..leftover.len() {
-        for j in i + 1..leftover.len() {
-            let (a, b) = (&leftover[i].rect, &leftover[j].rect);
-            if joined[i] || joined[j] || a.dist(b) > card_w {
-                continue;
-            }
-            let pts: Vec<(f32, f32)> = (0..4).flat_map(|k| [a.outline(k as f32, 1.0, 0.0), b.outline(k as f32, 1.0, 0.0)]).collect();
-            let Some(u) = min_area_rect(pts) else { continue };
-            // Due pezzi che insieme sono una fila di carte sovrapposte (la mano attraversata da una
-            // fascia): alti come una carta e larghi più di una. Si cercano tutte le carte della fila.
-            let row = (0.8..=1.25).contains(&(u.short() / card_l)) && (1.3..=4.5).contains(&(u.long() / card_w));
-            if row {
-                let around = RotRect { hw: u.hw + 0.15 * card_w, hh: u.hh + 0.15 * card_w, ..u };
-                let mut found = row_cards(img, &u, card_l, card_w);
-                for f in scan(img, &paper, &around, card_l, card_w) {
-                    if !found.iter().any(|g| g.rect.dist(&f.rect) < 0.3 * card_w) {
-                        found.push(f);
-                    }
-                }
-                if !found.is_empty() {
-                    cards.extend(found);
-                    (joined[i], joined[j]) = (true, true);
-                }
-                continue;
-            }
-            if !(0.6..=1.2).contains(&(u.long() / card_l)) || !(0.6..=1.25).contains(&(u.short() / card_w)) {
-                continue;
-            }
-            // Si cerca una carta intera attorno ai due pezzi (una parte può essere coperta).
-            let (hw, hh) = if u.hh >= u.hw { (card_w, card_l) } else { (card_l, card_w) };
-            let around = RotRect { hw: u.hw.max(hw / 2.0) + 0.2 * card_w, hh: u.hh.max(hh / 2.0) + 0.2 * card_w, ..u };
-            // (O una carta vista solo in parte: la briscola sotto il mazzo, spezzata dal disegno.)
-            let found = as_full(img, &u)
-                .or_else(|| scan(img, &paper, &around, card_l, card_w).into_iter().next())
-                .or_else(|| as_partial(img, &u, card_l, card_w));
-            if let Some(f) = found {
-                cards.push(f);
-                (joined[i], joined[j]) = (true, true);
-            }
+    for (&(i, j), found) in pairs.iter().zip(tried) {
+        if joined[i] || joined[j] {
+            continue;
+        }
+        if let Some(found) = found {
+            cards.extend(found);
+            (joined[i], joined[j]) = (true, true);
         }
     }
     let leftover: Vec<Blob> = leftover.into_iter().zip(joined).filter(|(_, j)| !j).map(|(b, _)| b).collect();
+    mark(&mut tm, "unite");
     // Carte coperte in parte.
     cards.extend(par_map(&leftover, |b| as_partial(img, &b.rect, card_l, card_w)).into_iter().flatten());
+    mark(&mut tm, "parziali");
     // Una carta divisa da una scritta che la attraversa: dentro la sagoma della carta vista in parte
     // c'è anche l'altro pezzo, e si confronta la carta da un pezzo all'altro.
     for c in cards.iter_mut().filter(|c| c.partial()) {

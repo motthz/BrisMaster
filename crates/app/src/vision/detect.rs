@@ -860,73 +860,20 @@ fn colored(img: &Img, r: &RotRect) -> f32 {
 /// a una carta, lontane fra loro almeno mezza carta.
 fn scan(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
     // Lo schermo cambia poco fra una lettura e l'altra: se la zona è identica a una già esaminata
-    // (stessi pixel, stessa misura delle carte) si riusa il risultato. Anche se è solo quasi
-    // identica (un riflesso, un'ombra che si muove, la compressione dello schermo): nessun pezzo
-    // della zona cambiato in modo visibile.
+    // (stessi pixel, stessa misura delle carte) si riusa il risultato.
     let key = region_key(img, r, card_l);
-    let (bbox, thumb) = region_thumb(img, r);
-    let l = card_l.round() as i32;
-    type Entry = (u64, [usize; 4], i32, Vec<u8>, Vec<Found>);
-    static CACHE: std::sync::Mutex<Vec<Entry>> = std::sync::Mutex::new(Vec::new());
-    {
-        let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let near = |e: &&Entry| {
-            e.2 == l && e.1.iter().zip(&bbox).all(|(a, b)| a.abs_diff(*b) <= 2) && same_thumb(&e.3, &thumb)
-        };
-        if let Some(e) = cache.iter().find(|e| e.0 == key).or_else(|| cache.iter().rev().find(near)) {
-            return e.4.clone();
-        }
+    static CACHE: std::sync::Mutex<Vec<(u64, Vec<Found>)>> = std::sync::Mutex::new(Vec::new());
+    if let Some((_, found)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
+        return found.clone();
     }
     let found = scan_region(img, paper, r, card_l, card_w);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    cache.push((key, bbox, l, thumb, found.clone()));
-    if cache.len() > 24 {
+    cache.push((key, found.clone()));
+    // (Le coppie di pezzi si provano insieme: la cache tiene abbastanza zone per tutte.)
+    if cache.len() > 64 {
         cache.remove(0);
     }
     found
-}
-
-/// Il riquadro dritto della zona e la sua immagine rimpicciolita (24 x 24, grigi).
-fn region_thumb(img: &Img, r: &RotRect) -> ([usize; 4], Vec<u8>) {
-    let ext_x = r.hw * r.u.0.abs() + r.hh * r.v.0.abs();
-    let ext_y = r.hw * r.u.1.abs() + r.hh * r.v.1.abs();
-    let (x0, x1) = ((r.cx - ext_x).max(0.0) as usize, ((r.cx + ext_x) as usize).min(img.w));
-    let (y0, y1) = ((r.cy - ext_y).max(0.0) as usize, ((r.cy + ext_y) as usize).min(img.h));
-    const N: usize = 24;
-    let mut out = vec![0u8; N * N * 3];
-    if x1 <= x0 || y1 <= y0 {
-        return ([x0, y0, x1, y1], out);
-    }
-    for j in 0..N {
-        for i in 0..N {
-            let (ax, bx) = (x0 + i * (x1 - x0) / N, (x0 + (i + 1) * (x1 - x0) / N).max(x0 + i * (x1 - x0) / N + 1).min(x1));
-            let (ay, by) = (y0 + j * (y1 - y0) / N, (y0 + (j + 1) * (y1 - y0) / N).max(y0 + j * (y1 - y0) / N + 1).min(y1));
-            let mut sum = [0u32; 3];
-            let mut n = 0u32;
-            for y in ay..by {
-                for x in ax..bx {
-                    let p = img.px[y * img.w + x];
-                    for c in 0..3 {
-                        sum[c] += p[c] as u32;
-                    }
-                    n += 1;
-                }
-            }
-            for c in 0..3 {
-                out[(j * N + i) * 3 + c] = (sum[c] / n.max(1)) as u8;
-            }
-        }
-    }
-    ([x0, y0, x1, y1], out)
-}
-
-/// Due zone uguali a occhio: in media quasi identiche e nessun pezzo cambiato in modo visibile.
-fn same_thumb(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let total: u32 = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as u32).sum();
-    total <= a.len() as u32 * 2 && a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 14)
 }
 
 /// Impronta dei pixel nel riquadro della zona (e della misura delle carte).

@@ -1112,7 +1112,7 @@ impl Assistant {
                 } else {
                     self.vision.confirm_age = (Some(key), 1);
                 }
-                if self.vision.confirm_age.1 >= AUTO_ACCEPT {
+                if self.vision.confirm_age.1 >= AUTO_ACCEPT || self.confirm_steady() {
                     self.vision.confirm_age = (None, 0);
                     self.auto_accept();
                 }
@@ -2187,6 +2187,11 @@ impl Assistant {
         }
         // Una carta letta senza sicurezza, o annullata dall'utente, non si mette da sola: si chiede.
         if !sure || self.vision.doubts.contains(&(step, card)) {
+            if cfg!(test) && std::env::var_os("VERBOSO").is_some() && self.vision.confirm.is_none() {
+                let s = &self.vision.sightings;
+                let sg = match step { Step::Draw(_) => s.hand[card as usize], Step::OppMove => s.opp_sight(card), _ => s.table[card as usize] };
+                eprintln!("CHIEDE {:?} {} (viste {} margine {:.2}) presa {}", step, cards::short(card), sg.count, sg.margin, self.pos.tricks + 1);
+            }
             if let Some((img, vis)) = view {
                 self.vision.confirm = Some(Confirm { step, card, img, vis, texture: None });
             }
@@ -2451,6 +2456,20 @@ impl Assistant {
         // Solo la briscola, che resta ferma sotto gli occhi per tutta la partita: una carta
         // giocata o pescata letta senza sicurezza non entra mai da sola. Se nessuno la conferma,
         // quella presa resta non vista e la partita riparte da quello che si vede.
+        // Una pescata (o una carta dell'avversario in tavola) letta sempre uguale per tante letture,
+        // anche se mai con largo distacco, è quella: un mazzo con le figure molto simili fra loro non
+        // ha mai un distacco grande finché non lo si conosce. Entra da sola, e la sua immagine si
+        // impara (solo sul computer) così dopo si riconosce subito.
+        let steady = self.steady(c.step, c.card);
+        if steady && c.step == self.pos.step() && self.pos.allowed().contains(c.card) {
+            self.vision.auto = true;
+            let entered = self.enter(c.card);
+            self.vision.auto = false;
+            if entered {
+                self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&c.img, c.vis, c.card);
+            }
+            return;
+        }
         if c.step != Step::Trump {
             // (Non è smentita: se poi la si legge con sicurezza, entra come le altre.)
             self.vision.gap = true;
@@ -2461,6 +2480,24 @@ impl Assistant {
             self.enter(c.card);
         }
         self.vision.auto = false;
+    }
+
+    /// La carta proposta è stata letta sempre uguale per tante letture fino a questa: vedi
+    /// `auto_accept`.
+    fn steady(&self, step: Step, card: Card) -> bool {
+        let s = &self.vision.sightings;
+        match step {
+            Step::Draw(_) => s.hand.get(card as usize).is_some_and(|h| h.count >= 6 && h.margin >= 0.8 && h.last == s.frame),
+            Step::OppMove => {
+                let o = s.opp_sight(card);
+                o.count >= 4 && o.margin >= 1.0 && o.last == s.frame
+            }
+            _ => false,
+        }
+    }
+
+    fn confirm_steady(&self) -> bool {
+        self.vision.confirm.as_ref().is_some_and(|c| c.step == self.pos.step() && self.steady(c.step, c.card) && !self.vision.doubts.contains(&(c.step, c.card)))
     }
 
     fn accept_vision(&mut self) {

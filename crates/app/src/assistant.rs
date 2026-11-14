@@ -721,7 +721,7 @@ impl Assistant {
 
     fn screen_is_behind(&self) -> bool {
         self.vision.catching_up || self.vision.restart_after.is_some()
-            || self.vision.reader.as_ref().is_some_and(|r| self.vision.inconsistent || (self.vision.lost && self.vision.gap) || r.lag() > std::time::Duration::from_millis(1500))
+            || self.vision.reader.as_ref().is_some_and(|r| self.vision.inconsistent || (self.vision.lost && self.vision.gap) || r.lag() > std::time::Duration::from_millis(2500))
     }
 
     /// Un canale chiuso o un calcolo troppo lungo non lasciano il consiglio in attesa per sempre.
@@ -1112,7 +1112,7 @@ impl Assistant {
                 } else {
                     self.vision.confirm_age = (Some(key), 1);
                 }
-                if self.vision.confirm_age.1 >= AUTO_ACCEPT {
+                if self.vision.confirm_age.1 >= AUTO_ACCEPT || self.confirm_steady() {
                     self.vision.confirm_age = (None, 0);
                     self.auto_accept();
                 }
@@ -1153,6 +1153,17 @@ impl Assistant {
             self.check_mismatch(scene);
         }
         self.vision.sightings.update(scene);
+        // Una carta in più nella mano piena, mentre non si pesca, è un fantasma.
+        if matches!(self.pos.step(), Step::MyMove | Step::OppMove) && self.pos.hand.len() == 3 && scene.hand.len() > 3 {
+            let extra: Vec<Card> = unmatched_hand(scene, &self.pos).iter().filter_map(|v| v.best(CardSet::FULL).map(|b| b.0)).collect();
+            let s = &mut self.vision.sightings;
+            if s.phantoms.len() < 40 {
+                s.phantoms = vec![0; 40];
+            }
+            for c in extra.into_iter().filter(|&c| Some(c) != self.pos.trump_card && !self.pos.hand.contains(c)) {
+                s.phantoms[c as usize] += 1;
+            }
+        }
         if prev == sig {
             self.check_hand(scene);
         }
@@ -1245,6 +1256,9 @@ impl Assistant {
             || seen_hand.iter().any(|&c| !self.pos.hand.contains(c))
             || self.pos.table.is_some_and(|t| !seen_table.contains(&t))
             || (self.pos.table.is_none() && !seen_table.is_empty());
+        // (Carte lette senza largo distacco ma compatibili con la partita non sono una differenza:
+        // la partita e lo schermo dicono la stessa cosa e il consiglio non si ferma.)
+        let differs = differs && !self.screen_agrees(scene);
         if !differs { self.vision.inconsistent = false; }
         if self.history.len() != before || !differs {
             self.vision.stuck = 0;
@@ -1393,6 +1407,42 @@ impl Assistant {
     /// I conti che in una partita tornano sempre: nessuna carta in due posti, al più tre carte in
     /// mano, il mazzo che scende di due a presa e (se tutte le prese si sono viste) due carte
     /// uscite per presa.
+    /// Lo schermo è compatibile con la partita: tante carte in mano quante ne ha la partita, a
+    /// ciascuna carta della partita una carta diversa sullo schermo che le somiglia quasi quanto la
+    /// sua lettura migliore, nessuna carta letta con sicurezza che la partita non ha, e in tavola
+    /// la carta della partita (o niente).
+    fn screen_agrees(&self, scene: &Scene) -> bool {
+        let p = &self.pos;
+        if !matches!(p.step(), Step::MyMove | Step::OppMove) || scene.hand.len() != p.hand.len() as usize {
+            return false;
+        }
+        let near = |v: &CardView, c: Card| {
+            let top = v.scores.iter().copied().fold(f32::MIN, f32::max);
+            v.scores[c as usize] >= top - AUTO_MARGIN
+        };
+        let sure_other = |v: &CardView, ok: &dyn Fn(Card) -> bool| {
+            v.best(CardSet::FULL).is_some_and(|(c, m)| m >= AUTO_MARGIN && !ok(c))
+        };
+        let mut used = vec![false; scene.hand.len()];
+        for c in p.hand.iter() {
+            let pick = (0..scene.hand.len())
+                .filter(|&i| !used[i] && near(&scene.hand[i], c))
+                .max_by(|&a, &b| scene.hand[a].scores[c as usize].total_cmp(&scene.hand[b].scores[c as usize]));
+            match pick {
+                Some(i) => used[i] = true,
+                None => return false,
+            }
+        }
+        if scene.hand.iter().any(|v| sure_other(v, &|c| p.hand.contains(c))) {
+            return false;
+        }
+        let table: Vec<&CardView> = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().collect();
+        match p.table {
+            Some(t) => table.len() == 1 && near(table[0], t) && !sure_other(table[0], &|c| c == t),
+            None => table.is_empty(),
+        }
+    }
+
     fn counts_ok(&self) -> bool {
         let p = &self.pos;
         if p.trump_card.is_none() || p.first.is_none() {
@@ -2148,6 +2198,11 @@ impl Assistant {
         }
         // Una carta letta senza sicurezza, o annullata dall'utente, non si mette da sola: si chiede.
         if !sure || self.vision.doubts.contains(&(step, card)) {
+            if cfg!(test) && std::env::var_os("VERBOSO").is_some() && self.vision.confirm.is_none() {
+                let s = &self.vision.sightings;
+                let sg = match step { Step::Draw(_) => s.hand[card as usize], Step::OppMove => s.opp_sight(card), _ => s.table[card as usize] };
+                eprintln!("CHIEDE {:?} {} (viste {} margine {:.2}) presa {}", step, cards::short(card), sg.count, sg.margin, self.pos.tricks + 1);
+            }
             if let Some((img, vis)) = view {
                 self.vision.confirm = Some(Confirm { step, card, img, vis, texture: None });
             }
@@ -2412,6 +2467,20 @@ impl Assistant {
         // Solo la briscola, che resta ferma sotto gli occhi per tutta la partita: una carta
         // giocata o pescata letta senza sicurezza non entra mai da sola. Se nessuno la conferma,
         // quella presa resta non vista e la partita riparte da quello che si vede.
+        // Una pescata (o una carta dell'avversario in tavola) letta sempre uguale per tante letture,
+        // anche se mai con largo distacco, è quella: un mazzo con le figure molto simili fra loro non
+        // ha mai un distacco grande finché non lo si conosce. Entra da sola, e la sua immagine si
+        // impara (solo sul computer) così dopo si riconosce subito.
+        let steady = self.steady(c.step, c.card);
+        if steady && c.step == self.pos.step() && self.pos.allowed().contains(c.card) {
+            self.vision.auto = true;
+            let entered = self.enter(c.card);
+            self.vision.auto = false;
+            if entered {
+                self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&c.img, c.vis, c.card);
+            }
+            return;
+        }
         if c.step != Step::Trump {
             // (Non è smentita: se poi la si legge con sicurezza, entra come le altre.)
             self.vision.gap = true;
@@ -2422,6 +2491,38 @@ impl Assistant {
             self.enter(c.card);
         }
         self.vision.auto = false;
+    }
+
+    /// La carta proposta è stata letta sempre uguale per tante letture fino a questa: vedi
+    /// `auto_accept`.
+    fn steady(&self, step: Step, card: Card) -> bool {
+        let s = &self.vision.sightings;
+        match step {
+            Step::Draw(_) => s.hand.get(card as usize).is_some_and(|h| h.count >= 6 && h.margin >= 0.8 && h.last == s.frame),
+            Step::OppMove => {
+                let o = s.opp_sight(card);
+                o.count >= 4 && o.margin >= 1.0 && o.last == s.frame
+            }
+            // Una mia carta sparita dalla mano da tre letture, con le altre lette con sicurezza e
+            // proprio quelle che la partita dice: l'ho giocata (il sito la fa volare in tavola).
+            Step::MyMove => {
+                let rest: Vec<Card> = self.pos.hand.iter().filter(|&c| c != card).collect();
+                self.pos.hand.contains(card)
+                    && s.hand.get(card as usize).is_some_and(|h| h.last + 3 <= s.frame)
+                    && s.full_hands.iter().rev().take(3).filter(|(f, h)| *f + 3 > s.frame && {
+                        let mut h = h.clone();
+                        h.sort_unstable();
+                        let mut r = rest.clone();
+                        r.sort_unstable();
+                        h == r
+                    }).count() >= 3
+            }
+            _ => false,
+        }
+    }
+
+    fn confirm_steady(&self) -> bool {
+        self.vision.confirm.as_ref().is_some_and(|c| c.step == self.pos.step() && self.steady(c.step, c.card) && !self.vision.doubts.contains(&(c.step, c.card)))
     }
 
     fn accept_vision(&mut self) {
@@ -2698,6 +2799,11 @@ impl Assistant {
     pub fn side_ui(&mut self, ui: &mut egui::Ui, samples: &mut u32, compact: bool) {
         let ctx = ui.ctx().clone();
         self.poll_vision(&ctx);
+        // Un'analisi bloccata o indietro di troppo si riavvia da sola, tenendo la partita.
+        if self.vision.restart_after.is_none() && self.vision.reader.as_ref().is_some_and(|r| r.lag() >= std::time::Duration::from_secs(8)) {
+            self.vision.status = "La lettura era rimasta indietro: la riavvio conservando la partita.".into();
+            self.vision.restart_after = Some(std::time::Instant::now());
+        }
         if self.vision.restart_after.is_some_and(|t| t <= std::time::Instant::now()) {
             self.restart_vision(&ctx);
         }
@@ -3207,6 +3313,9 @@ struct Sightings {
     /// Carte viste da sole dalla mia parte del tavolo: su molti siti le carte giocate stanno
     /// affiancate e la parte non dice di chi sono; contano per l'avversario se restano visibili.
     lone_mine: Vec<Sighting>,
+    /// Carte lette in mano in più quando la mano era già piena (non si pescava): un pezzo del
+    /// sito preso per carta, non una carta mia. Non si prendono per pescate.
+    phantoms: Vec<u32>,
     /// Carte viste dalla mia parte del tavolo, e dalla parte dell'avversario, comunque sia.
     my_side: Vec<Sighting>,
     their_side: Vec<Sighting>,
@@ -3439,8 +3548,9 @@ impl Sightings {
         let allowed = pos.allowed();
         let opening = pos.tricks == 0 && pos.first == Some(ME) && pos.table.is_none();
         let lead = if opening { self.first_table_card(pos) } else { None };
+        let phantom = |c: Card| self.phantoms.get(c as usize).is_some_and(|&n| n >= 2);
         let sure = (0..40u8)
-            .filter(|&c| allowed.contains(c) && self.in_hand(c))
+            .filter(|&c| allowed.contains(c) && self.in_hand(c) && !phantom(c))
             .min_by_key(|&c| self.hand[c as usize].first);
         // Devo ancora pescare ma la presa dopo è già cominciata: per l'ordine di gioco la mia carta
         // è la prima comparsa in tavola se apro io, la seconda se apre l'avversario. Se non è fra
@@ -3488,7 +3598,7 @@ impl Sightings {
                 let h = &self.hand[c as usize];
                 // (Se poi è comparsa in tavola, anche lì incerta, aspettare non serve più.)
                 let played = self.glimpsed(c) && self.recent(&self.table[c as usize]);
-                allowed.contains(c) && ((h.count >= 20 && self.recent(h)) || (h.count >= 3 && played))
+                allowed.contains(c) && !phantom(c) && ((h.count >= 20 && self.recent(h)) || (h.count >= 3 && played))
             })
             .max_by_key(|&c| (self.hand[c as usize].count, (self.hand[c as usize].margin * 10.0) as i32))
             .map(|c| (c, false))
@@ -4878,6 +4988,9 @@ mod tests {
             // Ogni partita come letta da sola: niente memoria dell'analisi dalla partita prima.
             crate::vision::detect::forget_reading_state();
             let mut a = Assistant::default();
+            // Il consiglio sospeso nel mio turno (letture, e il tratto più lungo di fila in ms).
+            let (mut my_reads, mut blocked_reads, mut block_from, mut block_max) = (0u32, 0u32, None::<u64>, 0u64);
+            let mut block_why = [0u32; 3];
             let mut confirms = 0;
             let mut wrong = Vec::new();
             let mut before: Vec<Card> = Vec::new();
@@ -5035,6 +5148,21 @@ mod tests {
                     for k in 0..extra {
                         a.vision.now_ms = Some(t + 600 * (k + 1));
                         a.sync(scene);
+                    }
+                    if a.pos.step() == Step::MyMove {
+                        my_reads += 1;
+                        if a.vision.inconsistent || a.vision.confirm.is_some() || (a.vision.lost && a.vision.gap) {
+                            blocked_reads += 1;
+                            block_why[0] += a.vision.inconsistent as u32;
+                            block_why[1] += a.vision.confirm.is_some() as u32;
+                            block_why[2] += (a.vision.lost && a.vision.gap) as u32;
+                            let from = *block_from.get_or_insert(t);
+                            block_max = block_max.max(t.saturating_sub(from));
+                        } else {
+                            block_from = None;
+                        }
+                    } else {
+                        block_from = None;
                     }
                 }
                 // Le carte dell'avversario viste davvero finora (per scriverle quando l'app le chiede).
@@ -5237,6 +5365,7 @@ mod tests {
             if a.tricks.len() != 20 && a.pos.step() == Step::Over { why.push(format!("{} prese registrate", a.tricks.len())); }
             perfect += why.is_empty() as usize;
             println!("  severo: {}", if why.is_empty() { "PERFETTA".into() } else { why.join("; ") });
+            println!("  consiglio sospeso: {blocked_reads}/{my_reads} letture del mio turno, al più {:.1} s di fila (conti {} · conferma {} · persa {})", block_max as f32 / 1000.0, block_why[0], block_why[1], block_why[2]);
             // (Le proposte sbagliate corrette dall'utente non contano come errori della partita.)
             let done = a.pos.tricks == 20 && wrong.iter().all(|w| w.contains("chiede"));
             ok += done as usize;

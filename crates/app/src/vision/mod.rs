@@ -586,6 +586,9 @@ pub struct Reader<S> {
     stop: Arc<AtomicBool>,
     lag_ms: Arc<AtomicU64>,
     last_result: Arc<Mutex<std::time::Instant>>,
+    /// Quando è stata catturata la più vecchia schermata cambiata non ancora letta (in coda o in
+    /// analisi): lo schermo fermo non rende vecchia la lettura.
+    work: Arc<Mutex<Option<std::time::Instant>>>,
     last: Arc<Mutex<Option<Img>>>,
     /// Dove stanno le carte dell'ultima scena sul desktop.
     spot: Arc<Mutex<Spot>>,
@@ -619,6 +622,7 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
         let stop = Arc::new(AtomicBool::new(false));
         let lag_ms = Arc::new(AtomicU64::new(0));
         let last_result = Arc::new(Mutex::new(std::time::Instant::now()));
+        let work = Arc::new(Mutex::new(None::<std::time::Instant>));
         let last = Arc::new(Mutex::new(None));
         let queue: Arc<(Mutex<Frames<(usize, Option<Place>, u64, std::time::Instant)>>, Condvar)> =
             Arc::new((Mutex::new(Frames::new(every)), Condvar::new()));
@@ -638,6 +642,7 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
             let spot = spot.clone();
             let ctx = ctx.clone();
             let latest = latest.clone();
+            let work = work.clone();
             std::thread::spawn(move || {
                 let mut chosen = None;
                 let mut frame_id = 0u64;
@@ -665,6 +670,11 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                             let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
                             frame_id += 1;
                             if q.offer_with(table, (k, Some((geom, area)), frame_id, captured), captured) {
+                                let mut w = work.lock().unwrap_or_else(|e| e.into_inner());
+                                if w.is_none() {
+                                    *w = q.oldest_changed();
+                                }
+                                drop(w);
                                 cv.notify_one();
                             }
                         }
@@ -692,6 +702,7 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
         let found = spot.clone();
         let age = lag_ms.clone();
         let completed = last_result.clone();
+        let working = work.clone();
         std::thread::spawn(move || {
             // L'ultima schermata analizzata (impronta) e cosa ci si era letto: una schermata
             // uguale non si analizza di nuovo (al più tre volte di fila: quello che l'app impara
@@ -704,11 +715,11 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                 let reading = match wait_frame(&queue, &flag, &err_rx) {
                     Err(error) => Reading::Error(error),
                     Ok(None) => { flag.store(true, Ordering::Relaxed); break; }
-                    Ok(Some((table, (k, at, frame_id, _), captured))) => {
+                    Ok(Some((table, (k, at, frame_id, _), captured, _))) => {
                         // Un errore nella lettura di una schermata non deve fermare le letture
                         // dopo: si mostra e si continua.
                         let sig = signature(&table);
-                        let same = seen.as_ref().is_some_and(|(old, _, n)| *n < 3 && difference(old, &sig) < 0.05 && changed_cells(old, &sig) == 0);
+                        let same = seen.as_ref().is_some_and(|(old, _, n)| *n < 8 && difference(old, &sig) < 0.05 && changed_cells(old, &sig) == 0);
                         let scene = if same {
                             let s = seen.as_mut().unwrap();
                             s.2 += 1;
@@ -789,7 +800,12 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                         }
                     }
                 };
-*completed.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+                *completed.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+                {
+                    // Letta: resta indietro solo quello che è ancora in coda.
+                    let q = queue.0.lock().unwrap_or_else(|e| e.into_inner());
+                    *working.lock().unwrap_or_else(|e| e.into_inner()) = q.oldest_changed();
+                }
                 // Bounded backpressure preserves event order without unbounded memory.
                 let mut message = reading;
                 loop {
@@ -808,15 +824,25 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                 ctx.request_repaint();
             }
         });
-        Reader { rx, stop, lag_ms, last_result, last, spot }
+        Reader { rx, stop, lag_ms, last_result, work, last, spot }
     }
 }
 
 impl<S> Reader<S> {
     /// Età della schermata quando termina il riconoscimento, compresa l'attesa in coda.
+    /// Quanto la lettura è indietro rispetto allo schermo: da quanto aspetta la più vecchia
+    /// schermata cambiata non ancora letta. Lo schermo fermo non è un ritardo; un'analisi che non
+    /// dà più nessun risultato sì.
     pub fn lag(&self) -> std::time::Duration {
+        let waiting = self.work.lock().unwrap_or_else(|e| e.into_inner()).map_or(std::time::Duration::ZERO, |t| t.elapsed());
+        let silent = self.last_result.lock().unwrap_or_else(|e| e.into_inner()).elapsed();
+        waiting.max(if silent >= JAMMED { silent } else { std::time::Duration::ZERO })
+    }
+
+    /// L'età della schermata dell'ultima lettura quando è stata letta.
+    #[allow(dead_code)]
+    pub fn read_age(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.lag_ms.load(Ordering::Relaxed))
-            + self.last_result.lock().unwrap_or_else(|e| e.into_inner()).elapsed()
     }
 
     pub fn placement(&self, frame_id: u64) -> Placement {
@@ -885,8 +911,8 @@ pub fn place_on_desktop(at: [f32; 4], g: capture::Geom, area: screen::Area) -> [
 /// più simili a quella prima, mai l'ultima: uno stato breve (una presa che resta in tavola un
 /// attimo) non si perde.
 pub struct Frames<T = ()> {
-    /// Schermata, impronta, dato attaccato e quando è stata catturata.
-    frames: std::collections::VecDeque<(Img, Vec<u8>, T, std::time::Instant)>,
+    /// Schermata, impronta, dato attaccato, quando è stata catturata e se era cambiata.
+    frames: std::collections::VecDeque<(Img, Vec<u8>, T, std::time::Instant, bool)>,
     last: Option<Vec<u8>>,
     pushed: Option<std::time::Instant>,
     every: std::time::Duration,
@@ -896,6 +922,8 @@ pub struct Frames<T = ()> {
 
 /// Quante schermate al più restano in attesa.
 const FRAMES: usize = 8;
+/// Senza nessun risultato per tanto, l'analisi è bloccata.
+const JAMMED: std::time::Duration = std::time::Duration::from_secs(6);
 
 #[cfg(test)]
 impl Frames {
@@ -956,17 +984,22 @@ impl<T> Frames<T> {
         }
         self.last = Some(sig.clone());
         self.pushed = Some(now);
-        self.frames.push_back((img, sig, tag, now));
+        self.frames.push_back((img, sig, tag, now, changed));
         true
+    }
+
+    /// Quando è stata catturata la più vecchia schermata cambiata ancora da analizzare.
+    pub fn oldest_changed(&self) -> Option<std::time::Instant> {
+        self.frames.iter().find(|f| f.4).map(|f| f.3)
     }
 
     /// La prossima schermata da analizzare, con il suo dato.
     pub fn next_with(&mut self) -> Option<(Img, T)> {
-        self.next_timed().map(|(img, tag, _)| (img, tag))
+        self.next_timed().map(|(img, tag, _, _)| (img, tag))
     }
 
-    fn next_timed(&mut self) -> Option<(Img, T, std::time::Instant)> {
-        self.frames.pop_front().map(|f| (f.0, f.2, f.3))
+    fn next_timed(&mut self) -> Option<(Img, T, std::time::Instant, bool)> {
+        self.frames.pop_front().map(|f| (f.0, f.2, f.3, f.4))
     }
 }
 
@@ -975,7 +1008,7 @@ impl<T> Frames<T> {
 fn wait_frame<T>(
     queue: &(Mutex<Frames<T>>, Condvar), stop: &AtomicBool,
     errors: &Receiver<String>,
-) -> Result<Option<(Img, T, std::time::Instant)>, String> {
+) -> Result<Option<(Img, T, std::time::Instant, bool)>, String> {
     let (lock, cv) = queue;
     let mut frames = lock.lock().unwrap_or_else(|e| e.into_inner());
     loop {
@@ -1074,7 +1107,7 @@ impl<S> Reader<S> {
         for reading in readings { tx.send(reading).ok().unwrap(); }
         Reader {
             rx, stop: Arc::new(AtomicBool::new(false)), lag_ms: Arc::new(AtomicU64::new(0)), last_result: Arc::new(Mutex::new(std::time::Instant::now())),
-            last: Arc::new(Mutex::new(None)), spot: Arc::new(Mutex::new(Spot::default())),
+            work: Arc::new(Mutex::new(None)), last: Arc::new(Mutex::new(None)), spot: Arc::new(Mutex::new(Spot::default())),
         }
     }
 }
@@ -1103,6 +1136,7 @@ impl<S> Reader<S> {
             stop: Arc::new(AtomicBool::new(false)),
             lag_ms: Arc::new(AtomicU64::new(0)),
             last_result: Arc::new(Mutex::new(std::time::Instant::now())),
+            work: Arc::new(Mutex::new(None)),
             last: Arc::new(Mutex::new(None)),
             spot: Arc::new(Mutex::new(spot)),
         }
@@ -1230,8 +1264,14 @@ mod tests {
     #[test]
     fn silent_reader_becomes_stale_even_without_new_messages() {
         let reader = Reader::<Scene>::from_readings(Vec::new());
+        *reader.last_result.lock().unwrap() = std::time::Instant::now() - std::time::Duration::from_secs(7);
+        assert!(reader.lag() >= std::time::Duration::from_secs(7));
+        // Pochi secondi senza risultati con lo schermo fermo non sono un ritardo.
         *reader.last_result.lock().unwrap() = std::time::Instant::now() - std::time::Duration::from_secs(3);
-        assert!(reader.lag() >= std::time::Duration::from_secs(3));
+        assert_eq!(reader.lag(), std::time::Duration::ZERO);
+        // Una schermata cambiata in attesa da due secondi sì.
+        *reader.work.lock().unwrap() = Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
+        assert!(reader.lag() >= std::time::Duration::from_secs(2));
     }
 
     #[test]
@@ -1239,7 +1279,7 @@ mod tests {
         let mut queue = Frames::new(std::time::Duration::from_millis(350));
         let captured = std::time::Instant::now() - std::time::Duration::from_secs(3);
         queue.offer_with(Img::new(16, 16), (), captured);
-        let (_, _, time) = queue.next_timed().unwrap();
+        let (_, _, time, _) = queue.next_timed().unwrap();
         assert!(time.elapsed() >= std::time::Duration::from_secs(3));
     }
 

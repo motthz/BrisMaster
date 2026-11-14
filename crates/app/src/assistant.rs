@@ -1245,6 +1245,9 @@ impl Assistant {
             || seen_hand.iter().any(|&c| !self.pos.hand.contains(c))
             || self.pos.table.is_some_and(|t| !seen_table.contains(&t))
             || (self.pos.table.is_none() && !seen_table.is_empty());
+        // (Carte lette senza largo distacco ma compatibili con la partita non sono una differenza:
+        // la partita e lo schermo dicono la stessa cosa e il consiglio non si ferma.)
+        let differs = differs && !self.screen_agrees(scene);
         if !differs { self.vision.inconsistent = false; }
         if self.history.len() != before || !differs {
             self.vision.stuck = 0;
@@ -1393,6 +1396,42 @@ impl Assistant {
     /// I conti che in una partita tornano sempre: nessuna carta in due posti, al più tre carte in
     /// mano, il mazzo che scende di due a presa e (se tutte le prese si sono viste) due carte
     /// uscite per presa.
+    /// Lo schermo è compatibile con la partita: tante carte in mano quante ne ha la partita, a
+    /// ciascuna carta della partita una carta diversa sullo schermo che le somiglia quasi quanto la
+    /// sua lettura migliore, nessuna carta letta con sicurezza che la partita non ha, e in tavola
+    /// la carta della partita (o niente).
+    fn screen_agrees(&self, scene: &Scene) -> bool {
+        let p = &self.pos;
+        if !matches!(p.step(), Step::MyMove | Step::OppMove) || scene.hand.len() != p.hand.len() as usize {
+            return false;
+        }
+        let near = |v: &CardView, c: Card| {
+            let top = v.scores.iter().copied().fold(f32::MIN, f32::max);
+            v.scores[c as usize] >= top - AUTO_MARGIN
+        };
+        let sure_other = |v: &CardView, ok: &dyn Fn(Card) -> bool| {
+            v.best(CardSet::FULL).is_some_and(|(c, m)| m >= AUTO_MARGIN && !ok(c))
+        };
+        let mut used = vec![false; scene.hand.len()];
+        for c in p.hand.iter() {
+            let pick = (0..scene.hand.len())
+                .filter(|&i| !used[i] && near(&scene.hand[i], c))
+                .max_by(|&a, &b| scene.hand[a].scores[c as usize].total_cmp(&scene.hand[b].scores[c as usize]));
+            match pick {
+                Some(i) => used[i] = true,
+                None => return false,
+            }
+        }
+        if scene.hand.iter().any(|v| sure_other(v, &|c| p.hand.contains(c))) {
+            return false;
+        }
+        let table: Vec<&CardView> = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().collect();
+        match p.table {
+            Some(t) => table.len() == 1 && near(table[0], t) && !sure_other(table[0], &|c| c == t),
+            None => table.is_empty(),
+        }
+    }
+
     fn counts_ok(&self) -> bool {
         let p = &self.pos;
         if p.trump_card.is_none() || p.first.is_none() {
@@ -4885,6 +4924,7 @@ mod tests {
             let mut a = Assistant::default();
             // Il consiglio sospeso nel mio turno (letture, e il tratto più lungo di fila in ms).
             let (mut my_reads, mut blocked_reads, mut block_from, mut block_max) = (0u32, 0u32, None::<u64>, 0u64);
+            let mut block_why = [0u32; 3];
             let mut confirms = 0;
             let mut wrong = Vec::new();
             let mut before: Vec<Card> = Vec::new();
@@ -5047,6 +5087,9 @@ mod tests {
                         my_reads += 1;
                         if a.vision.inconsistent || a.vision.confirm.is_some() || (a.vision.lost && a.vision.gap) {
                             blocked_reads += 1;
+                            block_why[0] += a.vision.inconsistent as u32;
+                            block_why[1] += a.vision.confirm.is_some() as u32;
+                            block_why[2] += (a.vision.lost && a.vision.gap) as u32;
                             let from = *block_from.get_or_insert(t);
                             block_max = block_max.max(t.saturating_sub(from));
                         } else {
@@ -5256,7 +5299,7 @@ mod tests {
             if a.tricks.len() != 20 && a.pos.step() == Step::Over { why.push(format!("{} prese registrate", a.tricks.len())); }
             perfect += why.is_empty() as usize;
             println!("  severo: {}", if why.is_empty() { "PERFETTA".into() } else { why.join("; ") });
-            println!("  consiglio sospeso: {blocked_reads}/{my_reads} letture del mio turno, al più {:.1} s di fila", block_max as f32 / 1000.0);
+            println!("  consiglio sospeso: {blocked_reads}/{my_reads} letture del mio turno, al più {:.1} s di fila (conti {} · conferma {} · persa {})", block_max as f32 / 1000.0, block_why[0], block_why[1], block_why[2]);
             // (Le proposte sbagliate corrette dall'utente non contano come errori della partita.)
             let done = a.pos.tricks == 20 && wrong.iter().all(|w| w.contains("chiede"));
             ok += done as usize;

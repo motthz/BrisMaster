@@ -408,6 +408,10 @@ struct Vision {
     t0: Option<std::time::Instant>,
     /// Dove sta la briscola scoperta sullo schermo.
     trump_at: Option<[f32; 4]>,
+    /// Le carte già imparate in questa partita, e dove (vedi `sync`).
+    learned: Vec<(Card, [i32; 2])>,
+    /// Le carte della lettura prima, dove stavano e i loro punteggi accumulati (vedi `smooth`).
+    acc_views: Vec<([f32; 4], [f32; 40])>,
     /// Le carte della lettura prima (quale e dove) e la misura delle carte ferme.
     prev_views: Vec<(Card, [f32; 4])>,
     card_size: (f32, f32),
@@ -1196,6 +1200,21 @@ impl Assistant {
                 break;
             }
         }
+        // Il mazzo del sito si impara dalle carte certe: in mano per la partita, lette con largo
+        // distacco, da più letture. Ogni posto e inclinazione nuovi della stessa carta sono un
+        // esempio in più. (Le immagini restano solo sul computer, in carte_viste.json.)
+        for v in &scene.hand {
+            let Some((c, m)) = v.best(CardSet::FULL) else { continue };
+            if v.partial || m < 2.0 * AUTO_MARGIN || !self.pos.hand.contains(c) || self.vision.sightings.hand[c as usize].count < 4 {
+                continue;
+            }
+            let spot = [(v.at[0] * 20.0) as i32, (v.at[1] * 20.0) as i32];
+            if self.vision.learned.iter().any(|&(k, p)| k == c && p == spot) {
+                continue;
+            }
+            self.vision.learned.push((c, spot));
+            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&v.img, v.vis, c);
+        }
         // Fine partita non vista: a mazzo finito, se sullo schermo non resta nessuna carta ancora
         // in gioco (né in mano né in tavola) per qualche lettura, la partita è finita anche se le
         // ultime giocate non si sono viste. Si chiude da sola, segnando le prese come non viste.
@@ -1388,7 +1407,68 @@ impl Assistant {
     /// Toglie dalla lettura le carte in movimento: una carta che sta entrando, girandosi o
     /// scivolando sul tavolo si legge spesso come un'altra. Vale solo una carta ferma (uguale e
     /// nello stesso punto della lettura prima) o con la misura delle carte ferme viste finora.
+    /// Le letture di una carta ferma nello stesso punto si sommano: una lettura sbagliata di
+    /// passaggio (una carta che si sta schiarendo, girando, coprendo per un attimo) in mezzo a
+    /// tante giuste non cambia la carta. (Una penalità alle carte già uscite dal gioco rendeva
+    /// definitivo ogni errore già entrato nella partita: non c'è.)
+    fn smooth(&mut self, scene: &Scene) -> Scene {
+        let mut out = scene.clone();
+        let size = |v: &CardView| (v.at[2] - v.at[0], v.at[3] - v.at[1]);
+        let prev = std::mem::take(&mut self.vision.acc_views);
+        let mut next = Vec::new();
+        for v in out.opp_slot.iter_mut().chain(out.my_slot.iter_mut()).chain(out.hand.iter_mut()) {
+            let (w, h) = size(v);
+            if h <= 0.0 {
+                continue;
+            }
+            let same = prev.iter().find(|(at, _)| {
+                (at[0] + at[2] - v.at[0] - v.at[2]).abs() < 0.12 * w
+                    && (at[1] + at[3] - v.at[1] - v.at[3]).abs() < 0.12 * h
+                    && ((at[2] - at[0]) / w - 1.0).abs() < 0.06
+                    && ((at[3] - at[1]) / h - 1.0).abs() < 0.06
+            });
+            if let Some((_, acc)) = same {
+                for c in 0..40 {
+                    v.scores[c] = 0.5 * acc[c] + 0.5 * v.scores[c];
+                }
+            }
+            next.push((v.at, v.scores));
+        }
+        self.vision.acc_views = next;
+        // Mentre non si pesca la mano ha solo carte mie: una carta "nuova" dello stesso seme di una
+        // mia carta che in questa lettura non si vede è quella, letta male.
+        if matches!(self.pos.step(), Step::MyMove | Step::OppMove) && out.hand.len() == self.pos.hand.len() as usize {
+            let best = |v: &CardView| v.best(CardSet::FULL).map(|b| b.0);
+            let read: Vec<Option<Card>> = out.hand.iter().map(best).collect();
+            let unseen: Vec<Card> = self.pos.hand.iter().filter(|c| !read.contains(&Some(*c))).collect();
+            // (Una carta sola diversa: una mano tutta nuova è una partita nuova, non errori.)
+            let strangers = read.iter().filter(|c| c.is_none_or(|c| !self.pos.hand.contains(c))).count();
+            for v in out.hand.iter_mut().filter(|_| strangers == 1) {
+                let Some(c) = best(v) else { continue };
+                if self.pos.hand.contains(c) {
+                    continue;
+                }
+                // (Solo una mia carta mai vista in tavola, e che stava proprio in quel punto.)
+                let sights = &self.vision.sightings;
+                let w = v.at[2] - v.at[0];
+                let here = (v.at[0] + v.at[2]) / 2.0;
+                let candidates: Vec<Card> = unseen
+                    .iter()
+                    .copied()
+                    .filter(|&k| cards::suit(k) == cards::suit(c) && sights.table.get(k as usize).is_none_or(|t| t.count == 0))
+                    .filter(|&k| sights.hand_places.get(k as usize).copied().flatten().is_some_and(|p| ((p[0] + p[2]) / 2.0 - here).abs() < 0.35 * w))
+                    .collect();
+                if let [k] = candidates.as_slice() {
+                    v.scores[*k as usize] = v.scores[*k as usize].max(v.scores[c as usize] + 1.0);
+                }
+            }
+        }
+        out
+    }
+
     fn settle(&mut self, scene: &Scene) -> Scene {
+        let smoothed = self.smooth(scene);
+        let scene = &smoothed;
         let id = |v: &CardView| v.best(CardSet::FULL).map(|b| b.0);
         let size = |v: &CardView| (v.at[2] - v.at[0], v.at[3] - v.at[1]);
         let prev = std::mem::take(&mut self.vision.prev_views);
@@ -3235,6 +3315,23 @@ impl Sightings {
         let allowed = pos.allowed().union(CardSet::FULL.minus(pos.played).minus(pos.hand));
         (0..40u8).any(|c| {
             allowed.contains(c) && !pos.hand.contains(c) && Some(c) != pos.table && self.in_hand(c) && !self.on_table(c)
+                && self.misread_of(pos, c).is_none()
+        })
+    }
+
+    /// La carta `c`, che non ho, è una mia carta letta male: sta proprio dove stava una mia carta
+    /// dello stesso seme che adesso non si vede (un due letto tre mentre il ventaglio si
+    /// ridispone), e quella non è mai andata in tavola.
+    fn misread_of(&self, pos: &Position, c: Card) -> Option<Card> {
+        let here = self.hand_places[c as usize]?;
+        pos.hand.iter().find(|&k| {
+            let Some(p) = self.hand_places[k as usize] else { return false };
+            let w = (p[2] - p[0]).max(here[2] - here[0]);
+            cards::suit(k) == cards::suit(c)
+                && ((p[0] + p[2]) - (here[0] + here[2])).abs() / 2.0 < 0.35 * w
+                && self.table[k as usize].count == 0
+                && self.hand[k as usize].last < self.hand[c as usize].last
+                && self.hand[c as usize].first > self.hand[k as usize].first
         })
     }
 
@@ -3459,6 +3556,12 @@ impl Sightings {
         let new = b.iter().filter(|c| !pos.hand.contains(**c)).count();
         let n = pos.hand.len() as usize;
         let fits = (b.len() == n && new == 1) || (b.len() + 1 == n && new == 0 && pos.deck_len == 0);
+        // (Una carta "nuova" che è solo una mia carta letta male non dice niente.)
+        if let Some(&fresh) = b.iter().find(|c| !pos.hand.contains(**c)) {
+            if self.misread_of(pos, fresh).is_some() {
+                return None;
+            }
+        }
         match missing.as_slice() {
             // (A mazzo finito la mano si accorcia e basta: prima di dire che la carta è uscita
             // deve mancare da un po', perché una carta coperta dalle altre torna a vedersi.)
@@ -5082,6 +5185,9 @@ mod tests {
                         a.pos.hand.iter().map(cards::short).collect::<Vec<_>>().join(" "),
                         a.pos.table.map(cards::short)
                     );
+                    if std::env::var_os("STATO").is_some() && !a.vision.status.is_empty() {
+                        println!("      stato: {}", a.vision.status);
+                    }
                 }
                 let prev_hand = std::mem::replace(&mut before, truth_hand.clone());
                 before.extend(prev_hand);

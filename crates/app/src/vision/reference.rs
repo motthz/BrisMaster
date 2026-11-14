@@ -556,6 +556,16 @@ const QY: [f32; 2] = [0.03, 0.06];
 /// Somiglianza migliore della carta raddrizzata con le carte di riferimento, per ciascuna striscia
 /// visibile `cols` della larghezza, con pochi ritagli: le miniature si calcolano una volta sola.
 pub fn quick_tops(card: &Img, cols_list: &[[f32; 2]]) -> Vec<f32> {
+    let key = memo_key(card, &bits(&cols_list.iter().flatten().copied().collect::<Vec<f32>>()));
+    if let Some(v) = memo_get(&QUICK, key) {
+        return v;
+    }
+    let v = quick_tops_inner(card, cols_list);
+    memo_put(&QUICK, 8192, key, v.clone());
+    v
+}
+
+fn quick_tops_inner(card: &Img, cols_list: &[[f32; 2]]) -> Vec<f32> {
     let mut seen = Seen::new(card, WHOLE, WHOLE);
     let n = templates().len();
     // Prima un ritaglio solo: le posizioni che non somigliano a niente si scartano subito.
@@ -595,6 +605,61 @@ pub struct Match {
     /// Per carta di riferimento (stile * 40 + carta): somiglianza migliore e ritaglio (margini)
     /// che l'ha data.
     best: Vec<(f32, f32, f32)>,
+    /// L'impronta della carta vista e del confronto chiesto (vedi `memo`).
+    key: u64,
+}
+
+/// I confronti già fatti, per impronta della carta raddrizzata: una carta ferma sullo schermo
+/// dà gli stessi pixel lettura dopo lettura, e il confronto (la parte più lenta della lettura)
+/// non si rifà. Pochi elementi, i più recenti.
+struct Memo<V> {
+    map: std::collections::HashMap<u64, V>,
+    order: std::collections::VecDeque<u64>,
+    cap: usize,
+}
+
+impl<V: Clone> Memo<V> {
+    fn new(cap: usize) -> Memo<V> {
+        Memo { map: std::collections::HashMap::new(), order: std::collections::VecDeque::new(), cap }
+    }
+    fn get(&self, k: u64) -> Option<V> {
+        self.map.get(&k).cloned()
+    }
+    fn put(&mut self, k: u64, v: V) {
+        if self.map.insert(k, v).is_none() {
+            self.order.push_back(k);
+            if self.order.len() > self.cap {
+                if let Some(old) = self.order.pop_front() {
+                    self.map.remove(&old);
+                }
+            }
+        }
+    }
+}
+
+fn memo_key(card: &Img, extra: &[u32]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (card.w, card.h, gray_screen()).hash(&mut h);
+    card.px.hash(&mut h);
+    extra.hash(&mut h);
+    h.finish()
+}
+
+fn bits(v: &[f32]) -> Vec<u32> {
+    v.iter().map(|x| x.to_bits()).collect()
+}
+
+static CROPS: std::sync::Mutex<Option<Memo<Vec<(f32, f32, f32)>>>> = std::sync::Mutex::new(None);
+static REFINED: std::sync::Mutex<Option<Memo<([f32; 40], Vec<[f32; 40]>)>>> = std::sync::Mutex::new(None);
+static QUICK: std::sync::Mutex<Option<Memo<Vec<f32>>>> = std::sync::Mutex::new(None);
+
+fn memo_get<V: Clone>(m: &std::sync::Mutex<Option<Memo<V>>>, k: u64) -> Option<V> {
+    m.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(k))
+}
+
+fn memo_put<V: Clone>(m: &std::sync::Mutex<Option<Memo<V>>>, cap: usize, k: u64, v: V) {
+    m.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| Memo::new(cap)).put(k, v);
 }
 
 impl Match {
@@ -618,6 +683,14 @@ impl Match {
         }
         let (w, h) = (CARD_W as f32, CARD_H as f32);
         let hues = Hues::new(card, (0.1 * w).max(cols[0] * w), 0.06 * h, (0.9 * w).min(cols[1] * w), 0.94 * h);
+        let mut extra = bits(&[vis[0], vis[1], cols[0], cols[1]]);
+        extra.push(uncover as u32);
+        extra.extend(bits(xs));
+        extra.extend(bits(ys));
+        let key = memo_key(card, &extra);
+        if let Some(best) = memo_get(&CROPS, key) {
+            return Match { seen, hues, best, key };
+        }
         let mut best = vec![(-1.0f32, 0.0f32, 0.0f32); NT];
         for &sx in xs {
             for &sy in ys {
@@ -630,7 +703,8 @@ impl Match {
                 }
             }
         }
-        Match { seen, hues, best }
+        memo_put(&CROPS, 2048, key, best.clone());
+        Match { seen, hues, best, key }
     }
 
     /// La somiglianza migliore trovata finora.
@@ -646,6 +720,16 @@ impl Match {
 
     /// Come `refine`, con in più la somiglianza con ciascuno stile.
     pub fn refine_styles(mut self) -> ([f32; 40], Vec<[f32; 40]>) {
+        if let Some(done) = memo_get(&REFINED, self.key) {
+            return done;
+        }
+        let key = self.key;
+        let out = self.refine_inner();
+        memo_put(&REFINED, 512, key, out.clone());
+        out
+    }
+
+    fn refine_inner(&mut self) -> ([f32; 40], Vec<[f32; 40]>) {
         if self.top() >= HOPELESS {
             let mut order: Vec<usize> = (0..NT).collect();
             order.sort_by(|&x, &y| self.best[y].0.total_cmp(&self.best[x].0));

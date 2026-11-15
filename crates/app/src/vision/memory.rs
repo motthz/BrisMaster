@@ -123,6 +123,17 @@ fn ncc(a: &[u8], b: &[u8], (r0, r1): (usize, usize)) -> f32 {
 pub const SAME: f32 = 0.9;
 
 /// Somiglianza fra due carte raddrizzate, sulla fascia visibile `vis`.
+/// Poco contrasto: fra i punti più chiari e quelli più scuri della carta c'è poca differenza.
+pub fn faint(img: &Img) -> bool {
+    let mut g: Vec<u8> = img.px.iter().step_by(3).map(|p| ((p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10) as u8).collect();
+    if g.len() < 20 {
+        return false;
+    }
+    g.sort_unstable();
+    let (lo, hi) = (g[g.len() * 5 / 100], g[g.len() * 95 / 100]);
+    hi.saturating_sub(lo) < 110
+}
+
 pub fn similarity(a: &Img, b: &Img, vis: [f32; 2]) -> f32 {
     ncc(&thumb(a), &thumb(b), rows(vis))
 }
@@ -188,6 +199,11 @@ impl Memory {
     /// Ricorda una carta, vista nella fascia `vis`. Tiene al massimo 4 immagini per carta (luci,
     /// rotazioni e parti viste diverse).
     pub fn remember(&mut self, img: &Img, vis: [f32; 2], card: Card) {
+        // Un'immagine sbiadita (una carta che il sito fa svanire, mezza trasparente sul tavolo)
+        // non si ricorda: senza bianco né inchiostro scuro somiglia a troppe carte.
+        if faint(img) {
+            return;
+        }
         let t = thumb(img);
         let same: Vec<usize> = (0..self.templates.len()).filter(|&i| self.templates[i].card == card).collect();
         let covered = |i: usize| {

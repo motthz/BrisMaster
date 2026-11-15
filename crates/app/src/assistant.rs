@@ -410,6 +410,10 @@ struct Vision {
     trump_at: Option<[f32; 4]>,
     /// Le carte già imparate in questa partita, e dove (vedi `sync`).
     learned: Vec<(Card, [i32; 2])>,
+    /// Le immagini delle mie carte in mano da imparare quando le gioco: si imparano solo se poi
+    /// in tavola si leggono uguali (una carta letta male in mano non arriva mai in tavola con quel
+    /// nome, e la sua immagine sbagliata non si impara).
+    to_learn: Vec<(Card, Img, [f32; 2])>,
     /// Le carte della lettura prima, dove stavano e i loro punteggi accumulati (vedi `smooth`).
     acc_views: Vec<([f32; 4], [f32; 40])>,
     /// Le carte della lettura prima (quale e dove) e la misura delle carte ferme.
@@ -420,6 +424,9 @@ struct Vision {
     slots: Vec<[f32; 2]>,
     /// La lettura (mano e carta in tavola) a cui rimettersi in pari, e da quante letture è uguale.
     behind: (Vec<Card>, Option<Card>, u32),
+    /// La correzione della mano in attesa (carte da togliere, carte da mettere) e da quante letture
+    /// è uguale.
+    swap: (Vec<Card>, Vec<Card>, u32),
     /// Dopo una ripartenza a tavolo vuoto chi apre è una supposizione (io), e da quale lettura.
     guessed_leader: Option<u64>,
     restart_after: Option<std::time::Instant>,
@@ -709,19 +716,23 @@ impl Assistant {
         self.pending = None;
         self.analysis_started = None;
         self.play_best_queued = false;
-        self.analysis_failures = (self.analysis_failures + 1).min(2);
-        self.analysis_retry_at = (self.analysis_failures < 2).then(|| std::time::Instant::now() + std::time::Duration::from_millis(750));
-        self.analysis_error = Some(format!("{why} {}", if self.analysis_failures < 2 {
-            "Riprovo il consiglio automaticamente. Puoi continuare a inserire le carte."
-        } else {
-            "Puoi continuare a inserire le carte o riprovare il consiglio."
-        }));
-        ctx.request_repaint_after(std::time::Duration::from_millis(750));
+        // Si riprova sempre da soli, aspettando un po' di più a ogni tentativo (al più 5 secondi):
+        // il consiglio non resta mai fermo per il resto del turno.
+        self.analysis_failures = self.analysis_failures.saturating_add(1);
+        let wait = std::time::Duration::from_millis((750u64 << (self.analysis_failures - 1).min(3)).min(5000));
+        self.analysis_retry_at = Some(std::time::Instant::now() + wait);
+        self.analysis_error = Some(format!("{why} Riprovo il consiglio automaticamente. Puoi continuare a inserire le carte."));
+        ctx.request_repaint_after(wait);
     }
 
     fn screen_is_behind(&self) -> bool {
-        self.vision.catching_up || self.vision.restart_after.is_some()
-            || self.vision.reader.as_ref().is_some_and(|r| self.vision.inconsistent || (self.vision.lost && self.vision.gap) || r.lag() > std::time::Duration::from_millis(2500))
+        // Al mio turno la partita cambia solo quando gioco io: una lettura un po' indietro (le carte
+        // che si alzano sotto il mouse, un'animazione del sito) non toglie il consiglio. Solo una
+        // lettura bloccata, che si riavvia da sola, lo sospende.
+        let late = if self.pos.step() == Step::MyMove { 8000 } else { 2500 };
+        self.vision.restart_after.is_some()
+            || (self.vision.catching_up && self.pos.step() != Step::MyMove)
+            || self.vision.reader.as_ref().is_some_and(|r| self.vision.inconsistent || (self.vision.lost && self.vision.gap) || r.lag() > std::time::Duration::from_millis(late))
     }
 
     /// Un canale chiuso o un calcolo troppo lungo non lasciano il consiglio in attesa per sempre.
@@ -763,7 +774,7 @@ impl Assistant {
         }
         let wants = self.pos.step() == Step::MyMove && self.pos.hand.len() > 1;
         let stale = self.analysis.as_ref().is_some_and(|a| a.samples != samples);
-        if wants && self.pending.is_none() && self.analysis_failures < 2 && (self.analysis.is_none() || stale) {
+        if wants && self.pending.is_none() && (self.analysis.is_none() || stale) {
             if let Some(wait) = self.analysis_retry_at.and_then(|t| t.checked_duration_since(std::time::Instant::now())) {
                 ctx.request_repaint_after(wait);
                 return;
@@ -771,6 +782,9 @@ impl Assistant {
             let obs = self.pos.observation();
             // Un secondo tentativo non dipende dalla deduzione che potrebbe aver fatto fallire il primo.
             let log = if self.analysis_failures > 0 { Vec::new() } else { self.opp_log() };
+            // (E dopo due tentativi falliti, un calcolo più leggero: arriva prima anche su un
+            // computer occupato.)
+            let samples = if self.analysis_failures >= 2 { samples.min(1000) } else { samples };
             let (tx, rx) = channel();
             std::thread::spawn(move || {
                 let mut rng = SmallRng::from_entropy();
@@ -1153,8 +1167,12 @@ impl Assistant {
             self.check_mismatch(scene);
         }
         self.vision.sightings.update(scene);
-        // Una carta in più nella mano piena, mentre non si pesca, è un fantasma.
-        if matches!(self.pos.step(), Step::MyMove | Step::OppMove) && self.pos.hand.len() == 3 && scene.hand.len() > 3 {
+        // Una carta in più nella mano piena, mentre non si pesca, è un fantasma; e così una carta
+        // che la partita non ha in una mano con le carte giuste di numero (una mia letta male): non
+        // è una pescata.
+        if matches!(self.pos.step(), Step::MyMove | Step::OppMove)
+            && ((self.pos.hand.len() == 3 && scene.hand.len() > 3) || (std::env::var_os("SENZA_FANTASMI").is_none() && scene.hand.len() == self.pos.hand.len() as usize && !scene.hand.is_empty()))
+        {
             let extra: Vec<Card> = unmatched_hand(scene, &self.pos).iter().filter_map(|v| v.best(CardSet::FULL).map(|b| b.0)).collect();
             let s = &mut self.vision.sightings;
             if s.phantoms.len() < 40 {
@@ -1224,7 +1242,21 @@ impl Assistant {
                 continue;
             }
             self.vision.learned.push((c, spot));
-            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&v.img, v.vis, c);
+            if self.vision.to_learn.iter().filter(|e| e.0 == c).count() < 3 {
+                self.vision.to_learn.push((c, v.img.clone(), v.vis));
+            }
+        }
+        // Giocata e letta uguale in tavola: le sue immagini in mano si imparano.
+        let sights = &self.vision.sightings;
+        let (keep, done): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.vision.to_learn).into_iter().partition(|e| !self.pos.played.contains(e.0) && self.pos.table != Some(e.0));
+        self.vision.to_learn = keep;
+        let confirmed: Vec<_> = done.into_iter().filter(|e| sights.on_table(e.0)).collect();
+        if !confirmed.is_empty() {
+            let mut mem = self.vision.memory.lock().unwrap_or_else(|e| e.into_inner());
+            for (c, img, vis) in confirmed {
+                mem.remember(&img, vis, c);
+            }
         }
         // Fine partita non vista: a mazzo finito, se sullo schermo non resta nessuna carta ancora
         // in gioco (né in mano né in tavola) per qualche lettura, la partita è finita anche se le
@@ -1269,6 +1301,12 @@ impl Assistant {
             self.vision.stall = 0;
         } else if self.vision.stuck >= BEHIND && self.catch_up(scene) {
             // Indietro rispetto al tavolo: le prese mancanti si sono rigiocate dalle letture passate.
+            self.vision.stuck = 0;
+            self.vision.stall = 0;
+            self.vision.inconsistent = false;
+        } else if self.vision.stuck >= RESTART + 4 && std::env::var_os("SENZA_SCAMBIO").is_none() && self.swap_misread(scene) {
+            // Ultima risorsa: la mano sullo schermo, stabile da un pezzo, dice che una mia carta era
+            // stata letta male; si corregge al suo posto e il consiglio riparte.
             self.vision.stuck = 0;
             self.vision.stall = 0;
             self.vision.inconsistent = false;
@@ -1822,6 +1860,60 @@ impl Assistant {
         self.vision.status = format!(
             "Ripreso dopo un tratto in cui il tavolo non si vedeva: {done} prese non viste (le carte dell'avversario di quelle prese e i punti possono non essere giusti)"
         );
+        true
+    }
+
+    /// La mano sullo schermo ha tante carte quante la partita, ma una o due sono diverse e lo
+    /// restano per più letture: le carte della partita che non si vedono da nessuna parte erano
+    /// lette male, e al loro posto vanno quelle che si vedono (fra quelle che possono esserci).
+    fn swap_misread(&mut self, scene: &Scene) -> bool {
+        let pos = self.pos;
+        if !matches!(pos.step(), Step::MyMove | Step::OppMove) || scene.hand.len() != pos.hand.len() as usize || scene.hand.is_empty() {
+            self.vision.swap.2 = 0;
+            return false;
+        }
+        let near = |v: &CardView, c: Card| {
+            let top = v.scores.iter().copied().fold(f32::MIN, f32::max);
+            v.scores[c as usize] >= top - AUTO_MARGIN
+        };
+        let unseen = pos.unseen();
+        let absent: Vec<Card> = pos.hand.iter().filter(|&c| !scene.hand.iter().any(|v| near(v, c))).collect();
+        let mut put: Vec<Card> = Vec::new();
+        for v in &scene.hand {
+            if pos.hand.iter().any(|c| near(v, c)) {
+                continue;
+            }
+            match v.best(unseen) {
+                Some((c, _)) if !put.contains(&c) => put.push(c),
+                _ => {
+                    self.vision.swap.2 = 0;
+                    return false;
+                }
+            }
+        }
+        if absent.is_empty() || absent.len() != put.len() || absent.len() > 2 {
+            self.vision.swap.2 = 0;
+            return false;
+        }
+        let sw = &mut self.vision.swap;
+        if sw.0 == absent && sw.1 == put { sw.2 += 1 } else { *sw = (absent.clone(), put.clone(), 1) }
+        if sw.2 < 3 {
+            return false;
+        }
+        self.vision.swap.2 = 0;
+        let mut p = pos;
+        for &c in &absent {
+            p.hand.remove(c);
+        }
+        for &c in &put {
+            p.hand.insert(c);
+        }
+        self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
+        self.pos = p;
+        self.changed();
+        self.vision.last = None;
+        let names = |v: &[Card]| v.iter().map(|&c| cards::name(c)).collect::<Vec<_>>().join(", ");
+        self.vision.status = format!("Mano corretta dallo schermo: {} al posto di {}", names(&put), names(&absent));
         true
     }
 
@@ -2624,7 +2716,9 @@ impl Assistant {
 
     /// Gioca la carta consigliata, o la prenota se il motore sta ancora calcolando.
     fn play_best(&mut self) {
-        if self.screen_is_behind() {
+        // (Giocare da tastiera il consiglio vuole una lettura aggiornata: mentre si recuperano
+        // letture la carta potrebbe essere già stata giocata.)
+        if self.screen_is_behind() || self.vision.catching_up {
             self.entry_error = Some("Sto recuperando le letture: il consiglio riprende quando il tavolo è aggiornato.".into());
             return;
         }
@@ -3075,7 +3169,7 @@ impl Assistant {
                     ui.spinner();
                     ui.label("Il motore sta simulando le possibili mani dell'avversario...");
                 });
-            } else if self.analysis_retry_at.is_some() && self.analysis_failures < 2 {
+            } else if self.analysis_retry_at.is_some() {
                 ui.label("Sto riavviando il calcolo del consiglio...");
             } else {
                 ui.label("Consiglio non disponibile. Puoi inserire la carta giocata o riprovare il calcolo.");
@@ -4471,8 +4565,12 @@ mod tests {
             assert_eq!(a.analysis_failures, expected);
         }
         a.poll(7, &ctx);
-        assert!(a.pending.is_none(), "nessuna cascata infinita di nuovi calcoli");
+        assert!(a.pending.is_none(), "nessuna cascata immediata di nuovi calcoli");
         assert!(a.analysis_error.as_ref().unwrap().contains("in tempo"));
+        // Dopo l'attesa si riprova comunque: il consiglio non si ferma per il resto del turno.
+        a.analysis_retry_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        a.poll(7, &ctx);
+        assert!(a.pending.is_some(), "il consiglio si riprova anche dopo due errori");
         assert!(a.enter(10), "l'inserimento delle carte resta utilizzabile");
         assert_eq!(a.analysis_failures, 0);
     }
@@ -4500,8 +4598,9 @@ mod tests {
         a.play_best();
         assert_eq!(a.pos.hand.len(), 3);
         assert!(!a.play_best_queued);
+        // Il consiglio resta visibile: al mio turno la partita cambia solo quando gioco io.
         a.poll(7, &egui::Context::default());
-        assert!(a.analysis.is_none() && a.pending.is_none());
+        assert!(a.analysis.is_some());
     }
 
     #[test]

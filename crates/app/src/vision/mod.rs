@@ -171,6 +171,8 @@ struct Focus {
     /// Letture di fila in cui la zona non bastava (un altro sito, la finestra spostata).
     misses: u32,
     saved: Option<std::time::Instant>,
+    /// Letture da aspettare prima di un'altra lettura completa per una carta sparita dal tavolo.
+    wait_full: u32,
 }
 
 impl Focus {
@@ -310,7 +312,19 @@ fn focused_scene_inner(img: &Img) -> Scene {
         // che non è più quella giusta, si rilegge su tutto lo schermo.)
         let inside = |v: &CardView| v.at[0] > 0.01 && v.at[1] > 0.01 && v.at[2] < 0.99 && v.at[3] < 0.99;
         let clear = scene.trump.iter().chain(&scene.opp_slot).chain(&scene.my_slot).chain(&scene.hand).all(|v| v.at[2] <= v.at[0] || inside(v));
-        if clear && count(&scene) >= expected && count(&scene) > 0 {
+        // (Una carta appena sparita dal tavolo: la presa si sta chiudendo e la carta dell'avversario
+        // può essere comparsa, sbiadita, fuori dalla zona. Si legge tutto lo schermo.)
+        let vanished = detect::take_vanished() && FOCUS.with(|f| {
+            let mut f = f.borrow_mut();
+            if f.wait_full > 0 {
+                f.wait_full -= 1;
+                false
+            } else {
+                f.wait_full = 3;
+                true
+            }
+        });
+        if clear && !vanished && count(&scene) >= expected && count(&scene) > 0 {
             let (sx, sy) = ((x1 - x0) as f32 / img.w as f32, (y1 - y0) as f32 / img.h as f32);
             let (ox, oy) = (x0 as f32 / img.w as f32, y0 as f32 / img.h as f32);
             for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {

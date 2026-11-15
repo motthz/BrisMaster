@@ -1171,7 +1171,7 @@ impl Assistant {
         // che la partita non ha in una mano con le carte giuste di numero (una mia letta male): non
         // è una pescata.
         if matches!(self.pos.step(), Step::MyMove | Step::OppMove)
-            && ((self.pos.hand.len() == 3 && scene.hand.len() > 3) || (scene.hand.len() == self.pos.hand.len() as usize && !scene.hand.is_empty()))
+            && ((self.pos.hand.len() == 3 && scene.hand.len() > 3) || (std::env::var_os("SENZA_FANTASMI").is_none() && scene.hand.len() == self.pos.hand.len() as usize && !scene.hand.is_empty()))
         {
             let extra: Vec<Card> = unmatched_hand(scene, &self.pos).iter().filter_map(|v| v.best(CardSet::FULL).map(|b| b.0)).collect();
             let s = &mut self.vision.sightings;
@@ -1304,7 +1304,7 @@ impl Assistant {
             self.vision.stuck = 0;
             self.vision.stall = 0;
             self.vision.inconsistent = false;
-        } else if self.vision.stuck >= RESTART + 4 && self.swap_misread(scene) {
+        } else if self.vision.stuck >= RESTART + 4 && std::env::var_os("SENZA_SCAMBIO").is_none() && self.swap_misread(scene) {
             // Ultima risorsa: la mano sullo schermo, stabile da un pezzo, dice che una mia carta era
             // stata letta male; si corregge al suo posto e il consiglio riparte.
             self.vision.stuck = 0;

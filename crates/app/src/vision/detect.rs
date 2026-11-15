@@ -1396,18 +1396,17 @@ pub fn analyze(img: &Img) -> Analysis {
     // (Solo le carte sparite da sopra la mano: quelle della mano si spostano di continuo.)
     let low = a.cards.iter().filter(|c| !c.rect.landscape()).map(|c| c.rect.cy).fold(f32::MIN, f32::max);
     let row = low - 0.5 * a.card_l + oy;
-    let vanished = PREV_CARDS.with(|p| p.borrow().iter().any(|&(x, y, _)| y < row && !near(x, y, &here)));
+    // (Per qualche lettura, e solo finché in tavola non si vedono già due carte.)
+    let on_table = here.iter().filter(|&&(_, y)| y < row).count();
+    let vanished = on_table < 2 && PREV_CARDS.with(|p| p.borrow().iter().any(|&(x, y, _)| y < row && !near(x, y, &here)));
     VANISHED.with(|v| v.set(vanished));
     if !a.cards.is_empty() && vanished {
-        // La prova solita (se si era partiti da un'altra) e poi quella coi bianchi più scuri.
+        // Una prova sola: la solita se si era partiti da un'altra, se no quella coi bianchi più scuri.
         let mut papers: Vec<Paper> = Vec::new();
         if k != 0 {
             papers.push(paper.clone());
-        }
-        if k != 1 {
-            if let Some(p) = darker.get_or_init(|| Paper::darker(img)).first() {
-                papers.push(p.clone());
-            }
+        } else if let Some(p) = darker.get_or_init(|| Paper::darker(img)).first() {
+            papers.push(p.clone());
         }
         let w = a.cards.iter().map(|c| c.rect.short()).fold(0.0f32, f32::max);
         let l = a.card_l;

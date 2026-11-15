@@ -420,6 +420,9 @@ struct Vision {
     slots: Vec<[f32; 2]>,
     /// La lettura (mano e carta in tavola) a cui rimettersi in pari, e da quante letture è uguale.
     behind: (Vec<Card>, Option<Card>, u32),
+    /// La correzione della mano in attesa (carte da togliere, carte da mettere) e da quante letture
+    /// è uguale.
+    swap: (Vec<Card>, Vec<Card>, u32),
     /// Dopo una ripartenza a tavolo vuoto chi apre è una supposizione (io), e da quale lettura.
     guessed_leader: Option<u64>,
     restart_after: Option<std::time::Instant>,
@@ -1279,6 +1282,12 @@ impl Assistant {
             self.vision.stuck = 0;
             self.vision.stall = 0;
             self.vision.inconsistent = false;
+        } else if self.vision.stuck >= 2 * RESTART && self.swap_misread(scene) {
+            // Ultima risorsa: la mano sullo schermo, stabile da un pezzo, dice che una mia carta era
+            // stata letta male; si corregge al suo posto e il consiglio riparte.
+            self.vision.stuck = 0;
+            self.vision.stall = 0;
+            self.vision.inconsistent = false;
         } else if self.vision.stuck >= RESTART && self.resync_from(scene, true) {
             // Ferma da troppo: nessuno ha scritto la carta che mancava, si riparte da quello che
             // si vede (le prese non viste restano segnate come tali).
@@ -1829,6 +1838,60 @@ impl Assistant {
         self.vision.status = format!(
             "Ripreso dopo un tratto in cui il tavolo non si vedeva: {done} prese non viste (le carte dell'avversario di quelle prese e i punti possono non essere giusti)"
         );
+        true
+    }
+
+    /// La mano sullo schermo ha tante carte quante la partita, ma una o due sono diverse e lo
+    /// restano per più letture: le carte della partita che non si vedono da nessuna parte erano
+    /// lette male, e al loro posto vanno quelle che si vedono (fra quelle che possono esserci).
+    fn swap_misread(&mut self, scene: &Scene) -> bool {
+        let pos = self.pos;
+        if !matches!(pos.step(), Step::MyMove | Step::OppMove) || scene.hand.len() != pos.hand.len() as usize || scene.hand.is_empty() {
+            self.vision.swap.2 = 0;
+            return false;
+        }
+        let near = |v: &CardView, c: Card| {
+            let top = v.scores.iter().copied().fold(f32::MIN, f32::max);
+            v.scores[c as usize] >= top - AUTO_MARGIN
+        };
+        let unseen = pos.unseen();
+        let absent: Vec<Card> = pos.hand.iter().filter(|&c| !scene.hand.iter().any(|v| near(v, c))).collect();
+        let mut put: Vec<Card> = Vec::new();
+        for v in &scene.hand {
+            if pos.hand.iter().any(|c| near(v, c)) {
+                continue;
+            }
+            match v.best(unseen) {
+                Some((c, _)) if !put.contains(&c) => put.push(c),
+                _ => {
+                    self.vision.swap.2 = 0;
+                    return false;
+                }
+            }
+        }
+        if absent.is_empty() || absent.len() != put.len() || absent.len() > 2 {
+            self.vision.swap.2 = 0;
+            return false;
+        }
+        let sw = &mut self.vision.swap;
+        if sw.0 == absent && sw.1 == put { sw.2 += 1 } else { *sw = (absent.clone(), put.clone(), 1) }
+        if sw.2 < 3 {
+            return false;
+        }
+        self.vision.swap.2 = 0;
+        let mut p = pos;
+        for &c in &absent {
+            p.hand.remove(c);
+        }
+        for &c in &put {
+            p.hand.insert(c);
+        }
+        self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
+        self.pos = p;
+        self.changed();
+        self.vision.last = None;
+        let names = |v: &[Card]| v.iter().map(|&c| cards::name(c)).collect::<Vec<_>>().join(", ");
+        self.vision.status = format!("Mano corretta dallo schermo: {} al posto di {}", names(&put), names(&absent));
         true
     }
 

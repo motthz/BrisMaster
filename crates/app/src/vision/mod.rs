@@ -293,7 +293,9 @@ fn focused_scene_inner(img: &Img) -> Scene {
         let (mx, my) = (card.max(0.04) * 0.8, (card * img.w as f32 / img.h.max(1) as f32).max(0.04) * 0.5);
         // (Sulla griglia di 1/64 dello schermo, così il ritaglio non cambia a ogni lettura.)
         let q = |v: f32, up: bool| if up { (v * 64.0).ceil() / 64.0 } else { (v * 64.0).floor() / 64.0 };
-        let r = [q((u[0] - mx).max(0.0), false), q((u[1] - my).max(0.0), false), q((u[2] + mx).min(1.0), true), q((u[3] + 1.6 * my).min(1.0), true)];
+        // (In alto più margine: due carte. La casella dell'avversario può non essere ancora fra le
+        // zone viste, per esempio alla prima presa, quando la sua carta compare già sbiadita.)
+        let r = [q((u[0] - mx).max(0.0), false), q((u[1] - 4.0 * my).max(0.0), false), q((u[2] + mx).min(1.0), true), q((u[3] + 1.6 * my).min(1.0), true)];
         // Se la zona è quasi tutto lo schermo non serve ritagliare.
         ((r[2] - r[0]) * (r[3] - r[1]) < 0.7).then_some((r, f.last_count))
     });

@@ -1279,6 +1279,7 @@ pub fn forget_reading_state() {
     LAST_CARD_L.with(|l| l.set(0.0));
     STEADY.with(|s| s.set((0.0, 0.0, 0)));
     FIXTURES.with(|f| f.borrow_mut().clear());
+    PREV_CARDS.with(|p| p.borrow_mut().clear());
     super::reference::forget_style();
     super::forget_focus();
 }
@@ -1383,14 +1384,35 @@ pub fn analyze(img: &Img) -> Analysis {
     // tavolo): la prova coi bianchi più scuri le trova, ma la prima prova si ferma appena ha
     // abbastanza carte. Si aggiungono quelle che la prova più scura trova in posti dove non c'è
     // già una carta.
-    if k != 1 && !a.cards.is_empty() {
-        if let Some(p) = darker.get_or_init(|| Paper::darker(img)).first() {
+    // (Solo quando una carta della lettura prima è sparita dal suo posto: è il momento in cui il
+    // sito la fa svanire. Così la prova in più non rallenta le altre letture.)
+    let here: Vec<(f32, f32)> = a.cards.iter().map(|c| (c.rect.cx / img.w as f32, c.rect.cy / img.h as f32)).collect();
+    // (Una carta sparita da poco: il sito può farla svanire del tutto per qualche lettura e poi
+    // ridisegnarla sbiadita.)
+    let near = |x: f32, y: f32, v: &[(f32, f32)]| v.iter().any(|&(hx, hy)| (hx - x).abs() < 0.04 && (hy - y).abs() < 0.04);
+    let vanished = PREV_CARDS.with(|p| p.borrow().iter().any(|&(x, y, _)| !near(x, y, &here)));
+    if !a.cards.is_empty() && vanished {
+        // La prova solita (se si era partiti da un'altra) e poi quella coi bianchi più scuri.
+        let mut papers: Vec<Paper> = Vec::new();
+        if k != 0 {
+            papers.push(paper.clone());
+        }
+        if k != 1 {
+            if let Some(p) = darker.get_or_init(|| Paper::darker(img)).first() {
+                papers.push(p.clone());
+            }
+        }
+        let w = a.cards.iter().map(|c| c.rect.short()).fold(0.0f32, f32::max);
+        let l = a.card_l;
+        for p in &papers {
             let extra = analyze_inner(img, p);
-            let w = a.cards.iter().map(|c| c.rect.short()).fold(0.0f32, f32::max);
-            let l = a.card_l;
+            let before = a.cards.len();
             for f in extra.cards {
                 let free = a.cards.iter().all(|c| c.rect.dist(&f.rect) > 0.75 * w && !c.rect.contains(f.rect.cx, f.rect.cy) && !f.rect.contains(c.rect.cx, c.rect.cy));
                 let size = l <= 0.0 || (f.rect.long() / l - 1.0).abs() < 0.15;
+                if std::env::var_os("TEMPI").is_some() {
+                    eprintln!("    sbiadita candidata a {:.0},{:.0} punteggio {:.2} libera {free} misura {size} parziale {}", f.rect.cx, f.rect.cy, f.score, f.partial());
+                }
                 if free && size && !f.partial() && f.score >= 0.75 {
                     if std::env::var_os("TEMPI").is_some() {
                         eprintln!("    sbiadita aggiunta a {:.0},{:.0} punteggio {:.2}", f.rect.cx, f.rect.cy, f.score);
@@ -1398,7 +1420,23 @@ pub fn analyze(img: &Img) -> Analysis {
                     a.cards.push(f);
                 }
             }
+            if a.cards.len() > before {
+                break;
+            }
         }
+    }
+    {
+        let now: Vec<(f32, f32)> = a.cards.iter().map(|c| (c.rect.cx / img.w as f32, c.rect.cy / img.h as f32)).collect();
+        PREV_CARDS.with(|p| {
+            let mut p = p.borrow_mut();
+            let mut next: Vec<(f32, f32, u32)> = now.iter().map(|&(x, y)| (x, y, 0)).collect();
+            for &(x, y, age) in p.iter() {
+                if !near(x, y, &now) && age < 12 {
+                    next.push((x, y, age + 1));
+                }
+            }
+            *p = next;
+        });
     }
     LAST_TRY.with(|t| t.set(if a.cards.is_empty() { 0 } else { k }));
     LAST_N.with(|t| t.set(a.cards.len()));
@@ -1417,6 +1455,11 @@ pub fn analyze(img: &Img) -> Analysis {
         }
     }
     a
+}
+
+thread_local! {
+    /// Dove stavano le carte della lettura prima (frazioni dell'immagine).
+    static PREV_CARDS: std::cell::RefCell<Vec<(f32, f32, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 thread_local! {
@@ -1850,7 +1893,10 @@ pub fn scene(img: &Img) -> Scene {
     if floor > f32::MIN {
         whole.retain(|f| !(weak(f) && f.rect.cy > floor + 0.35 * card_l));
     }
+    let dbg = |w: &[Found]| w.iter().map(|c| format!("{:.0},{:.0}", c.rect.cx, c.rect.cy)).collect::<Vec<_>>().join(" ");
+    if std::env::var_os("TEMPI").is_some() { eprintln!("    prima dei fissi: {}", dbg(&whole)); }
     drop_fixtures(&mut whole, card_l);
+    if std::env::var_os("TEMPI").is_some() { eprintln!("    dopo i fissi: {}", dbg(&whole)); }
     // Le carte lette senza sicurezza si riprovano un po' girate e spostate: il rettangolo trovato
     // può essere storto (le carte ai lati di un ventaglio) o preso a metà con la carta accanto.
     let tp = std::time::Instant::now();

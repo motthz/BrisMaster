@@ -410,6 +410,10 @@ struct Vision {
     trump_at: Option<[f32; 4]>,
     /// Le carte già imparate in questa partita, e dove (vedi `sync`).
     learned: Vec<(Card, [i32; 2])>,
+    /// Le immagini delle mie carte in mano da imparare quando le gioco: si imparano solo se poi
+    /// in tavola si leggono uguali (una carta letta male in mano non arriva mai in tavola con quel
+    /// nome, e la sua immagine sbagliata non si impara).
+    to_learn: Vec<(Card, Img, [f32; 2])>,
     /// Le carte della lettura prima, dove stavano e i loro punteggi accumulati (vedi `smooth`).
     acc_views: Vec<([f32; 4], [f32; 40])>,
     /// Le carte della lettura prima (quale e dove) e la misura delle carte ferme.
@@ -1234,7 +1238,21 @@ impl Assistant {
                 continue;
             }
             self.vision.learned.push((c, spot));
-            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&v.img, v.vis, c);
+            if self.vision.to_learn.iter().filter(|e| e.0 == c).count() < 3 {
+                self.vision.to_learn.push((c, v.img.clone(), v.vis));
+            }
+        }
+        // Giocata e letta uguale in tavola: le sue immagini in mano si imparano.
+        let sights = &self.vision.sightings;
+        let (keep, done): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.vision.to_learn).into_iter().partition(|e| !self.pos.played.contains(e.0) && self.pos.table != Some(e.0));
+        self.vision.to_learn = keep;
+        let confirmed: Vec<_> = done.into_iter().filter(|e| sights.on_table(e.0)).collect();
+        if !confirmed.is_empty() {
+            let mut mem = self.vision.memory.lock().unwrap_or_else(|e| e.into_inner());
+            for (c, img, vis) in confirmed {
+                mem.remember(&img, vis, c);
+            }
         }
         // Fine partita non vista: a mazzo finito, se sullo schermo non resta nessuna carta ancora
         // in gioco (né in mano né in tavola) per qualche lettura, la partita è finita anche se le

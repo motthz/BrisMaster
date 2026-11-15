@@ -709,19 +709,23 @@ impl Assistant {
         self.pending = None;
         self.analysis_started = None;
         self.play_best_queued = false;
-        self.analysis_failures = (self.analysis_failures + 1).min(2);
-        self.analysis_retry_at = (self.analysis_failures < 2).then(|| std::time::Instant::now() + std::time::Duration::from_millis(750));
-        self.analysis_error = Some(format!("{why} {}", if self.analysis_failures < 2 {
-            "Riprovo il consiglio automaticamente. Puoi continuare a inserire le carte."
-        } else {
-            "Puoi continuare a inserire le carte o riprovare il consiglio."
-        }));
-        ctx.request_repaint_after(std::time::Duration::from_millis(750));
+        // Si riprova sempre da soli, aspettando un po' di più a ogni tentativo (al più 5 secondi):
+        // il consiglio non resta mai fermo per il resto del turno.
+        self.analysis_failures = self.analysis_failures.saturating_add(1);
+        let wait = std::time::Duration::from_millis((750u64 << (self.analysis_failures - 1).min(3)).min(5000));
+        self.analysis_retry_at = Some(std::time::Instant::now() + wait);
+        self.analysis_error = Some(format!("{why} Riprovo il consiglio automaticamente. Puoi continuare a inserire le carte."));
+        ctx.request_repaint_after(wait);
     }
 
     fn screen_is_behind(&self) -> bool {
-        self.vision.catching_up || self.vision.restart_after.is_some()
-            || self.vision.reader.as_ref().is_some_and(|r| self.vision.inconsistent || (self.vision.lost && self.vision.gap) || r.lag() > std::time::Duration::from_millis(2500))
+        // Al mio turno la partita cambia solo quando gioco io: una lettura un po' indietro (le carte
+        // che si alzano sotto il mouse, un'animazione del sito) non toglie il consiglio. Solo una
+        // lettura bloccata, che si riavvia da sola, lo sospende.
+        let late = if self.pos.step() == Step::MyMove { 8000 } else { 2500 };
+        self.vision.restart_after.is_some()
+            || (self.vision.catching_up && self.pos.step() != Step::MyMove)
+            || self.vision.reader.as_ref().is_some_and(|r| self.vision.inconsistent || (self.vision.lost && self.vision.gap) || r.lag() > std::time::Duration::from_millis(late))
     }
 
     /// Un canale chiuso o un calcolo troppo lungo non lasciano il consiglio in attesa per sempre.
@@ -763,7 +767,7 @@ impl Assistant {
         }
         let wants = self.pos.step() == Step::MyMove && self.pos.hand.len() > 1;
         let stale = self.analysis.as_ref().is_some_and(|a| a.samples != samples);
-        if wants && self.pending.is_none() && self.analysis_failures < 2 && (self.analysis.is_none() || stale) {
+        if wants && self.pending.is_none() && (self.analysis.is_none() || stale) {
             if let Some(wait) = self.analysis_retry_at.and_then(|t| t.checked_duration_since(std::time::Instant::now())) {
                 ctx.request_repaint_after(wait);
                 return;
@@ -771,6 +775,9 @@ impl Assistant {
             let obs = self.pos.observation();
             // Un secondo tentativo non dipende dalla deduzione che potrebbe aver fatto fallire il primo.
             let log = if self.analysis_failures > 0 { Vec::new() } else { self.opp_log() };
+            // (E dopo due tentativi falliti, un calcolo più leggero: arriva prima anche su un
+            // computer occupato.)
+            let samples = if self.analysis_failures >= 2 { samples.min(1000) } else { samples };
             let (tx, rx) = channel();
             std::thread::spawn(move || {
                 let mut rng = SmallRng::from_entropy();
@@ -2624,7 +2631,9 @@ impl Assistant {
 
     /// Gioca la carta consigliata, o la prenota se il motore sta ancora calcolando.
     fn play_best(&mut self) {
-        if self.screen_is_behind() {
+        // (Giocare da tastiera il consiglio vuole una lettura aggiornata: mentre si recuperano
+        // letture la carta potrebbe essere già stata giocata.)
+        if self.screen_is_behind() || self.vision.catching_up {
             self.entry_error = Some("Sto recuperando le letture: il consiglio riprende quando il tavolo è aggiornato.".into());
             return;
         }
@@ -3075,7 +3084,7 @@ impl Assistant {
                     ui.spinner();
                     ui.label("Il motore sta simulando le possibili mani dell'avversario...");
                 });
-            } else if self.analysis_retry_at.is_some() && self.analysis_failures < 2 {
+            } else if self.analysis_retry_at.is_some() {
                 ui.label("Sto riavviando il calcolo del consiglio...");
             } else {
                 ui.label("Consiglio non disponibile. Puoi inserire la carta giocata o riprovare il calcolo.");
@@ -4471,8 +4480,12 @@ mod tests {
             assert_eq!(a.analysis_failures, expected);
         }
         a.poll(7, &ctx);
-        assert!(a.pending.is_none(), "nessuna cascata infinita di nuovi calcoli");
+        assert!(a.pending.is_none(), "nessuna cascata immediata di nuovi calcoli");
         assert!(a.analysis_error.as_ref().unwrap().contains("in tempo"));
+        // Dopo l'attesa si riprova comunque: il consiglio non si ferma per il resto del turno.
+        a.analysis_retry_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        a.poll(7, &ctx);
+        assert!(a.pending.is_some(), "il consiglio si riprova anche dopo due errori");
         assert!(a.enter(10), "l'inserimento delle carte resta utilizzabile");
         assert_eq!(a.analysis_failures, 0);
     }
@@ -4500,8 +4513,9 @@ mod tests {
         a.play_best();
         assert_eq!(a.pos.hand.len(), 3);
         assert!(!a.play_best_queued);
+        // Il consiglio resta visibile: al mio turno la partita cambia solo quando gioco io.
         a.poll(7, &egui::Context::default());
-        assert!(a.analysis.is_none() && a.pending.is_none());
+        assert!(a.analysis.is_some());
     }
 
     #[test]

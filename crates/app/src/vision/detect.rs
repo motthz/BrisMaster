@@ -1390,7 +1390,10 @@ pub fn analyze(img: &Img) -> Analysis {
     // (Una carta sparita da poco: il sito può farla svanire del tutto per qualche lettura e poi
     // ridisegnarla sbiadita.)
     let near = |x: f32, y: f32, v: &[(f32, f32)]| v.iter().any(|&(hx, hy)| (hx - x).abs() < 0.04 && (hy - y).abs() < 0.04);
-    let vanished = PREV_CARDS.with(|p| p.borrow().iter().any(|&(x, y, _)| !near(x, y, &here)));
+    // (Solo le carte sparite da sopra la mano: quelle della mano si spostano di continuo.)
+    let low = a.cards.iter().filter(|c| !c.rect.landscape()).map(|c| c.rect.cy).fold(f32::MIN, f32::max);
+    let row = (low - 0.5 * a.card_l) / img.h as f32;
+    let vanished = PREV_CARDS.with(|p| p.borrow().iter().any(|&(x, y, _)| y < row && !near(x, y, &here)));
     if !a.cards.is_empty() && vanished {
         // La prova solita (se si era partiti da un'altra) e poi quella coi bianchi più scuri.
         let mut papers: Vec<Paper> = Vec::new();

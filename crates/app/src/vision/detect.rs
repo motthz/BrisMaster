@@ -1398,7 +1398,7 @@ pub fn analyze(img: &Img) -> Analysis {
     let row = low - 0.5 * a.card_l + oy;
     // (Per qualche lettura, e solo finché in tavola non si vedono già due carte.)
     let on_table = here.iter().filter(|&&(_, y)| y < row).count();
-    let vanished = std::env::var_os("SENZA_SBIADITE").is_none() && on_table < 2 && PREV_CARDS.with(|p| p.borrow().iter().any(|&(x, y, _)| y < row && !near(x, y, &here)));
+    let vanished = SBIADITE && std::env::var_os("SENZA_SBIADITE").is_none() && on_table < 2 && PREV_CARDS.with(|p| p.borrow().iter().any(|&(x, y, _)| y < row && !near(x, y, &here)));
     VANISHED.with(|v| v.set(vanished));
     if !a.cards.is_empty() && vanished {
         // Una prova sola: la solita se si era partiti da un'altra, se no quella coi bianchi più scuri.
@@ -1465,6 +1465,10 @@ pub fn analyze(img: &Img) -> Analysis {
     }
     a
 }
+
+/// La ricerca delle carte sbiadite (spenta: rallentava la lettura e la confondeva su alcune
+/// partite più di quanto aiutasse).
+const SBIADITE: bool = false;
 
 thread_local! {
     /// Nell'ultima analisi una carta sopra la mano era sparita da poco.

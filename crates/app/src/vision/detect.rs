@@ -1411,7 +1411,10 @@ pub fn analyze(img: &Img) -> Analysis {
         let w = a.cards.iter().map(|c| c.rect.short()).fold(0.0f32, f32::max);
         let l = a.card_l;
         for p in &papers {
+            // (La prova in più non deve invecchiare la misura delle carte imparata.)
+            let steady = STEADY.with(|s| s.get());
             let extra = analyze_inner(img, p);
+            STEADY.with(|s| s.set(steady));
             let before = a.cards.len();
             for f in extra.cards {
                 let free = a.cards.iter().all(|c| c.rect.dist(&f.rect) > 0.75 * w && !c.rect.contains(f.rect.cx, f.rect.cy) && !f.rect.contains(c.rect.cx, c.rect.cy));

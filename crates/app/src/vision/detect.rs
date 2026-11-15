@@ -1386,14 +1386,18 @@ pub fn analyze(img: &Img) -> Analysis {
     // già una carta.
     // (Solo quando una carta della lettura prima è sparita dal suo posto: è il momento in cui il
     // sito la fa svanire. Così la prova in più non rallenta le altre letture.)
-    let here: Vec<(f32, f32)> = a.cards.iter().map(|c| (c.rect.cx / img.w as f32, c.rect.cy / img.h as f32)).collect();
+    // (In pixel dello schermo intero: le letture possono essere di tutto lo schermo o di una zona.)
+    let (ox, oy) = OFFSET.with(|o| o.get());
+    let here: Vec<(f32, f32)> = a.cards.iter().map(|c| (c.rect.cx + ox, c.rect.cy + oy)).collect();
+    let tol = if a.card_l > 0.0 { 0.3 * a.card_l } else { 30.0 };
     // (Una carta sparita da poco: il sito può farla svanire del tutto per qualche lettura e poi
     // ridisegnarla sbiadita.)
-    let near = |x: f32, y: f32, v: &[(f32, f32)]| v.iter().any(|&(hx, hy)| (hx - x).abs() < 0.04 && (hy - y).abs() < 0.04);
+    let near = |x: f32, y: f32, v: &[(f32, f32)]| v.iter().any(|&(hx, hy)| (hx - x).abs() < tol && (hy - y).abs() < tol);
     // (Solo le carte sparite da sopra la mano: quelle della mano si spostano di continuo.)
     let low = a.cards.iter().filter(|c| !c.rect.landscape()).map(|c| c.rect.cy).fold(f32::MIN, f32::max);
-    let row = (low - 0.5 * a.card_l) / img.h as f32;
+    let row = low - 0.5 * a.card_l + oy;
     let vanished = PREV_CARDS.with(|p| p.borrow().iter().any(|&(x, y, _)| y < row && !near(x, y, &here)));
+    VANISHED.with(|v| v.set(vanished));
     if !a.cards.is_empty() && vanished {
         // La prova solita (se si era partiti da un'altra) e poi quella coi bianchi più scuri.
         let mut papers: Vec<Paper> = Vec::new();
@@ -1429,7 +1433,7 @@ pub fn analyze(img: &Img) -> Analysis {
         }
     }
     {
-        let now: Vec<(f32, f32)> = a.cards.iter().map(|c| (c.rect.cx / img.w as f32, c.rect.cy / img.h as f32)).collect();
+        let now: Vec<(f32, f32)> = a.cards.iter().map(|c| (c.rect.cx + ox, c.rect.cy + oy)).collect();
         PREV_CARDS.with(|p| {
             let mut p = p.borrow_mut();
             let mut next: Vec<(f32, f32, u32)> = now.iter().map(|&(x, y)| (x, y, 0)).collect();
@@ -1458,6 +1462,16 @@ pub fn analyze(img: &Img) -> Analysis {
         }
     }
     a
+}
+
+thread_local! {
+    /// Nell'ultima analisi una carta sopra la mano era sparita da poco.
+    static VANISHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Vero se nell'ultima analisi una carta sopra la mano era sparita da poco (e lo dimentica).
+pub fn take_vanished() -> bool {
+    VANISHED.with(|v| v.replace(false))
 }
 
 thread_local! {

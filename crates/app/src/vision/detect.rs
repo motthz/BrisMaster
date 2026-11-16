@@ -2220,7 +2220,8 @@ mod prove_carte {
                     let r = super::super::read_briscola(&im, &mem);
                     if let Some(r) = r {
                         let h: Vec<String> = r.hand.iter().map(|v| { let x = v.best(briscola_core::cards::CardSet::FULL).unwrap(); format!("{}({:.1})", briscola_core::cards::short(x.0), x.1) }).collect();
-                        println!("  {i}: mano {}", h.join(" "));
+                        let t = |v: &Option<CardView>| v.as_ref().and_then(|v| v.best(briscola_core::cards::CardSet::FULL)).map(|b| format!("{}({:.1})", briscola_core::cards::short(b.0), b.1)).unwrap_or("-".into());
+                        println!("  {i}: A {} T {} mano {}", t(&r.opp_slot), t(&r.my_slot), h.join(" "));
                     }
                 }
             }

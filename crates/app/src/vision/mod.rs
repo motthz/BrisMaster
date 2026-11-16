@@ -173,6 +173,9 @@ struct Focus {
     saved: Option<std::time::Instant>,
     /// Letture da aspettare prima di un'altra lettura completa per una carta sparita dal tavolo.
     wait_full: u32,
+    /// Dove si sono viste carte in tavola (frazioni dello schermo): la zona le comprende sempre,
+    /// anche se le ultime letture complete sono capitate a tavolo vuoto.
+    table_box: Option<[f32; 4]>,
 }
 
 impl Focus {
@@ -252,6 +255,16 @@ fn scene_box(scene: &Scene) -> Option<[f32; 4]> {
     b
 }
 
+/// Allarga la zona delle carte in tavola viste con le carte in tavola di questa lettura.
+fn add_table_box(f: &mut Focus, scene: &Scene) {
+    for v in scene.opp_slot.iter().chain(&scene.my_slot).filter(|v| v.at[2] > v.at[0]) {
+        f.table_box = Some(match f.table_box {
+            None => v.at,
+            Some(x) => [x[0].min(v.at[0]), x[1].min(v.at[1]), x[2].max(v.at[2]), x[3].max(v.at[3])],
+        });
+    }
+}
+
 fn count(scene: &Scene) -> usize {
     scene.trump.is_some() as usize + scene.opp_slot.is_some() as usize + scene.my_slot.is_some() as usize + scene.hand.len()
 }
@@ -289,7 +302,7 @@ fn focused_scene_inner(img: &Img) -> Scene {
             return None;
         }
         let mut u = f.boxes[0];
-        for b in f.boxes.iter() {
+        for b in f.boxes.iter().chain(f.table_box.iter()) {
             u = [u[0].min(b[0]), u[1].min(b[1]), u[2].max(b[2]), u[3].max(b[3])];
         }
         // Margine: una carta (la lunghezza delle carte è circa l'altezza della mano).
@@ -338,6 +351,7 @@ fn focused_scene_inner(img: &Img) -> Scene {
                 let mut f = f.borrow_mut();
                 f.since_full += 1;
                 f.misses = 0;
+                add_table_box(&mut f, &scene);
             });
             if std::env::var_os("TEMPI").is_some() {
                 eprintln!("  ritaglio {}x{} di {}x{} da {},{}", x1 - x0, y1 - y0, img.w, img.h, x0, y0);
@@ -354,6 +368,7 @@ fn focused_scene_inner(img: &Img) -> Scene {
             f.misses += 1;
             if f.misses >= 3 {
                 f.boxes.clear();
+                f.table_box = None;
                 f.seen_opp = false;
                 f.seen_mine = false;
                 f.misses = 0;
@@ -363,6 +378,7 @@ fn focused_scene_inner(img: &Img) -> Scene {
         f.last_count = count(&scene);
         f.seen_opp |= scene.opp_slot.is_some();
         f.seen_mine |= scene.my_slot.is_some();
+        add_table_box(&mut f, &scene);
         if let Some(b) = scene_box(&scene) {
             f.boxes.push_back(b);
             if f.boxes.len() > 30 {

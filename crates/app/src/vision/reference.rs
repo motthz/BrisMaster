@@ -795,6 +795,9 @@ const RECENT_VOTES: usize = 12;
 /// i voti recenti si tengono fra una lettura e l'altra. Vale lo stile con quasi tutti i voti, se
 /// ne ha almeno due.
 pub fn site_style(seen: &[&[[f32; 40]]]) -> Option<usize> {
+    if cfg!(test) && std::env::var_os("SENZA_STILE").is_some() {
+        return None;
+    }
     VOTES.with(|v| {
         let mut v = v.borrow_mut();
         for per in seen {

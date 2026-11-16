@@ -1260,6 +1260,9 @@ pub struct Analysis {
     pub table: Option<[u8; 3]>,
     /// Tutte le zone chiare (per la diagnosi e per i dorsi).
     pub blobs: Vec<Blob>,
+    /// Carte trovate dividendo zone che ne contenevano più d'una (attaccate fra loro o a
+    /// qualcos'altro di bianco): una lettura più incerta, e lenta.
+    pub split: bool,
 }
 
 thread_local! {
@@ -1383,6 +1386,20 @@ pub fn analyze(img: &Img) -> Analysis {
     // un'altra, con meno simboli): quando si è partiti da lì si prova anche quello appena meno
     // severo, e si tiene quello che trova più carte (o le stesse, riconosciute meglio). Se vince,
     // le letture dopo partono da quello.
+    // E anche quando la prova solita ha dovuto dividere la mano attaccata a qualcos'altro di bianco
+    // (la sagoma sotto la mano): il bianco severo spesso la trova già divisa, inquadrata meglio e
+    // più in fretta. Se trova (quasi) le stesse carte, riconosciute almeno altrettanto bene, si
+    // tiene quello, e le letture dopo partono da lì.
+    if let Some((0, b)) = &best {
+        if b.split {
+            if let Some(c) = run(5) {
+                let mean = |a: &Analysis| a.cards.iter().map(|f| f.score).sum::<f32>() / a.cards.len().max(1) as f32;
+                if !c.split && c.cards.len() + 1 >= b.cards.len() && c.cards.len() >= 2 && mean(&c) >= mean(b) {
+                    best = Some((5, c));
+                }
+            }
+        }
+    }
     if let Some((4, b)) = &best {
         if let Some(c) = run(5) {
             let total = |a: &Analysis| a.cards.iter().map(|f| f.score).sum::<f32>();
@@ -1674,7 +1691,7 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
         }
     }
     if cards.is_empty() {
-        return Analysis { cards, card_l: 0.0, table: None, blobs: base };
+        return Analysis { cards, card_l: 0.0, table: None, blobs: base, split: false };
     }
     mark(&mut tm, "divise");
     // Quello che resta togliendo le carte trovate: la carta che ne toccava un'altra (e che
@@ -1842,7 +1859,7 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
         }
     }
     let cards = kept.iter().zip(keep).filter(|(_, k)| *k).map(|(c, _)| c.clone()).collect();
-    Analysis { cards, card_l, table, blobs: base }
+    Analysis { cards, card_l, table, blobs: base, split: was_split }
 }
 
 /// La carta riconosciuta con più sicurezza.
@@ -2191,5 +2208,26 @@ mod prove_carte {
         let sc = scene(&img);
         let b = |v: &Option<CardView>| v.as_ref().and_then(|v| v.best(briscola_core::cards::CardSet::FULL)).map(|b| briscola_core::cards::short(b.0).to_string()).unwrap_or("-".into());
         println!("scena: B {} A {} T {} mano {}", b(&sc.trump), b(&sc.opp_slot), b(&sc.my_slot), sc.hand.len());
+        super::super::detect::forget_reading_state();
+        let mem = std::sync::Mutex::new(super::super::memory::Memory::in_memory());
+        // PRIMA=cartella:da:a — le schermate (jpg) lette prima, nello stesso ordine della partita.
+        if let Ok(p) = std::env::var("PRIMA") {
+            let v: Vec<&str> = p.split(':').collect();
+            let (dir, from, to): (&str, usize, usize) = (v[0], v[1].parse().unwrap(), v[2].parse().unwrap());
+            for i in from..to {
+                let path = format!("{dir}/{i:04}.png");
+                if let Ok(im) = super::super::capture::load_png(std::path::Path::new(&path)) {
+                    let r = super::super::read_briscola(&im, &mem);
+                    if let Some(r) = r {
+                        let h: Vec<String> = r.hand.iter().map(|v| { let x = v.best(briscola_core::cards::CardSet::FULL).unwrap(); format!("{}({:.1})", briscola_core::cards::short(x.0), x.1) }).collect();
+                        println!("  {i}: mano {}", h.join(" "));
+                    }
+                }
+            }
+        }
+        if let Some(r) = super::super::read_briscola(&img, &mem) {
+            let h: Vec<String> = r.hand.iter().map(|v| { let x = v.best(briscola_core::cards::CardSet::FULL).unwrap(); format!("{}({:.1})", briscola_core::cards::short(x.0), x.1) }).collect();
+            println!("lettura completa: B {} A {} T {} mano {}", b(&r.trump), b(&r.opp_slot), b(&r.my_slot), h.join(" "));
+        }
     }
 }

@@ -283,7 +283,9 @@ fn focused_scene_inner(img: &Img) -> Scene {
     });
     let plan = FOCUS.with(|f| {
         let f = f.borrow();
-        if f.size != (img.w, img.h) || f.boxes.len() < 3 || f.since_full >= FULL_EVERY || !(f.seen_opp && f.seen_mine) {
+        if f.size != (img.w, img.h) || f.boxes.len() < 3 || f.since_full >= FULL_EVERY || !(f.seen_opp && f.seen_mine)
+            || (cfg!(test) && std::env::var_os("SENZA_ZONA").is_some())
+        {
             return None;
         }
         let mut u = f.boxes[0];
@@ -338,7 +340,7 @@ fn focused_scene_inner(img: &Img) -> Scene {
                 f.misses = 0;
             });
             if std::env::var_os("TEMPI").is_some() {
-                eprintln!("  ritaglio {}x{} di {}x{}", x1 - x0, y1 - y0, img.w, img.h);
+                eprintln!("  ritaglio {}x{} di {}x{} da {},{}", x1 - x0, y1 - y0, img.w, img.h, x0, y0);
             }
             return scene;
         }
@@ -389,7 +391,7 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
     // simboli si toccano o si spezzano e il conteggio non è sicuro.)
     let [long, short] = view.px;
     let countable = long >= 110.0 && short >= 66.0 && (0.52..=0.95).contains(&(short / long));
-    let excluded = match (!view.partial && countable).then(|| pips::count(&view.img)).flatten() {
+    let excluded = match (!view.partial && countable && !(cfg!(test) && std::env::var_os("SENZA_SIMBOLI").is_some())).then(|| pips::count(&view.img)).flatten() {
         Some(n) => {
             let ex = pips::excluded(n);
             let mut order: Vec<usize> = (0..40).collect();

@@ -1392,6 +1392,37 @@ pub fn analyze(img: &Img) -> Analysis {
         }
     }
     let (k, mut a) = best.expect("almeno una prova");
+    // Col bianco severo le carte appena giocate, che il sito disegna ancora sbiadite, non si
+    // vedono: si cercano col bianco solito, ma solo nella striscia del tavolo sopra la mano (lì
+    // non c'è la sagoma bianca sotto la mano che col bianco solito si attacca alle carte).
+    if TABLE_BAND && (k == 4 || k == 5) && a.card_l > 0.0 {
+        let l = a.card_l;
+        let upright: Vec<&Found> = a.cards.iter().filter(|c| !c.rect.landscape()).collect();
+        let low = upright.iter().map(|c| c.rect.cy).fold(f32::MIN, f32::max);
+        let hand: Vec<&&Found> = upright.iter().filter(|c| c.rect.cy >= low - 0.35 * l).collect();
+        if !hand.is_empty() {
+            let hx0 = hand.iter().map(|c| c.rect.cx).fold(f32::MAX, f32::min);
+            let hx1 = hand.iter().map(|c| c.rect.cx).fold(f32::MIN, f32::max);
+            let (x0, x1) = ((hx0 - 1.2 * l).max(0.0) as usize, ((hx1 + 1.2 * l) as usize).min(img.w));
+            let y1 = ((low - 0.6 * l).max(0.0) as usize).min(img.h);
+            if x1 > x0 + 10 && y1 as f32 > l {
+                let band = img.crop(x0, 0, x1, y1);
+                let steady = STEADY.with(|s| s.get());
+                let extra = analyze_inner(&band, &paper);
+                STEADY.with(|s| s.set(steady));
+                let w = a.cards.iter().map(|c| c.rect.short()).fold(0.0f32, f32::max);
+                for mut f in extra.cards {
+                    f.rect.cx += x0 as f32;
+                    f.view.at = f.rect.bounds(img);
+                    let free = a.cards.iter().all(|c| c.rect.dist(&f.rect) > 0.75 * w);
+                    let size = (f.rect.long() / l - 1.0).abs() < 0.15;
+                    if free && size && !f.partial() && f.score >= 0.8 {
+                        a.cards.push(f);
+                    }
+                }
+            }
+        }
+    }
     // Carte sbiadite (le due in tavola che il sito fa svanire a fine presa, mezze trasparenti sul
     // tavolo): la prova coi bianchi più scuri le trova, ma la prima prova si ferma appena ha
     // abbastanza carte. Si aggiungono quelle che la prova più scura trova in posti dove non c'è
@@ -1477,6 +1508,9 @@ pub fn analyze(img: &Img) -> Analysis {
     }
     a
 }
+
+/// Col bianco severo, le carte in tavola si cercano anche col bianco solito nella striscia sopra la mano.
+const TABLE_BAND: bool = true;
 
 /// La ricerca delle carte sbiadite (spenta: rallentava la lettura e la confondeva su alcune
 /// partite più di quanto aiutasse).

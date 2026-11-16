@@ -181,7 +181,7 @@ impl Memory {
     /// sulla fascia visibile `vis` (e su quella che si vedeva nell'immagine ricordata).
     pub fn similarity(&self, img: &Img, vis: [f32; 2]) -> [Option<f32>; 40] {
         let mut out = [None; 40];
-        if self.templates.is_empty() {
+        if self.templates.is_empty() || (cfg!(test) && std::env::var_os("SENZA_MEMORIA").is_some()) {
             return out;
         }
         let thumbs: Vec<Vec<u8>> = SHIFTS.iter().map(|&o| thumb_at(img, o)).collect();

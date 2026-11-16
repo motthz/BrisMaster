@@ -1608,12 +1608,34 @@ impl Assistant {
         };
         let keep_table = |v: &CardView| !is_trump(v) && (still(v) || normal_table(v) || in_slot(v) || size(v).1 <= 0.0);
         let moved = scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot).find(|v| is_trump(v)).cloned();
-        let out = Scene {
+        let mut out = Scene {
             trump: scene.trump.clone().or(moved),
             opp_slot: scene.opp_slot.clone().filter(|v| keep_table(v)),
             my_slot: scene.my_slot.clone().filter(|v| keep_table(v)),
             hand: scene.hand.iter().filter(|v| keep(v)).cloned().collect(),
         };
+        // Una carta "in mano" proprio in una casella del tavolo dove si sono viste carte ferme, con
+        // la misura delle carte in tavola, è una carta in tavola: a fine partita, con una carta sola
+        // in mano attaccata a qualcos'altro di bianco, la carta giocata è la più in basso e sembra
+        // la mano. Va nella casella più in basso se è libera (la mia), se no in quella dell'altro.
+        if slots.len() >= 2 && table_size.1 > 0.0 {
+            let lowest = slots.iter().map(|s| s[1]).fold(f32::MIN, f32::max);
+            let at_slot = |v: &CardView| {
+                let (w, h) = size(v);
+                let (cx, cy) = ((v.at[0] + v.at[2]) / 2.0, (v.at[1] + v.at[3]) / 2.0);
+                slots.iter().find(|s| (s[0] - cx).abs() < 0.15 * w && (s[1] - cy).abs() < 0.15 * h).copied()
+                    .filter(|_| (h / table_size.1 - 1.0).abs() < 0.15)
+            };
+            let mut rest = Vec::new();
+            for v in std::mem::take(&mut out.hand) {
+                match at_slot(&v) {
+                    Some(sl) if sl[1] >= lowest - 0.01 && out.my_slot.is_none() => out.my_slot = Some(v),
+                    Some(sl) if sl[1] < lowest - 0.01 && out.opp_slot.is_none() => out.opp_slot = Some(v),
+                    _ => rest.push(v),
+                }
+            }
+            out.hand = rest;
+        }
         // La misura delle carte ferme (cambia piano se cambia lo zoom).
         let update = |cur: (f32, f32), views: Vec<&CardView>| {
             let mut sizes: Vec<(f32, f32)> = views.into_iter().filter(|v| still(v)).map(size).collect();
@@ -1904,6 +1926,7 @@ impl Assistant {
         let mut p = pos;
         for &c in &absent {
             p.hand.remove(c);
+            self.vision.sightings.forget_hand(c);
         }
         for &c in &put {
             p.hand.insert(c);
@@ -2305,7 +2328,15 @@ impl Assistant {
             return false;
         }
         if let Some((img, vis)) = view {
-            self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&img, vis, card);
+            // Una pescata si impara solo quando la gioco e in tavola si legge uguale (vedi
+            // `to_learn`): un sei letto quattro, ricordato subito, si leggerebbe quattro per sempre.
+            if matches!(step, Step::Draw(_)) {
+                if self.vision.to_learn.iter().filter(|e| e.0 == card).count() < 3 {
+                    self.vision.to_learn.push((card, img.clone(), vis));
+                }
+            } else {
+                self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&img, vis, card);
+            }
             self.vision.last = Some((card, img, len));
         }
         true
@@ -2337,7 +2368,18 @@ impl Assistant {
             scene.hand.iter().filter_map(|v| v.best(CardSet::FULL).map(|(c, m)| (c, m, v))).collect();
         let extra: Vec<&(Card, f32, &CardView)> =
             seen.iter().filter(|(c, m, _)| !self.pos.hand.contains(*c) && *m >= AUTO_MARGIN).collect();
-        let missing: Vec<Card> = self.pos.hand.iter().filter(|h| !seen.iter().any(|(c, ..)| c == h)).collect();
+        // (Una carta della mano letta senza sicurezza come un'altra, ma che le somiglia quasi quanto
+        // la lettura migliore, c'è: non manca.)
+        let near = |v: &CardView, c: Card| {
+            let top = v.scores.iter().copied().fold(f32::MIN, f32::max);
+            v.scores[c as usize] >= top - AUTO_MARGIN
+        };
+        let missing: Vec<Card> = self
+            .pos
+            .hand
+            .iter()
+            .filter(|h| !seen.iter().any(|(c, m, v)| c == h || (*m < AUTO_MARGIN && !extra.iter().any(|e| std::ptr::eq(e.2, *v)) && near(v, *h))))
+            .collect();
         let ([(right, _, view)], [wrong]) = (extra.as_slice(), missing.as_slice()) else { return };
         // Una proposta rifiutata dall'utente non deve subito sovrascrivere la sua
         // correzione: durante il recupero non impariamo dall'immagine attuale.
@@ -2373,6 +2415,9 @@ impl Assistant {
             return;
         }
         let (wrong, right) = (*wrong, *right);
+        // La carta letta male non deve tornare come pescata più avanti: i suoi avvistamenti in mano
+        // erano quelli della carta giusta.
+        self.vision.sightings.forget_hand(wrong);
         // All'ultima pescata la briscola era andata a me (avevo perso la presa), ma in mano non c'è
         // e al suo posto c'è un'altra carta: la presa l'avevo vinta io, ho pescato la carta coperta
         // e la briscola l'ha presa l'avversario. Si corregge mano, presa, punti e chi apre.
@@ -2568,8 +2613,9 @@ impl Assistant {
             self.vision.auto = true;
             let entered = self.enter(c.card);
             self.vision.auto = false;
-            if entered {
-                self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).remember(&c.img, c.vis, c.card);
+            // (Si impara solo quando la carta si legge uguale anche in tavola: vedi `to_learn`.)
+            if entered && self.vision.to_learn.iter().filter(|e| e.0 == c.card).count() < 3 {
+                self.vision.to_learn.push((c.card, c.img.clone(), c.vis));
             }
             return;
         }
@@ -3589,6 +3635,18 @@ impl Sightings {
 
     fn view(&self, c: Card) -> Option<(Img, [f32; 2])> {
         self.views.get(c as usize).cloned().flatten()
+    }
+
+    /// Una carta che la partita aveva in mano per sbaglio (era un'altra letta male): i suoi
+    /// avvistamenti in mano non contano più, e non si prende per pescata.
+    fn forget_hand(&mut self, c: Card) {
+        if let Some(h) = self.hand.get_mut(c as usize) {
+            *h = Sighting::default();
+        }
+        if self.phantoms.len() < 40 {
+            self.phantoms = vec![0; 40];
+        }
+        self.phantoms[c as usize] = self.phantoms[c as usize].max(2);
     }
 
     fn in_hand(&self, c: Card) -> bool {

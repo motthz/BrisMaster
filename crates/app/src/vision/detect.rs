@@ -1260,6 +1260,9 @@ pub struct Analysis {
     pub table: Option<[u8; 3]>,
     /// Tutte le zone chiare (per la diagnosi e per i dorsi).
     pub blobs: Vec<Blob>,
+    /// Carte trovate dividendo zone che ne contenevano più d'una (attaccate fra loro o a
+    /// qualcos'altro di bianco): una lettura più incerta, e lenta.
+    pub split: bool,
 }
 
 thread_local! {
@@ -1280,6 +1283,7 @@ pub fn forget_reading_state() {
     STEADY.with(|s| s.set((0.0, 0.0, 0)));
     FIXTURES.with(|f| f.borrow_mut().clear());
     PREV_CARDS.with(|p| p.borrow_mut().clear());
+    PREFER_STRICT.with(|p| p.set(0));
     super::reference::forget_style();
     super::forget_focus();
 }
@@ -1379,7 +1383,72 @@ pub fn analyze(img: &Img) -> Analysis {
             break;
         }
     }
+    // Il bianco severo più alto (249) taglia a volte una carta del ventaglio a metà (e la legge come
+    // un'altra, con meno simboli): quando si è partiti da lì si prova anche quello appena meno
+    // severo, e si tiene quello che trova più carte (o le stesse, riconosciute meglio). Se vince,
+    // le letture dopo partono da quello.
+    // E anche quando la prova solita ha dovuto dividere la mano attaccata a qualcos'altro di bianco
+    // (la sagoma sotto la mano): il bianco severo spesso la trova già divisa, inquadrata meglio e
+    // più in fretta. Se trova (quasi) le stesse carte, riconosciute almeno altrettanto bene, si
+    // tiene quello, e le letture dopo partono da lì.
+    if let Some((0, b)) = &best.as_ref().filter(|_| std::env::var_os("SENZA_DIVISA").is_none()) {
+        if b.split {
+            if let Some(c) = run(5) {
+                let mean = |a: &Analysis| a.cards.iter().map(|f| f.score).sum::<f32>() / a.cards.len().max(1) as f32;
+                // (Una carta in meno solo se quella in più della prova solita era letta male: un pezzo
+                // di sagoma o di scritta preso per carta.)
+                let weakest = b.cards.iter().map(|f| f.score).fold(f32::MAX, f32::min);
+                let enough = c.cards.len() >= b.cards.len() || (c.cards.len() + 1 == b.cards.len() && weakest < 0.9);
+                if !c.split && enough && c.cards.len() <= b.cards.len() && c.cards.len() >= 2 && mean(&c) >= mean(b) {
+                    best = Some((5, c));
+                    PREFER_STRICT.with(|p| p.set(p.get() + 1));
+                    LAST_FROM_SPLIT.with(|f| f.set(true));
+                } else {
+                    PREFER_STRICT.with(|p| p.set(0));
+                }
+            }
+        }
+    }
+    if let Some((4, b)) = &best.as_ref().filter(|_| std::env::var_os("SENZA_SEVERO").is_none()) {
+        if let Some(c) = run(5) {
+            let total = |a: &Analysis| a.cards.iter().map(|f| f.score).sum::<f32>();
+            if c.cards.len() > b.cards.len() || (c.cards.len() == b.cards.len() && total(&c) > total(b) + 0.05) {
+                best = Some((5, c));
+            }
+        }
+    }
     let (k, mut a) = best.expect("almeno una prova");
+    // Col bianco severo le carte appena giocate, che il sito disegna ancora sbiadite, non si
+    // vedono: si cercano col bianco solito, ma solo nella striscia del tavolo sopra la mano (lì
+    // non c'è la sagoma bianca sotto la mano che col bianco solito si attacca alle carte).
+    if TABLE_BAND && (k == 4 || k == 5) && a.card_l > 0.0 {
+        let l = a.card_l;
+        let upright: Vec<&Found> = a.cards.iter().filter(|c| !c.rect.landscape()).collect();
+        let low = upright.iter().map(|c| c.rect.cy).fold(f32::MIN, f32::max);
+        let hand: Vec<&&Found> = upright.iter().filter(|c| c.rect.cy >= low - 0.35 * l).collect();
+        if !hand.is_empty() {
+            let hx0 = hand.iter().map(|c| c.rect.cx).fold(f32::MAX, f32::min);
+            let hx1 = hand.iter().map(|c| c.rect.cx).fold(f32::MIN, f32::max);
+            let (x0, x1) = ((hx0 - 1.2 * l).max(0.0) as usize, ((hx1 + 1.2 * l) as usize).min(img.w));
+            let y1 = ((low - 0.6 * l).max(0.0) as usize).min(img.h);
+            if x1 > x0 + 10 && y1 as f32 > l {
+                let band = img.crop(x0, 0, x1, y1);
+                let steady = STEADY.with(|s| s.get());
+                let extra = analyze_inner(&band, &paper);
+                STEADY.with(|s| s.set(steady));
+                let w = a.cards.iter().map(|c| c.rect.short()).fold(0.0f32, f32::max);
+                for mut f in extra.cards {
+                    f.rect.cx += x0 as f32;
+                    f.view.at = f.rect.bounds(img);
+                    let free = a.cards.iter().all(|c| c.rect.dist(&f.rect) > 0.75 * w);
+                    let size = (f.rect.long() / l - 1.0).abs() < 0.15;
+                    if free && size && !f.partial() && f.score >= 0.8 {
+                        a.cards.push(f);
+                    }
+                }
+            }
+        }
+    }
     // Carte sbiadite (le due in tavola che il sito fa svanire a fine presa, mezze trasparenti sul
     // tavolo): la prova coi bianchi più scuri le trova, ma la prima prova si ferma appena ha
     // abbastanza carte. Si aggiungono quelle che la prova più scura trova in posti dove non c'è
@@ -1447,7 +1516,10 @@ pub fn analyze(img: &Img) -> Analysis {
             *p = next;
         });
     }
-    LAST_TRY.with(|t| t.set(if a.cards.is_empty() { 0 } else { k }));
+    // (Il bianco severo scelto al posto della prova solita divisa diventa il punto di partenza solo
+    // dopo tre letture di fila: un'altra schermata, un altro sito, non deve ereditarlo.)
+    let sticky = k != 5 || first == 5 || PREFER_STRICT.with(|p| p.get()) >= 3 || !LAST_FROM_SPLIT.with(|f| f.replace(false));
+    LAST_TRY.with(|t| t.set(if a.cards.is_empty() { 0 } else if sticky { k } else { 0 }));
     LAST_N.with(|t| t.set(a.cards.len()));
     LAST_CARD_L.with(|l| l.set(if a.cards.is_empty() { 0.0 } else { a.card_l }));
     // La misura delle carte quando se ne riconoscono bene almeno tre della stessa misura.
@@ -1466,9 +1538,19 @@ pub fn analyze(img: &Img) -> Analysis {
     a
 }
 
+/// Col bianco severo, le carte in tavola si cercano anche col bianco solito nella striscia sopra la mano.
+const TABLE_BAND: bool = true;
+
 /// La ricerca delle carte sbiadite (spenta: rallentava la lettura e la confondeva su alcune
 /// partite più di quanto aiutasse).
 const SBIADITE: bool = false;
+
+thread_local! {
+    /// Letture di fila in cui il bianco severo ha vinto sulla prova solita divisa.
+    static PREFER_STRICT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Se in questa analisi il bianco severo ha vinto sulla prova solita divisa.
+    static LAST_FROM_SPLIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 thread_local! {
     /// Nell'ultima analisi una carta sopra la mano era sparita da poco.
@@ -1628,7 +1710,7 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
         }
     }
     if cards.is_empty() {
-        return Analysis { cards, card_l: 0.0, table: None, blobs: base };
+        return Analysis { cards, card_l: 0.0, table: None, blobs: base, split: false };
     }
     mark(&mut tm, "divise");
     // Quello che resta togliendo le carte trovate: la carta che ne toccava un'altra (e che
@@ -1796,7 +1878,7 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
         }
     }
     let cards = kept.iter().zip(keep).filter(|(_, k)| *k).map(|(c, _)| c.clone()).collect();
-    Analysis { cards, card_l, table, blobs: base }
+    Analysis { cards, card_l, table, blobs: base, split: was_split }
 }
 
 /// La carta riconosciuta con più sicurezza.
@@ -2145,5 +2227,27 @@ mod prove_carte {
         let sc = scene(&img);
         let b = |v: &Option<CardView>| v.as_ref().and_then(|v| v.best(briscola_core::cards::CardSet::FULL)).map(|b| briscola_core::cards::short(b.0).to_string()).unwrap_or("-".into());
         println!("scena: B {} A {} T {} mano {}", b(&sc.trump), b(&sc.opp_slot), b(&sc.my_slot), sc.hand.len());
+        super::super::detect::forget_reading_state();
+        let mem = std::sync::Mutex::new(super::super::memory::Memory::in_memory());
+        // PRIMA=cartella:da:a — le schermate (jpg) lette prima, nello stesso ordine della partita.
+        if let Ok(p) = std::env::var("PRIMA") {
+            let v: Vec<&str> = p.split(':').collect();
+            let (dir, from, to): (&str, usize, usize) = (v[0], v[1].parse().unwrap(), v[2].parse().unwrap());
+            for i in from..to {
+                let path = format!("{dir}/{i:04}.png");
+                if let Ok(im) = super::super::capture::load_png(std::path::Path::new(&path)) {
+                    let r = super::super::read_briscola(&im, &mem);
+                    if let Some(r) = r {
+                        let h: Vec<String> = r.hand.iter().map(|v| { let x = v.best(briscola_core::cards::CardSet::FULL).unwrap(); format!("{}({:.1})", briscola_core::cards::short(x.0), x.1) }).collect();
+                        let t = |v: &Option<CardView>| v.as_ref().and_then(|v| v.best(briscola_core::cards::CardSet::FULL)).map(|b| format!("{}({:.1})", briscola_core::cards::short(b.0), b.1)).unwrap_or("-".into());
+                        println!("  {i}: A {} T {} mano {}", t(&r.opp_slot), t(&r.my_slot), h.join(" "));
+                    }
+                }
+            }
+        }
+        if let Some(r) = super::super::read_briscola(&img, &mem) {
+            let h: Vec<String> = r.hand.iter().map(|v| { let x = v.best(briscola_core::cards::CardSet::FULL).unwrap(); format!("{}({:.1})", briscola_core::cards::short(x.0), x.1) }).collect();
+            println!("lettura completa: B {} A {} T {} mano {}", b(&r.trump), b(&r.opp_slot), b(&r.my_slot), h.join(" "));
+        }
     }
 }

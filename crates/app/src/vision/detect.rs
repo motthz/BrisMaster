@@ -1379,6 +1379,18 @@ pub fn analyze(img: &Img) -> Analysis {
             break;
         }
     }
+    // Il bianco severo più alto (249) taglia a volte una carta del ventaglio a metà (e la legge come
+    // un'altra, con meno simboli): quando si è partiti da lì si prova anche quello appena meno
+    // severo, e si tiene quello che trova più carte (o le stesse, riconosciute meglio). Se vince,
+    // le letture dopo partono da quello.
+    if let Some((4, b)) = &best {
+        if let Some(c) = run(5) {
+            let total = |a: &Analysis| a.cards.iter().map(|f| f.score).sum::<f32>();
+            if c.cards.len() > b.cards.len() || (c.cards.len() == b.cards.len() && total(&c) > total(b) + 0.05) {
+                best = Some((5, c));
+            }
+        }
+    }
     let (k, mut a) = best.expect("almeno una prova");
     // Carte sbiadite (le due in tavola che il sito fa svanire a fine presa, mezze trasparenti sul
     // tavolo): la prova coi bianchi più scuri le trova, ma la prima prova si ferma appena ha

@@ -1283,6 +1283,7 @@ pub fn forget_reading_state() {
     STEADY.with(|s| s.set((0.0, 0.0, 0)));
     FIXTURES.with(|f| f.borrow_mut().clear());
     PREV_CARDS.with(|p| p.borrow_mut().clear());
+    PREFER_STRICT.with(|p| p.set(0));
     super::reference::forget_style();
     super::forget_focus();
 }
@@ -1390,17 +1391,25 @@ pub fn analyze(img: &Img) -> Analysis {
     // (la sagoma sotto la mano): il bianco severo spesso la trova già divisa, inquadrata meglio e
     // più in fretta. Se trova (quasi) le stesse carte, riconosciute almeno altrettanto bene, si
     // tiene quello, e le letture dopo partono da lì.
-    if let Some((0, b)) = &best {
+    if let Some((0, b)) = &best.as_ref().filter(|_| std::env::var_os("SENZA_DIVISA").is_none()) {
         if b.split {
             if let Some(c) = run(5) {
                 let mean = |a: &Analysis| a.cards.iter().map(|f| f.score).sum::<f32>() / a.cards.len().max(1) as f32;
-                if !c.split && c.cards.len() + 1 >= b.cards.len() && c.cards.len() >= 2 && mean(&c) >= mean(b) {
+                // (Una carta in meno solo se quella in più della prova solita era letta male: un pezzo
+                // di sagoma o di scritta preso per carta.)
+                let weakest = b.cards.iter().map(|f| f.score).fold(f32::MAX, f32::min);
+                let enough = c.cards.len() >= b.cards.len() || (c.cards.len() + 1 == b.cards.len() && weakest < 0.9);
+                if !c.split && enough && c.cards.len() <= b.cards.len() && c.cards.len() >= 2 && mean(&c) >= mean(b) {
                     best = Some((5, c));
+                    PREFER_STRICT.with(|p| p.set(p.get() + 1));
+                    LAST_FROM_SPLIT.with(|f| f.set(true));
+                } else {
+                    PREFER_STRICT.with(|p| p.set(0));
                 }
             }
         }
     }
-    if let Some((4, b)) = &best {
+    if let Some((4, b)) = &best.as_ref().filter(|_| std::env::var_os("SENZA_SEVERO").is_none()) {
         if let Some(c) = run(5) {
             let total = |a: &Analysis| a.cards.iter().map(|f| f.score).sum::<f32>();
             if c.cards.len() > b.cards.len() || (c.cards.len() == b.cards.len() && total(&c) > total(b) + 0.05) {
@@ -1507,7 +1516,10 @@ pub fn analyze(img: &Img) -> Analysis {
             *p = next;
         });
     }
-    LAST_TRY.with(|t| t.set(if a.cards.is_empty() { 0 } else { k }));
+    // (Il bianco severo scelto al posto della prova solita divisa diventa il punto di partenza solo
+    // dopo tre letture di fila: un'altra schermata, un altro sito, non deve ereditarlo.)
+    let sticky = k != 5 || first == 5 || PREFER_STRICT.with(|p| p.get()) >= 3 || !LAST_FROM_SPLIT.with(|f| f.replace(false));
+    LAST_TRY.with(|t| t.set(if a.cards.is_empty() { 0 } else if sticky { k } else { 0 }));
     LAST_N.with(|t| t.set(a.cards.len()));
     LAST_CARD_L.with(|l| l.set(if a.cards.is_empty() { 0.0 } else { a.card_l }));
     // La misura delle carte quando se ne riconoscono bene almeno tre della stessa misura.
@@ -1532,6 +1544,13 @@ const TABLE_BAND: bool = true;
 /// La ricerca delle carte sbiadite (spenta: rallentava la lettura e la confondeva su alcune
 /// partite più di quanto aiutasse).
 const SBIADITE: bool = false;
+
+thread_local! {
+    /// Letture di fila in cui il bianco severo ha vinto sulla prova solita divisa.
+    static PREFER_STRICT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Se in questa analisi il bianco severo ha vinto sulla prova solita divisa.
+    static LAST_FROM_SPLIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 thread_local! {
     /// Nell'ultima analisi una carta sopra la mano era sparita da poco.

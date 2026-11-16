@@ -1608,12 +1608,34 @@ impl Assistant {
         };
         let keep_table = |v: &CardView| !is_trump(v) && (still(v) || normal_table(v) || in_slot(v) || size(v).1 <= 0.0);
         let moved = scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot).find(|v| is_trump(v)).cloned();
-        let out = Scene {
+        let mut out = Scene {
             trump: scene.trump.clone().or(moved),
             opp_slot: scene.opp_slot.clone().filter(|v| keep_table(v)),
             my_slot: scene.my_slot.clone().filter(|v| keep_table(v)),
             hand: scene.hand.iter().filter(|v| keep(v)).cloned().collect(),
         };
+        // Una carta "in mano" proprio in una casella del tavolo dove si sono viste carte ferme, con
+        // la misura delle carte in tavola, è una carta in tavola: a fine partita, con una carta sola
+        // in mano attaccata a qualcos'altro di bianco, la carta giocata è la più in basso e sembra
+        // la mano. Va nella casella più in basso se è libera (la mia), se no in quella dell'altro.
+        if slots.len() >= 2 && table_size.1 > 0.0 {
+            let lowest = slots.iter().map(|s| s[1]).fold(f32::MIN, f32::max);
+            let at_slot = |v: &CardView| {
+                let (w, h) = size(v);
+                let (cx, cy) = ((v.at[0] + v.at[2]) / 2.0, (v.at[1] + v.at[3]) / 2.0);
+                slots.iter().find(|s| (s[0] - cx).abs() < 0.15 * w && (s[1] - cy).abs() < 0.15 * h).copied()
+                    .filter(|_| (h / table_size.1 - 1.0).abs() < 0.15)
+            };
+            let mut rest = Vec::new();
+            for v in std::mem::take(&mut out.hand) {
+                match at_slot(&v) {
+                    Some(sl) if sl[1] >= lowest - 0.01 && out.my_slot.is_none() => out.my_slot = Some(v),
+                    Some(sl) if sl[1] < lowest - 0.01 && out.opp_slot.is_none() => out.opp_slot = Some(v),
+                    _ => rest.push(v),
+                }
+            }
+            out.hand = rest;
+        }
         // La misura delle carte ferme (cambia piano se cambia lo zoom).
         let update = |cur: (f32, f32), views: Vec<&CardView>| {
             let mut sizes: Vec<(f32, f32)> = views.into_iter().filter(|v| still(v)).map(size).collect();

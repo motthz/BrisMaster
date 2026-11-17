@@ -459,6 +459,10 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
         if let Some(v) = *sim {
             if v >= memory::SAME && !excluded[c] {
                 s[c] += 6.0 + (v - memory::SAME) * 20.0;
+            } else if v >= memory::SURE {
+                // La stessa immagine, quasi pixel per pixel, già confermata: vale più del
+                // conteggio dei simboli, che su un mazzo nuovo può sbagliare.
+                s[c] += PIP_PENALTY + 6.0 + (v - memory::SAME) * 20.0;
             }
         }
     }
@@ -1887,6 +1891,25 @@ mod other_sites {
         let s = read_briscola(img, &mem);
         if shared {
             let mut m = mem.into_inner().unwrap();
+            if std::env::var_os("MEMLOG").is_some() && !TEACH.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(sc) = &s {
+                    for (role, c) in want {
+                        let v = match *role {
+                            "briscola" => sc.trump.as_ref(),
+                            "avversario" => sc.opp_slot.as_ref(),
+                            "tua" => sc.my_slot.as_ref(),
+                            r => sc.hand.get(r[4..].parse::<usize>().unwrap_or(9)),
+                        };
+                        if let Some(v) = v {
+                            let b = v.best(CardSet::FULL).unwrap().0;
+                            if b != *c {
+                                let sim = m.similarity(&v.img, v.vis);
+                                eprintln!("MEM vera {c} sim {:?} punti {:.1}; letta {b} sim {:?} punti {:.1}; parziale {}", sim[*c as usize], v.scores[*c as usize], sim[b as usize], v.scores[b as usize], v.partial);
+                            }
+                        }
+                    }
+                }
+            }
             if TEACH.load(std::sync::atomic::Ordering::Relaxed) {
                 if let Some(sc) = &s {
                     for (role, c) in want {

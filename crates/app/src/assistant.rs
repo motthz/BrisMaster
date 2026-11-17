@@ -336,6 +336,14 @@ const STALL: u32 = 8;
 /// Scatti (circa un terzo di secondo l'uno) di partita diversa dallo schermo prima di ripartire da
 /// quello che si vede anche senza letture sicure.
 const ADOPT: u32 = 15;
+fn adopt_after() -> u32 {
+    if cfg!(test) {
+        if let Some(v) = std::env::var("ADOPT").ok().and_then(|v| v.parse().ok()) {
+            return v;
+        }
+    }
+    ADOPT
+}
 /// Letture con la partita ferma e lo schermo più avanti dopo le quali si guarda indietro.
 const BEHIND: u32 = 4;
 /// Letture con la partita ferma dopo le quali si riparte da soli da quello che si vede.
@@ -1350,7 +1358,7 @@ impl Assistant {
         // non si blocca.
         if self.vision.inconsistent && matches!(self.pos.step(), Step::Draw(_) | Step::MyMove | Step::OppMove) {
             self.vision.adopt += tick;
-            if self.vision.adopt >= ADOPT && self.adopt_screen(scene) {
+            if self.vision.adopt >= adopt_after() && self.adopt_screen(scene) {
                 self.vision.adopt = 0;
                 self.vision.stuck = 0;
                 self.vision.stall = 0;

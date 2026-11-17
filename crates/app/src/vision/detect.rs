@@ -2292,6 +2292,13 @@ mod prove_carte {
     #[ignore]
     fn prove_una_per_una() {
         let img = super::super::capture::load_png(std::path::Path::new(&std::env::var("IMG").unwrap())).unwrap();
+        if std::env::var_os("SOLO").is_some() {
+            let mem = std::sync::Mutex::new(super::super::memory::Memory::in_memory());
+            let r = super::super::read_briscola(&img, &mem).unwrap();
+            let h: Vec<String> = r.hand.iter().map(|v| { let x = v.best(briscola_core::cards::CardSet::FULL).unwrap(); format!("{}({:.1})", briscola_core::cards::short(x.0), x.1) }).collect();
+            println!("solo lettura: mano {} tavola {} {}", h.join(" "), r.opp_slot.is_some(), r.my_slot.is_some());
+            return;
+        }
         let paper = Paper::of(&img);
         let darker = Paper::darker(&img);
         for k in 0..7usize {

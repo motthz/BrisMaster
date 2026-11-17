@@ -1891,7 +1891,9 @@ mod other_sites {
             .map(|(role, c)| match get(role).and_then(|v| v.best(CardSet::FULL)) {
                 Some((b, m)) => {
                     let note = if b != *c {
-                        " (sbagliata)".to_string()
+                        let v = get(role).unwrap();
+                        let nn = super::nn::log_probs(&v.img).map(|lp| (0..40).max_by(|&a, &b| lp[a].total_cmp(&lp[b])).unwrap() as Card);
+                        format!(" (sbagliata; rete {} {}, parziale {})", nn.map(cards::name).unwrap_or_default(), if nn == Some(*c) { "GIUSTA" } else { "no" }, v.partial)
                     } else if m < 1.4 {
                         format!(" (da confermare, {m:.2})")
                     } else {
@@ -1928,7 +1930,12 @@ mod other_sites {
                 trump: Some(&t.1),
                 deck: true,
             };
-            let img = table(&deal, look);
+            let mut img = table(&deal, look);
+            if std::env::var_os("RICARICA").is_some() {
+                let p = std::env::temp_dir().join("ricarica.png");
+                img.save_png(&p).unwrap();
+                img = capture::load_png(&p).unwrap();
+            }
             // (Ogni tavolo è un sito diverso: niente di quello imparato sul tavolo prima.)
             detect::forget_reading_state();
             if verbose {
@@ -2010,6 +2017,88 @@ mod other_sites {
                 reference::card_image(style, c).save_png(&d.join(format!("{c:02}.png"))).unwrap();
             }
         }
+    }
+
+    /// Le carte come le vede l'app sui tavoli (raddrizzate, 100x160), dai mazzi di riferimento su
+    /// tavoli a caso: per allenare la rete. VISTE=cartella, VISTE_N=tavoli per mazzo.
+    #[test]
+    #[ignore]
+    fn esporta_viste() {
+        let root = std::path::PathBuf::from(std::env::var("VISTE").expect("VISTE=cartella"));
+        let per: usize = std::env::var("VISTE_N").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f32 / (1u64 << 53) as f32
+        };
+        let mut saved = 0;
+        for style in 0..3 {
+            let deck: Vec<Img> = (0..40u8).map(|c| reference::card_image(style, c)).collect();
+            for k in 0..per {
+                let bg = match (rnd() * 6.0) as usize {
+                    0 => Bg::Wood,
+                    1 => Bg::Felt([20, 105, 70]),
+                    2 => Bg::Felt([30, 60, 140]),
+                    3 => Bg::Felt([120, 25, 30]),
+                    4 => Bg::Felt([(rnd() * 200.0) as u8, (rnd() * 200.0) as u8, (rnd() * 200.0) as u8]),
+                    _ => Bg::Felt([60, 60, 60]),
+                };
+                let look = Look {
+                    bg,
+                    card_h: 100.0 + rnd() * 110.0,
+                    aspect: (rnd() < 0.4).then(|| 0.5 + rnd() * 0.22),
+                    hue: (rnd() - 0.5) * 30.0,
+                    sat: 0.6 + rnd() * 0.8,
+                    gamma: 0.8 + rnd() * 0.45,
+                    blur: rnd() < 0.25,
+                    fan: if rnd() < 0.4 { rnd() * 8.0 } else { 0.0 },
+                    pile: 0.7 + rnd() * 0.4,
+                    cover: 0.3 + rnd() * 0.3,
+                    ..Look::default()
+                };
+                let mut pick: Vec<u8> = Vec::new();
+                while pick.len() < 6 {
+                    let c = (rnd() * 40.0) as u8 % 40;
+                    if !pick.contains(&c) {
+                        pick.push(c);
+                    }
+                }
+                let deal = Deal {
+                    hand: vec![&deck[pick[0] as usize], &deck[pick[1] as usize], &deck[pick[2] as usize]],
+                    opp: Some(&deck[pick[3] as usize]),
+                    mine: Some(&deck[pick[4] as usize]),
+                    trump: Some(&deck[pick[5] as usize]),
+                    deck: true,
+                };
+                let img = table(&deal, &look);
+                detect::forget_reading_state();
+                let Some(s) = read_briscola(&img, &Mutex::new(Memory::in_memory())) else { continue };
+                let mut views: Vec<(u8, &CardView)> = Vec::new();
+                if s.hand.len() == 3 {
+                    for i in 0..3 {
+                        views.push((pick[i], &s.hand[i]));
+                    }
+                }
+                if let Some(v) = &s.opp_slot {
+                    views.push((pick[3], v));
+                }
+                if let Some(v) = &s.my_slot {
+                    views.push((pick[4], v));
+                }
+                for (i, (c, v)) in views.into_iter().enumerate() {
+                    // (Solo le carte lette giuste: un'etichetta sbagliata insegnerebbe male.)
+                    if v.partial || v.best(CardSet::FULL).map(|b| b.0) != Some(c) {
+                        continue;
+                    }
+                    v.img.save_png(&root.join(format!("{c:02}_{style}_{k}_{i}.png"))).unwrap();
+                    saved += 1;
+                }
+            }
+        }
+        println!("viste salvate: {saved}");
     }
 
     /// La rete su una carta 100x160 (RETE=immagine): le tre carte più probabili.

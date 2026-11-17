@@ -455,15 +455,24 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
     }
     // (Nemmeno la memoria delle carte viste può dare una carta esclusa: un'immagine ricordata
     // sotto il nome sbagliato non deve ripetere l'errore.)
-    for (c, sim) in mem.similarity(&view.img, view.vis).iter().enumerate() {
+    let sims = mem.similarity(&view.img, view.vis);
+    for (c, sim) in sims.iter().enumerate() {
         if let Some(v) = *sim {
             if v >= memory::SAME && !excluded[c] {
                 s[c] += 6.0 + (v - memory::SAME) * 20.0;
-            } else if v >= memory::SURE {
-                // La stessa immagine, quasi pixel per pixel, già confermata: vale più del
-                // conteggio dei simboli, che su un mazzo nuovo può sbagliare.
-                s[c] += PIP_PENALTY + 6.0 + (v - memory::SAME) * 20.0;
             }
+        }
+    }
+    // La stessa immagine, quasi pixel per pixel, già vista su questo sito e nessun'altra carta
+    // ricordata che le somigli altrettanto: è quella carta, qualunque cosa dicano il confronto coi
+    // mazzi di riferimento, la rete o il conteggio dei simboli (che su un mazzo nuovo sbagliano).
+    let mut order: Vec<(usize, f32)> = sims.iter().enumerate().filter_map(|(c, v)| v.map(|v| (c, v))).collect();
+    order.sort_by(|a, b| b.1.total_cmp(&a.1));
+    if let Some(&(c, v)) = order.first() {
+        let second = order.get(1).map_or(f32::MIN, |o| o.1);
+        if v >= memory::SURE && v - second >= memory::SURE_GAP {
+            let top = s.iter().copied().fold(f32::MIN, f32::max);
+            s[c] = s[c].max(top + 6.0);
         }
     }
     view.scores = s;

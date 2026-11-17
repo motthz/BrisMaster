@@ -39,7 +39,8 @@ impl RotRect {
     /// Vero se il punto è dentro il rettangolo.
     pub fn contains(&self, x: f32, y: f32) -> bool {
         let (dx, dy) = (x - self.cx, y - self.cy);
-        (dx * self.u.0 + dy * self.u.1).abs() <= self.hw && (dx * self.v.0 + dy * self.v.1).abs() <= self.hh
+        (dx * self.u.0 + dy * self.u.1).abs() <= self.hw
+            && (dx * self.v.0 + dy * self.v.1).abs() <= self.hh
     }
 
     /// Riquadro dritto che contiene il rettangolo, in frazioni dell'immagine (sinistra, alto,
@@ -48,7 +49,12 @@ impl RotRect {
         let ex = self.u.0.abs() * self.hw + self.v.0.abs() * self.hh;
         let ey = self.u.1.abs() * self.hw + self.v.1.abs() * self.hh;
         let (w, h) = (img.w.max(1) as f32, img.h.max(1) as f32);
-        [(self.cx - ex) / w, (self.cy - ey) / h, (self.cx + ex) / w, (self.cy + ey) / h]
+        [
+            (self.cx - ex) / w,
+            (self.cy - ey) / h,
+            (self.cx + ex) / w,
+            (self.cy + ey) / h,
+        ]
     }
 
     /// Vero se il lato lungo è più vicino all'orizzontale che alla verticale.
@@ -64,7 +70,11 @@ impl RotRect {
 
     /// Lo stesso rettangolo girato di mezzo giro (la testa della carta dall'altra parte).
     fn flipped(&self) -> RotRect {
-        RotRect { u: (-self.u.0, -self.u.1), v: (-self.v.0, -self.v.1), ..*self }
+        RotRect {
+            u: (-self.u.0, -self.u.1),
+            v: (-self.v.0, -self.v.1),
+            ..*self
+        }
     }
 
     /// Punto del contorno ingrandito di `k` (più `pad` pixel), per `t` da 0 a 4 (un lato per unità).
@@ -76,7 +86,10 @@ impl RotRect {
             2 => (hw - 2.0 * hw * t.fract(), hh),
             _ => (-hw, hh - 2.0 * hh * t.fract()),
         };
-        (self.cx + self.u.0 * a + self.v.0 * b, self.cy + self.u.1 * a + self.v.1 * b)
+        (
+            self.cx + self.u.0 * a + self.v.0 * b,
+            self.cy + self.u.1 * a + self.v.1 * b,
+        )
     }
 }
 
@@ -134,7 +147,11 @@ impl Paper {
                 break;
             }
         }
-        let bright: Vec<[u8; 3]> = colors[(top * 92 / 100).max(100)..].iter().flatten().copied().collect();
+        let bright: Vec<[u8; 3]> = colors[(top * 92 / 100).max(100)..]
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
         Paper::from_white(&bright, 2.5)
     }
 
@@ -157,7 +174,9 @@ impl Paper {
             let (a, b) = ((l * 90 / 100).max(60), (l * 110 / 100).min(255));
             // Su schermi molto scuri il limite minimo può superare quello massimo.
             // Non c'è un bianco utilizzabile a questo livello, non un intervallo da tagliare.
-            if a > b { continue; }
+            if a > b {
+                continue;
+            }
             let pts: Vec<[u8; 3]> = by_v[a..=b].iter().flatten().copied().collect();
             // Abbastanza punti per essere carte (almeno mezza carta piccola).
             if pts.len() * 1000 >= n * 2 {
@@ -184,15 +203,25 @@ impl Paper {
     /// Il bianco severo: solo i punti chiari quasi quanto il bianco più bianco. Su un tavolo chiaro
     /// come le carte (crema, bianco sporco) le carte sono appena più chiare del tavolo.
     pub fn strict(img: &Img, min: u8) -> Paper {
-        Paper { min, ..Paper::of(img) }
+        Paper {
+            min,
+            ..Paper::of(img)
+        }
     }
 
     /// Vero se il colore, bilanciato, è bianco: poco saturo (il legno chiaro di un tavolo non lo è
     /// abbastanza) e chiaro.
     #[inline]
     pub fn is(&self, p: [u8; 3]) -> bool {
-        let q = [self.lut[0][p[0] as usize], self.lut[1][p[1] as usize], self.lut[2][p[2] as usize]];
-        let (max, min) = (q[0].max(q[1]).max(q[2]) as u32, q[0].min(q[1]).min(q[2]) as u32);
+        let q = [
+            self.lut[0][p[0] as usize],
+            self.lut[1][p[1] as usize],
+            self.lut[2][p[2] as usize],
+        ];
+        let (max, min) = (
+            q[0].max(q[1]).max(q[2]) as u32,
+            q[0].min(q[1]).min(q[2]) as u32,
+        );
         max > self.min as u32 && (max - min) * 255 < 45 * max
     }
 }
@@ -204,7 +233,9 @@ fn hull(mut pts: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
     if pts.len() < 3 {
         return pts;
     }
-    let cross = |o: (f32, f32), a: (f32, f32), b: (f32, f32)| (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0);
+    let cross = |o: (f32, f32), a: (f32, f32), b: (f32, f32)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
     let mut lower: Vec<(f32, f32)> = Vec::new();
     for &p in &pts {
         while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
@@ -273,7 +304,11 @@ fn canonical(mut r: RotRect) -> RotRect {
         std::mem::swap(&mut r.hw, &mut r.hh);
         std::mem::swap(&mut r.u, &mut r.v);
     }
-    let down = if r.landscape() { r.v.0 < 0.0 } else { r.v.1 > 0.0 };
+    let down = if r.landscape() {
+        r.v.0 < 0.0
+    } else {
+        r.v.1 > 0.0
+    };
     if !down {
         r.v = (-r.v.0, -r.v.1);
     }
@@ -289,13 +324,20 @@ fn blobs_r(img: &Img, paper: &[bool], r: usize) -> Vec<Blob> {
 
 /// Come `blobs_r`, solo dentro il riquadro (x0, y0, x1, y1): per dividere una zona sola non serve
 /// erodere tutto lo schermo.
-fn blobs_in(img: &Img, paper: &[bool], r: usize, (x0, y0, x1, y1): (usize, usize, usize, usize)) -> Vec<Blob> {
+fn blobs_in(
+    img: &Img,
+    paper: &[bool],
+    r: usize,
+    (x0, y0, x1, y1): (usize, usize, usize, usize),
+) -> Vec<Blob> {
     let (x1, y1) = (x1.min(img.w), y1.min(img.h));
     if x1 <= x0 || y1 <= y0 {
         return Vec::new();
     }
     let (w, h) = (x1 - x0, y1 - y0);
-    let sub: Vec<bool> = (y0..y1).flat_map(|y| paper[y * img.w + x0..y * img.w + x1].iter().copied()).collect();
+    let sub: Vec<bool> = (y0..y1)
+        .flat_map(|y| paper[y * img.w + x0..y * img.w + x1].iter().copied())
+        .collect();
     let er = erode(&sub, w, h, r);
     // Basta poco: di un asso di denari piccolo resta solo la cornice bianca.
     let min_area = ((img.w * img.h) as f32 * 0.0002) as usize;
@@ -315,7 +357,12 @@ fn blobs_in(img: &Img, paper: &[bool], r: usize, (x0, y0, x1, y1): (usize, usize
             count += 1;
             let (x, y) = (i % w, i / w);
             let mut border = false;
-            for (nx, ny) in [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)] {
+            for (nx, ny) in [
+                (x.wrapping_sub(1), y),
+                (x + 1, y),
+                (x, y.wrapping_sub(1)),
+                (x, y + 1),
+            ] {
                 if nx >= w || ny >= h {
                     border = true;
                     continue;
@@ -342,7 +389,11 @@ fn blobs_in(img: &Img, paper: &[bool], r: usize, (x0, y0, x1, y1): (usize, usize
         rect.hw += r as f32 + 0.5;
         rect.hh += r as f32 + 0.5;
         let white = (count as f32 / rect.area()).min(1.0);
-        out.push(Blob { rect, white, bg: background(img, paper, &rect) });
+        out.push(Blob {
+            rect,
+            white,
+            bg: background(img, paper, &rect),
+        });
     }
     out
 }
@@ -379,7 +430,8 @@ fn ring<'a>(img: &'a Img, r: &RotRect) -> impl Iterator<Item = (usize, usize)> +
     let r = *r;
     (0..64).filter_map(move |k| {
         let (x, y) = r.outline(k as f32 / 16.0, 1.12, 3.0);
-        (x >= 0.0 && y >= 0.0 && x < img.w as f32 && y < img.h as f32).then_some((x as usize, y as usize))
+        (x >= 0.0 && y >= 0.0 && x < img.w as f32 && y < img.h as f32)
+            .then_some((x as usize, y as usize))
     })
 }
 
@@ -399,7 +451,10 @@ fn background(img: &Img, paper: &[bool], r: &RotRect) -> f32 {
 
 /// Colore del tavolo attorno al rettangolo (mediana dei punti non chiari dell'anello).
 fn table_color(img: &Img, paper: &[bool], r: &RotRect) -> Option<[u8; 3]> {
-    let pts: Vec<[u8; 3]> = ring(img, r).filter(|&(x, y)| !paper[y * img.w + x]).map(|(x, y)| img.at(x, y)).collect();
+    let pts: Vec<[u8; 3]> = ring(img, r)
+        .filter(|&(x, y)| !paper[y * img.w + x])
+        .map(|(x, y)| img.at(x, y))
+        .collect();
     if pts.len() < 8 {
         return None;
     }
@@ -447,7 +502,12 @@ pub fn warp(img: &Img, r: &RotRect) -> Img {
 /// la carta): con la luce notturna, uno schermo caldo o freddo, più scuro o slavato, la carta torna
 /// dei colori di quelle di riferimento. Non cambia niente se il bianco non si trova.
 fn balance(card: &mut Img) {
-    let mut light: Vec<[u8; 3]> = card.px.iter().copied().filter(|&p| hsv(p).1 < 160).collect();
+    let mut light: Vec<[u8; 3]> = card
+        .px
+        .iter()
+        .copied()
+        .filter(|&p| hsv(p).1 < 160)
+        .collect();
     if light.len() < card.px.len() / 20 {
         return;
     }
@@ -486,7 +546,10 @@ fn balance(card: &mut Img) {
 /// riquadri colorati del sito non ne hanno.
 pub fn inner_paper(card: &Img) -> f32 {
     let lum = |p: [u8; 3]| (p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10;
-    let mut rim: Vec<u32> = (0..CARD_H).step_by(4).flat_map(|y| [lum(card.at(2, y)), lum(card.at(CARD_W - 3, y))]).collect();
+    let mut rim: Vec<u32> = (0..CARD_H)
+        .step_by(4)
+        .flat_map(|y| [lum(card.at(2, y)), lum(card.at(CARD_W - 3, y))])
+        .collect();
     rim.sort_unstable();
     let white = rim[rim.len() / 2] as f32;
     let (mut n, mut w) = (0, 0);
@@ -510,7 +573,9 @@ pub fn hues(card: &Img) -> usize {
     if n < 30 {
         return 0;
     }
-    bins.iter().filter(|&&b| b as f32 >= 0.06 * n as f32).count()
+    bins.iter()
+        .filter(|&&b| b as f32 >= 0.06 * n as f32)
+        .count()
 }
 
 /// La parte della carta (senza la cornice) coperta di disegno colorato: anche l'asso più spoglio di
@@ -542,7 +607,11 @@ fn hue_groups(card: &Img) -> usize {
     let on: Vec<bool> = bins.iter().map(|&b| b as f32 >= 0.06 * n as f32).collect();
     // Inizi di gruppo: una tinta presente con la precedente (in cerchio) assente.
     let starts = (0..12).filter(|&i| on[i] && !on[(i + 11) % 12]).count();
-    if starts == 0 && on.iter().any(|&o| o) { 1 } else { starts }
+    if starts == 0 && on.iter().any(|&o| o) {
+        1
+    } else {
+        starts
+    }
 }
 
 /// Un disegno di più colori: almeno tre tinte, o due ben distinte (un numero o una scritta di un
@@ -567,7 +636,10 @@ fn hue_bins(card: &Img) -> ([u32; 12], u32) {
 }
 
 pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
-    let (y0, y1) = ((vis[0] * CARD_H as f32) as usize, ((vis[1] * CARD_H as f32) as usize).min(CARD_H));
+    let (y0, y1) = (
+        (vis[0] * CARD_H as f32) as usize,
+        ((vis[1] * CARD_H as f32) as usize).min(CARD_H),
+    );
     if y1 <= y0 + 8 {
         return (0.0, 0.0);
     }
@@ -583,10 +655,12 @@ pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
     ls.sort_unstable();
     let top = ls[ls.len() * 9 / 10];
     let bright: Vec<&[u8; 3]> = pts.iter().filter(|&&p| lum(p) >= top).collect();
-    let white: [f32; 3] =
-        std::array::from_fn(|c| (bright.iter().map(|p| p[c] as f32).sum::<f32>() / bright.len() as f32).max(1.0));
-    let balanced =
-        |p: [u8; 3]| -> [u8; 3] { std::array::from_fn(|c| (p[c] as f32 / white[c] * 230.0).min(255.0) as u8) };
+    let white: [f32; 3] = std::array::from_fn(|c| {
+        (bright.iter().map(|p| p[c] as f32).sum::<f32>() / bright.len() as f32).max(1.0)
+    });
+    let balanced = |p: [u8; 3]| -> [u8; 3] {
+        std::array::from_fn(|c| (p[c] as f32 / white[c] * 230.0).min(255.0) as u8)
+    };
     let paper = |p: [u8; 3]| lum(p) as f32 >= 0.8 * top as f32 && hsv(balanced(p)).1 < 70;
     // Un punto del contorno è carta se lo è a 1..5 pixel dal lato: il rettangolo non è mai preciso
     // al pixel e su alcuni mazzi il disegno arriva quasi al bordo.
@@ -655,7 +729,10 @@ pub fn table_inside(img: &Img, r: &RotRect, card: &Img, vis: [f32; 2]) -> f32 {
             }
         }
     }
-    let (y0, y1) = ((vis[0] * CARD_H as f32) as usize, ((vis[1] * CARD_H as f32) as usize).min(CARD_H));
+    let (y0, y1) = (
+        (vis[0] * CARD_H as f32) as usize,
+        ((vis[1] * CARD_H as f32) as usize).min(CARD_H),
+    );
     let m = (y1.saturating_sub(y0)) / 12;
     let (mut n, mut same) = (0, 0);
     for y in (y0 + m..y1.saturating_sub(m)).step_by(2) {
@@ -682,7 +759,7 @@ const RATIO: f32 = 0.62;
 
 /// Proporzioni (lato corto / lato lungo) accettate per una carta intera.
 fn card_shaped(r: &RotRect) -> bool {
-    (0.46..=0.76).contains(&(r.short() / r.long()))
+    (0.52..=0.76).contains(&(r.short() / r.long()))
 }
 
 /// Come `card_shaped`, per le carte disegnate stirate dal sito (più strette o quasi quadrate).
@@ -702,6 +779,8 @@ pub struct Found {
     pub inside: f32,
     /// I lati della carta staccati da quello che c'è fuori (vedi `sides_apart`).
     pub apart: [bool; 4],
+    /// Presa da sola con le regole dei mazzi sconosciuti (vedi `unknown_deck_card`).
+    pub alone: bool,
 }
 
 /// Se due lati opposti del rettangolo hanno fuori un colore diverso dal bordo appena dentro: una
@@ -727,7 +806,9 @@ fn sides_apart(img: &Img, r: &RotRect) -> [bool; 4] {
                 2 => ((-r.hw + d, t * r.hh * 0.8), (-r.hw - d, t * r.hh * 0.8)),
                 _ => ((r.hw - d, t * r.hh * 0.8), (r.hw + d, t * r.hh * 0.8)),
             };
-            let (Some(i), Some(o)) = (at(pin.0, pin.1), at(pout.0, pout.1)) else { continue };
+            let (Some(i), Some(o)) = (at(pin.0, pin.1), at(pout.0, pout.1)) else {
+                continue;
+            };
             n += 1;
             if (0..3).map(|c| (i[c] - o[c]).abs()).sum::<f32>() > 60.0 {
                 diff += 1;
@@ -737,6 +818,71 @@ fn sides_apart(img: &Img, r: &RotRect) -> [bool; 4] {
         apart[side] = n == 0 || diff * 2 >= n;
     }
     apart
+}
+
+/// Il lato `side` (vedi `sides_apart`) non è un bordo ma un taglio dentro una carta più grande: i
+/// due lati vicini continuano oltre, staccati dal tavolo come dentro il rettangolo (una carta
+/// disegnata larga presa a metà).
+fn continues_beyond(img: &Img, r: &RotRect, side: usize) -> bool {
+    let at = |a: f32, b: f32| -> Option<[f32; 3]> {
+        let (x, y) = (r.cx + a * r.u.0 + b * r.v.0, r.cy + a * r.u.1 + b * r.v.1);
+        if x < 0.0 || y < 0.0 || x >= img.w as f32 || y >= img.h as f32 {
+            return None;
+        }
+        Some(img.at(x as usize, y as usize).map(|c| c as f32))
+    };
+    let d = (r.short() * 0.04).max(3.0);
+    let ext = r.short() * 0.5;
+    let (mut n, mut diff) = (0, 0);
+    for k in 1..=6 {
+        let e = k as f32 / 6.0 * ext;
+        for lat in [-1.0f32, 1.0] {
+            let (pin, pout) = match side {
+                0 => ((lat * (r.hw - d), -r.hh - e), (lat * (r.hw + d), -r.hh - e)),
+                1 => ((lat * (r.hw - d), r.hh + e), (lat * (r.hw + d), r.hh + e)),
+                2 => ((-r.hw - e, lat * (r.hh - d)), (-r.hw - e, lat * (r.hh + d))),
+                _ => ((r.hw + e, lat * (r.hh - d)), (r.hw + e, lat * (r.hh + d))),
+            };
+            let (Some(i), Some(o)) = (at(pin.0, pin.1), at(pout.0, pout.1)) else {
+                continue;
+            };
+            n += 1;
+            if (0..3).map(|c| (i[c] - o[c]).abs()).sum::<f32>() > 60.0 {
+                diff += 1;
+            }
+        }
+    }
+    n > 0 && diff * 3 >= n * 2
+}
+
+/// Lungo il lato `side`, appena dentro, c'è la cornice chiara della carta (non il dorso del mazzo o
+/// un'altra cosa colorata che il rettangolo comprende per sbaglio).
+fn paper_inside(img: &Img, r: &RotRect, side: usize) -> bool {
+    let at = |a: f32, b: f32| -> Option<[u8; 3]> {
+        let (x, y) = (r.cx + a * r.u.0 + b * r.v.0, r.cy + a * r.u.1 + b * r.v.1);
+        if x < 0.0 || y < 0.0 || x >= img.w as f32 || y >= img.h as f32 {
+            return None;
+        }
+        Some(img.at(x as usize, y as usize))
+    };
+    let d = (r.short() * 0.04).max(3.0);
+    let (mut n, mut paper) = (0, 0);
+    for k in 1..10 {
+        let t = k as f32 / 10.0 * 2.0 - 1.0;
+        let p = match side {
+            0 => (t * r.hw * 0.8, -r.hh + d),
+            1 => (t * r.hw * 0.8, r.hh - d),
+            2 => (-r.hw + d, t * r.hh * 0.8),
+            _ => (r.hw - d, t * r.hh * 0.8),
+        };
+        let Some(c) = at(p.0, p.1) else { continue };
+        n += 1;
+        let (_, sat, v) = hsv(c);
+        if sat < 60 && v >= 150 {
+            paper += 1;
+        }
+    }
+    n == 0 || paper * 3 >= n * 2
 }
 
 /// (Prove: interruttori per misurare ciascuna regola delle carte dei mazzi sconosciuti.)
@@ -759,6 +905,15 @@ impl Found {
         self.view.partial
     }
 
+    /// Accettata con `accepted(ACCEPT)`: sotto la soglia vuol dire con le regole dei mazzi
+    /// sconosciuti.
+    fn mark_alone(self) -> Found {
+        Found {
+            alone: self.score < ACCEPT,
+            ..self
+        }
+    }
+
     /// Somiglia abbastanza a una carta (almeno `min`) e ne ha l'aspetto: la cornice chiara tutta
     /// attorno (le carte arrivano quasi a 1, le scritte prese per carte non oltre 0.87; meno se
     /// somiglia molto: una carta sfocata, un po' storta o tagliata male) e un po' di colore.
@@ -767,8 +922,18 @@ impl Found {
     /// Una carta di un mazzo sconosciuto (vedi `as_full`): cornice bianca quasi tutta attorno,
     /// disegno colorato e niente tavolo dentro, anche se non somiglia a nessuna carta nota.
     fn unknown_deck_card(&self) -> bool {
+        if off("SENZA_SCONOSCIUTA") {
+            return false;
+        }
         let (border, ink) = traits(&self.view.img, self.view.vis);
-        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && self.apart_alone() && (off("SENZA_COLORE") || drawn_color(&self.view.img) >= MIN_COLORED) && many_colors(&self.view.img) && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
+        border >= 0.9
+            && ink >= 0.05
+            && self.inside < 0.12
+            && self.view.vis == WHOLE
+            && self.apart_alone()
+            && (off("SENZA_COLORE") || drawn_color(&self.view.img) >= MIN_COLORED)
+            && many_colors(&self.view.img)
+            && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
     }
 
     /// Come `unknown_deck_card`, dentro una zona che contiene già carte della misura giusta (la mano
@@ -777,7 +942,14 @@ impl Found {
     /// panno verde).
     fn unknown_in_group(&self) -> bool {
         let (border, ink) = traits(&self.view.img, self.view.vis);
-        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && self.apart_opposite() && (off("SENZA_COLORE") || drawn_color(&self.view.img) >= MIN_COLORED) && many_colors(&self.view.img) && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
+        border >= 0.95
+            && ink >= 0.05
+            && self.inside < 0.3
+            && self.view.vis == WHOLE
+            && self.apart_opposite()
+            && (off("SENZA_COLORE") || drawn_color(&self.view.img) >= MIN_COLORED)
+            && many_colors(&self.view.img)
+            && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
     }
 
     fn accepted(&self, min: f32) -> bool {
@@ -804,7 +976,9 @@ impl Found {
         if border < 0.65 {
             return false;
         }
-        border >= 0.9 || self.score >= 0.85 || (self.score >= 0.6 && self.inside < 0.2 && ink >= 0.06)
+        border >= 0.9
+            || self.score >= 0.85
+            || (self.score >= 0.6 && self.inside < 0.2 && ink >= 0.06)
     }
 }
 
@@ -829,14 +1003,26 @@ impl Try {
     fn with_cols(img: &Img, rect: RotRect, vis: [f32; 2], cols: [f32; 2]) -> Try {
         let card = warp(img, &rect);
         let m = reference::Match::with_cols(&card, vis, cols);
-        Try { rect, vis, cols, card, m }
+        Try {
+            rect,
+            vis,
+            cols,
+            card,
+            m,
+        }
     }
 
     /// Come `with_cols`, senza le righe coperte da una fascia che attraversa la carta.
     fn uncovered(img: &Img, rect: RotRect, cols: [f32; 2]) -> Try {
         let card = warp(img, &rect);
         let m = reference::Match::with_cols_uncovered(&card, WHOLE, cols);
-        Try { rect, vis: WHOLE, cols, card, m }
+        Try {
+            rect,
+            vis: WHOLE,
+            cols,
+            card,
+            m,
+        }
     }
 
     /// Confronto completo.
@@ -849,8 +1035,24 @@ impl Try {
         view.px = [self.rect.long(), self.rect.short()];
         view.partial |= self.cols != WHOLE;
         view.at = self.rect.bounds(img);
-        let apart = sides_apart(img, &self.rect);
-        Found { rect: self.rect, view, score, inside, apart }
+        let mut apart = sides_apart(img, &self.rect);
+        // Un lato che è un taglio dentro una carta più grande non conta come staccato... e la
+        // carta non è intera: si segna come non staccata da nessun lato.
+        if !off("SENZA_PEZZI") && apart.iter().filter(|&&a| a).count() == 3 {
+            if let Some(cut) = (0..4).find(|&s| !apart[s]) {
+                if continues_beyond(img, &self.rect, cut) || !paper_inside(img, &self.rect, cut) {
+                    apart = [false; 4];
+                }
+            }
+        }
+        Found {
+            rect: self.rect,
+            view,
+            score,
+            inside,
+            apart,
+            alone: false,
+        }
     }
 }
 
@@ -872,12 +1074,19 @@ fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
             eprintln!("    sconosciuta? a {:.0},{:.0} {:.0}x{:.0}: cornice {border:.2} disegno {ink:.2} tavolo dentro {:.2} fondo {:.2} lati {:?} colore {:.2} -> {}", r.cx, r.cy, r.long(), r.short(), f.inside, inner_paper(&f.view.img), f.apart, drawn_color(&f.view.img), f.unknown_deck_card());
         }
         if f.unknown_deck_card() {
-            return Some(f);
+            return Some(Found { alone: true, ..f });
         }
     }
     if up.max(down) < 0.25 {
         if std::env::var_os("SCARTI").is_some() {
-            eprintln!("    scartata subito a {:.0},{:.0} {:.0}x{:.0}: veloce {:.2}", r.cx, r.cy, r.long(), r.short(), up.max(down));
+            eprintln!(
+                "    scartata subito a {:.0},{:.0} {:.0}x{:.0}: veloce {:.2}",
+                r.cx,
+                r.cy,
+                r.long(),
+                r.short(),
+                up.max(down)
+            );
         }
         return None;
     }
@@ -887,23 +1096,29 @@ fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
         let (border, ink) = traits(&f.view.img, f.view.vis);
         eprintln!("    scartata a {:.0},{:.0} {:.0}x{:.0}: veloce {:.2} punteggio {:.2} cornice {border:.2} disegno {ink:.2} tavolo dentro {:.2}", r.cx, r.cy, r.long(), r.short(), up.max(down), f.score, f.inside);
     }
-    f.accepted(ACCEPT).then_some(f)
+    f.accepted(ACCEPT).then(|| f.mark_alone())
 }
 
 /// Fra le posizioni possibili di una carta di un mazzo sconosciuto (che non somiglia a nessuna
 /// carta di riferimento), la prima che ha cornice, disegno e fondo di una carta.
 fn unknown_pick(img: &Img, rects: &[RotRect]) -> Option<Found> {
-    if !UNKNOWN_IN_GROUP {
+    if !UNKNOWN_IN_GROUP || off("SENZA_NELGRUPPO") {
         return None;
     }
     let found = par_chunks(rects, |r| {
         let f = Try::new(img, *r, WHOLE).finish(img);
         if std::env::var_os("SCARTI").is_some() && f.unknown_in_group() {
-            eprintln!("    nel gruppo a {:.0},{:.0} lati {:?}", f.rect.cx, f.rect.cy, f.apart);
+            eprintln!(
+                "    nel gruppo a {:.0},{:.0} lati {:?}",
+                f.rect.cx, f.rect.cy, f.apart
+            );
         }
         f.unknown_in_group().then_some(f)
     });
-    found.into_iter().flatten().max_by(|a, b| a.score.total_cmp(&b.score))
+    found
+        .into_iter()
+        .flatten()
+        .max_by(|a, b| a.score.total_cmp(&b.score))
 }
 
 /// Si cercano anche le carte dai contorni (vedi `edge_cards`).
@@ -917,8 +1132,18 @@ const KNOWN_DECK: f32 = 0.6;
 /// dalle carte già trovate, e che dentro sono una carta (cornice bianca; fondo bianco o i molti
 /// colori di una figura: non il dorso di una carta).
 fn edge_cards(img: &Img, a: &Analysis) -> Vec<Found> {
-    let mut ls: Vec<f32> = a.cards.iter().filter(|c| !c.partial() && !c.rect.landscape()).map(|c| c.rect.long()).collect();
-    let mut ws: Vec<f32> = a.cards.iter().filter(|c| !c.partial() && !c.rect.landscape()).map(|c| c.rect.short()).collect();
+    let mut ls: Vec<f32> = a
+        .cards
+        .iter()
+        .filter(|c| !c.partial() && !c.rect.landscape())
+        .map(|c| c.rect.long())
+        .collect();
+    let mut ws: Vec<f32> = a
+        .cards
+        .iter()
+        .filter(|c| !c.partial() && !c.rect.landscape())
+        .map(|c| c.rect.short())
+        .collect();
     if ls.is_empty() {
         return Vec::new();
     }
@@ -929,7 +1154,11 @@ fn edge_cards(img: &Img, a: &Analysis) -> Vec<Found> {
         return Vec::new();
     }
     let (iw, ih) = (img.w, img.h);
-    let lum: Vec<i32> = img.px.iter().map(|p| (p[0] as i32 * 3 + p[1] as i32 * 6 + p[2] as i32) / 10).collect();
+    let lum: Vec<i32> = img
+        .px
+        .iter()
+        .map(|p| (p[0] as i32 * 3 + p[1] as i32 * 6 + p[2] as i32) / 10)
+        .collect();
     // Bordi verticali e orizzontali netti, e le loro somme cumulate lungo le colonne e le righe.
     const T: i32 = 28;
     let mut vcum = vec![0u32; iw * (ih + 1)];
@@ -979,8 +1208,14 @@ fn edge_cards(img: &Img, a: &Analysis) -> Vec<Found> {
             let (x0, x1) = ((cx as f32 - hw) as i32, (cx as f32 + hw) as i32);
             let (y0, y1) = ((cy as f32 - hh) as i32, (cy as f32 + hh) as i32);
             // (Gli angoli delle carte sono arrotondati: si guarda il lato senza le punte.)
-            let (iy0, iy1) = ((y0 as f32 + 0.1 * l) as usize, (y1 as f32 - 0.1 * l) as usize);
-            let (ix0, ix1) = ((x0 as f32 + 0.15 * w) as usize, (x1 as f32 - 0.15 * w) as usize);
+            let (iy0, iy1) = (
+                (y0 as f32 + 0.1 * l) as usize,
+                (y1 as f32 - 0.1 * l) as usize,
+            );
+            let (ix0, ix1) = (
+                (x0 as f32 + 0.15 * w) as usize,
+                (x1 as f32 - 0.15 * w) as usize,
+            );
             let left = vside(x0, iy0, iy1);
             if left < 0.7 {
                 continue;
@@ -1004,11 +1239,24 @@ fn edge_cards(img: &Img, a: &Analysis) -> Vec<Found> {
         if a.cards.iter().any(|c| near(&c.rect)) || out.iter().any(|f| near(&f.rect)) {
             continue;
         }
-        let rect = RotRect { cx, cy, u: (1.0, 0.0), v: (0.0, 1.0), hw, hh };
+        let rect = RotRect {
+            cx,
+            cy,
+            u: (1.0, 0.0),
+            v: (0.0, 1.0),
+            hw,
+            hh,
+        };
         let f = Try::new(img, rect, WHOLE).finish(img);
         let (border, ink) = traits(&f.view.img, f.view.vis);
         let face = inner_paper(&f.view.img) >= 0.2 || hues(&f.view.img) >= 3;
-        if border >= 0.85 && ink >= 0.05 && face && f.apart_alone() && (off("SENZA_COLORE") || drawn_color(&f.view.img) >= MIN_COLORED) && many_colors(&f.view.img) {
+        if border >= 0.85
+            && ink >= 0.05
+            && face
+            && f.apart_alone()
+            && (off("SENZA_COLORE") || drawn_color(&f.view.img) >= MIN_COLORED)
+            && many_colors(&f.view.img)
+        {
             out.push(f);
         }
         if out.len() >= 8 {
@@ -1025,7 +1273,12 @@ const UNKNOWN_IN_GROUP: bool = true;
 /// nessuna somiglia a qualcosa).
 fn most_promising(img: &Img, rects: &[RotRect]) -> Option<RotRect> {
     let tops = par_chunks(rects, |r| reference::quick_tops(&warp(img, r), &[WHOLE])[0]);
-    rects.iter().zip(tops).filter(|(_, t)| *t >= 0.25).max_by(|a, b| a.1.total_cmp(&b.1)).map(|(r, _)| *r)
+    rects
+        .iter()
+        .zip(tops)
+        .filter(|(_, t)| *t >= 0.25)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(r, _)| *r)
 }
 
 /// La zona come pezzo di una carta con le proporzioni `card_w` / `card_l` delle carte intere: un
@@ -1045,10 +1298,20 @@ fn as_partial(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Option<Found>
         let missing = card_l - seen;
         for side in [1.0, -1.0] {
             // La parte nascosta prosegue verso side * axis.
-            let (cx, cy) = (r.cx + side * axis.0 * missing / 2.0, r.cy + side * axis.1 * missing / 2.0);
+            let (cx, cy) = (
+                r.cx + side * axis.0 * missing / 2.0,
+                r.cy + side * axis.1 * missing / 2.0,
+            );
             for head in [1.0, -1.0] {
                 let v = (head * axis.0, head * axis.1);
-                let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: width / 2.0, hh: card_l / 2.0 };
+                let rect = RotRect {
+                    cx,
+                    cy,
+                    u: (v.1, -v.0),
+                    v,
+                    hw: width / 2.0,
+                    hh: card_l / 2.0,
+                };
                 // Centro del pezzo visibile lungo v, rispetto al centro della carta.
                 let off = -side * head * missing / 2.0;
                 let mut vis = [
@@ -1084,7 +1347,10 @@ fn as_partial(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Option<Found>
 fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
     let mut out = Vec::new();
     // La fila corre lungo l'asse più lungo di una carta; l'altro lato è alto quanto una carta.
-    for (row, across, len, height) in [(r.u, r.v, 2.0 * r.hw, 2.0 * r.hh), (r.v, r.u, 2.0 * r.hh, 2.0 * r.hw)] {
+    for (row, across, len, height) in [
+        (r.u, r.v, 2.0 * r.hw, 2.0 * r.hh),
+        (r.v, r.u, 2.0 * r.hh, 2.0 * r.hw),
+    ] {
         if len < 1.2 * card_w || !(0.8..=1.25).contains(&(height / card_l)) {
             continue;
         }
@@ -1096,16 +1362,26 @@ fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
             for deg in [-8.0f32, -4.0, 0.0, 4.0, 8.0] {
                 let (sin, cos) = deg.to_radians().sin_cos();
                 // L'asse verticale della carta, girato; la testa dalle due parti.
-                let v = (across.0 * cos - across.1 * sin, across.0 * sin + across.1 * cos);
+                let v = (
+                    across.0 * cos - across.1 * sin,
+                    across.0 * sin + across.1 * cos,
+                );
                 for v in [v, (-v.0, -v.1)] {
-                    let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: card_w / 2.0, hh: height.min(card_l) / 2.0 };
+                    let rect = RotRect {
+                        cx,
+                        cy,
+                        u: (v.1, -v.0),
+                        v,
+                        hw: card_w / 2.0,
+                        hh: height.min(card_l) / 2.0,
+                    };
                     tries.push(rect);
                 }
             }
             if let Some(rect) = most_promising(img, &tries) {
                 let f = Try::new(img, rect, WHOLE).finish(img);
                 if f.accepted(ACCEPT) {
-                    out.push(f);
+                    out.push(f.mark_alone());
                 }
             } else if let Some(f) = unknown_pick(img, &tries) {
                 out.push(f);
@@ -1129,8 +1405,11 @@ fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
 /// spostata da una parte o dall'altra (le due carte non sono mai proprio in colonna). L'altra si
 /// ritrova dopo, togliendo questa.
 fn stacked(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
-    let (along, across, len, width) =
-        if r.hh >= r.hw { (r.v, r.u, 2.0 * r.hh, 2.0 * r.hw) } else { (r.u, r.v, 2.0 * r.hw, 2.0 * r.hh) };
+    let (along, across, len, width) = if r.hh >= r.hw {
+        (r.v, r.u, 2.0 * r.hh, 2.0 * r.hw)
+    } else {
+        (r.u, r.v, 2.0 * r.hw, 2.0 * r.hh)
+    };
     if len < 1.25 * card_l || !(0.8..=1.5).contains(&(width / card_w)) {
         return Vec::new();
     }
@@ -1141,16 +1420,26 @@ fn stacked(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
         let a = end * (len - card_l) / 2.0;
         for side in [-1.0f32, 0.0, 1.0] {
             let b = side * (width - card_w).max(0.0) / 2.0;
-            let (cx, cy) = (r.cx + along.0 * a + across.0 * b, r.cy + along.1 * a + across.1 * b);
+            let (cx, cy) = (
+                r.cx + along.0 * a + across.0 * b,
+                r.cy + along.1 * a + across.1 * b,
+            );
             for v in [along, (-along.0, -along.1)] {
-                let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: card_w / 2.0, hh: card_l / 2.0 };
+                let rect = RotRect {
+                    cx,
+                    cy,
+                    u: (v.1, -v.0),
+                    v,
+                    hw: card_w / 2.0,
+                    hh: card_l / 2.0,
+                };
                 tries.push(rect);
             }
         }
         if let Some(rect) = most_promising(img, &tries) {
             let f = Try::new(img, rect, WHOLE).finish(img);
             if f.accepted(ACCEPT) {
-                out.push(f);
+                out.push(f.mark_alone());
             }
         } else if let Some(f) = unknown_pick(img, &tries) {
             out.push(f);
@@ -1192,7 +1481,12 @@ fn scan(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32) -> Vec
     // (stessi pixel, stessa misura delle carte) si riusa il risultato.
     let key = region_key(img, r, card_l);
     static CACHE: std::sync::Mutex<Vec<(u64, Vec<Found>)>> = std::sync::Mutex::new(Vec::new());
-    if let Some((_, found)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
+    if let Some((_, found)) = CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(k, _)| *k == key)
+    {
         return found.clone();
     }
     let found = scan_region(img, paper, r, card_l, card_w);
@@ -1211,8 +1505,14 @@ fn region_key(img: &Img, r: &RotRect, card_l: f32) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     let ext_x = r.hw * r.u.0.abs() + r.hh * r.v.0.abs();
     let ext_y = r.hw * r.u.1.abs() + r.hh * r.v.1.abs();
-    let (x0, x1) = ((r.cx - ext_x).max(0.0) as usize, ((r.cx + ext_x) as usize).min(img.w));
-    let (y0, y1) = ((r.cy - ext_y).max(0.0) as usize, ((r.cy + ext_y) as usize).min(img.h));
+    let (x0, x1) = (
+        (r.cx - ext_x).max(0.0) as usize,
+        ((r.cx + ext_x) as usize).min(img.w),
+    );
+    let (y0, y1) = (
+        (r.cy - ext_y).max(0.0) as usize,
+        ((r.cy + ext_y) as usize).min(img.h),
+    );
     (x0, x1, y0, y1, card_l.round() as i32).hash(&mut h);
     for y in y0..y1 {
         img.px[y * img.w + x0..y * img.w + x1].hash(&mut h);
@@ -1225,7 +1525,10 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
     let ext_x = r.hw * r.u.0.abs() + r.hh * r.v.0.abs();
     let ext_y = r.hw * r.u.1.abs() + r.hh * r.v.1.abs();
     let step = card_w / 3.0;
-    let (nx, ny) = ((2.0 * ext_x / step) as usize + 1, (2.0 * ext_y / step) as usize + 1);
+    let (nx, ny) = (
+        (2.0 * ext_x / step) as usize + 1,
+        (2.0 * ext_y / step) as usize + 1,
+    );
     // Frazione chiara di un rettangolo (su una griglia di punti), 0 se dentro non c'è disegno
     // colorato (riquadri e finestrelle con testo scuro: le napoletane hanno sempre colori).
     let light = |rect: &RotRect| {
@@ -1266,7 +1569,14 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
                 let (sin, cos) = deg.to_radians().sin_cos();
                 // In piedi, con la testa in alto (v va dalla testa ai piedi), girata di `deg`.
                 let v = (-sin, cos);
-                let rect = RotRect { cx, cy, u: (v.1, -v.0), v, hw: card_w / 2.0, hh: card_l / 2.0 };
+                let rect = RotRect {
+                    cx,
+                    cy,
+                    u: (v.1, -v.0),
+                    v,
+                    hw: card_w / 2.0,
+                    hh: card_l / 2.0,
+                };
                 let (l, ink) = light(&rect);
                 if l >= 0.45 {
                     rects.push((ink, rect));
@@ -1308,22 +1618,44 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
         for dy in [-0.5f32, 0.0, 0.5] {
             for dx in [-0.5f32, 0.0, 0.5] {
                 for deg in [-10.0f32, -7.0, -4.0, 0.0, 4.0, 7.0, 10.0] {
-                    let v = if deg == 0.0 { rect.v } else { turn(rect.v, deg) };
+                    let v = if deg == 0.0 {
+                        rect.v
+                    } else {
+                        turn(rect.v, deg)
+                    };
                     let (cx, cy) = (rect.cx + dx * step, rect.cy + dy * step);
-                    near.push(RotRect { cx, cy, u: (v.1, -v.0), v, ..rect });
+                    near.push(RotRect {
+                        cx,
+                        cy,
+                        u: (v.1, -v.0),
+                        v,
+                        ..rect
+                    });
                 }
             }
         }
         let scores = par_chunks(&near, |r| quick(r, &[cols])[0]);
-        let best = near.iter().zip(&scores).max_by(|a, b| a.1.total_cmp(b.1)).map(|(r, _)| *r).expect("posizioni");
+        let best = near
+            .iter()
+            .zip(&scores)
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(r, _)| *r)
+            .expect("posizioni");
         if out.iter().any(|f| f.rect.dist(&best) < 0.5 * card_w) {
             continue;
         }
         // Il confronto completo solo per la posizione migliore.
         let f = Try::with_cols(img, best, WHOLE, cols).finish(img);
         // Cercando dappertutto qualcosa somiglia per caso: si chiede di più.
-        if std::env::var_os("SCARTI").is_some() && !f.accepted(SCAN_ACCEPT) && UNKNOWN_IN_GROUP && f.unknown_in_group() {
-            eprintln!("    nella zona a {:.0},{:.0} lati {:?}", f.rect.cx, f.rect.cy, f.apart);
+        if std::env::var_os("SCARTI").is_some()
+            && !f.accepted(SCAN_ACCEPT)
+            && UNKNOWN_IN_GROUP
+            && f.unknown_in_group()
+        {
+            eprintln!(
+                "    nella zona a {:.0},{:.0} lati {:?}",
+                f.rect.cx, f.rect.cy, f.apart
+            );
         }
         if f.accepted(SCAN_ACCEPT) || (UNKNOWN_IN_GROUP && f.unknown_in_group()) {
             out.push(f);
@@ -1337,9 +1669,21 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
 /// visibile, e si tiene la disposizione che somiglia di più.
 fn row_cards(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
     // Lungo la fila, e la testa delle carte in alto.
-    let (long, len, short) = if r.hw >= r.hh { (r.u, 2.0 * r.hw, r.v) } else { (r.v, 2.0 * r.hh, r.u) };
-    let v = if short.1 >= 0.0 { short } else { (-short.0, -short.1) };
-    let along = if long.0 >= 0.0 { long } else { (-long.0, -long.1) };
+    let (long, len, short) = if r.hw >= r.hh {
+        (r.u, 2.0 * r.hw, r.v)
+    } else {
+        (r.v, 2.0 * r.hh, r.u)
+    };
+    let v = if short.1 >= 0.0 {
+        short
+    } else {
+        (-short.0, -short.1)
+    };
+    let along = if long.0 >= 0.0 {
+        long
+    } else {
+        (-long.0, -long.1)
+    };
     let mut best: Option<(f32, Vec<Found>)> = None;
     for n in 2..=4usize {
         let step = (len - card_w) / (n - 1) as f32;
@@ -1367,7 +1711,9 @@ fn row_cards(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
                     (rect, cols)
                 })
                 .collect();
-            let found = par_map(&tries, |(rect, cols)| Some(Try::uncovered(img, *rect, *cols).finish(img)));
+            let found = par_map(&tries, |(rect, cols)| {
+                Some(Try::uncovered(img, *rect, *cols).finish(img))
+            });
             let found: Vec<Found> = found.into_iter().flatten().collect();
             let mean = found.iter().map(|f| f.score).sum::<f32>() / n as f32;
             if best.as_ref().is_none_or(|b| mean > b.0) {
@@ -1378,12 +1724,21 @@ fn row_cards(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
     // La disposizione stessa è una prova: in una fila che somiglia bene nel complesso basta che
     // ogni carta somigli abbastanza e stacchi chiaramente la seconda (la fascia che attraversa la
     // fila confonde il controllo del colore del tavolo dentro la carta).
-    let Some((mean, found)) = best else { return Vec::new() };
+    let Some((mean, found)) = best else {
+        return Vec::new();
+    };
     found
         .into_iter()
         .filter(|f| {
-            let margin = f.view.best(briscola_core::cards::CardSet::FULL).map_or(0.0, |b| b.1);
-            f.accepted(SCAN_ACCEPT) || (mean >= 0.72 && f.score >= SCAN_ACCEPT && margin >= 1.0 && traits(&f.view.img, f.view.vis).1 >= MIN_INK)
+            let margin = f
+                .view
+                .best(briscola_core::cards::CardSet::FULL)
+                .map_or(0.0, |b| b.1);
+            f.accepted(SCAN_ACCEPT)
+                || (mean >= 0.72
+                    && f.score >= SCAN_ACCEPT
+                    && margin >= 1.0
+                    && traits(&f.view.img, f.view.vis).1 >= MIN_INK)
         })
         .collect()
 }
@@ -1397,7 +1752,8 @@ fn row_cards(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
 fn uncover_fan(img: &Img, hand: &mut [Found], card_l: f32) {
     for i in 0..hand.len().saturating_sub(1) {
         let (a, b) = (&hand[i], &hand[i + 1]);
-        if (a.rect.cy - b.rect.cy).abs() > 0.5 * card_l || a.rect.landscape() || b.rect.landscape() {
+        if (a.rect.cy - b.rect.cy).abs() > 0.5 * card_l || a.rect.landscape() || b.rect.landscape()
+        {
             continue;
         }
         let w = 0.5 * (a.rect.short() + b.rect.short());
@@ -1411,7 +1767,11 @@ fn uncover_fan(img: &Img, hand: &mut [Found], card_l: f32) {
         let strip = |f: &Found, right_covered: bool| -> Found {
             let r = f.rect;
             let screen_right = r.u.0 >= 0.0;
-            let cols = if right_covered == screen_right { [0.0, seen] } else { [1.0 - seen, 1.0] };
+            let cols = if right_covered == screen_right {
+                [0.0, seen]
+            } else {
+                [1.0 - seen, 1.0]
+            };
             let mut g = Try::with_cols(img, r, f.view.vis, cols).finish(img);
             g.view.at = f.view.at;
             g
@@ -1456,7 +1816,13 @@ fn relocate_twin(img: &Img, f: &Found, from: &RotRect) -> Option<Found> {
         let v = turn(r.v, deg);
         for dx in [0.1f32, 0.2, 0.3, 0.4, 0.5] {
             for dy in [-0.1f32, 0.0, 0.1] {
-                let rect = RotRect { cx: r.cx + dir * dx * w, cy: r.cy + dy * w, u: (v.1, -v.0), v, ..r };
+                let rect = RotRect {
+                    cx: r.cx + dir * dx * w,
+                    cy: r.cy + dy * w,
+                    u: (v.1, -v.0),
+                    v,
+                    ..r
+                };
                 let s = quick(&rect);
                 if best.is_none_or(|b| s > b.0) {
                     best = Some((s, rect));
@@ -1465,7 +1831,13 @@ fn relocate_twin(img: &Img, f: &Found, from: &RotRect) -> Option<Found> {
         }
     }
     let g = Try::with_cols(img, best?.1, WHOLE, WHOLE).finish(img);
-    let same = g.view.best(briscola_core::cards::CardSet::FULL).map(|b| b.0) == f.view.best(briscola_core::cards::CardSet::FULL).map(|b| b.0);
+    let same = g
+        .view
+        .best(briscola_core::cards::CardSet::FULL)
+        .map(|b| b.0)
+        == f.view
+            .best(briscola_core::cards::CardSet::FULL)
+            .map(|b| b.0);
     (!same).then_some(g)
 }
 
@@ -1488,7 +1860,13 @@ fn refine_pose_any(img: &Img, f: &Found) -> Option<Found> {
     let mut best = (base, r);
     let at = |deg: f32, dx: f32, dy: f32| {
         let v = turn(r.v, deg);
-        RotRect { cx: r.cx + dx * w, cy: r.cy + dy * w, u: (v.1, -v.0), v, ..r }
+        RotRect {
+            cx: r.cx + dx * w,
+            cy: r.cy + dy * w,
+            u: (v.1, -v.0),
+            v,
+            ..r
+        }
     };
     // In due giri: prima posizioni rade (girata o spostata), poi fitte attorno alla migliore.
     let mut coarse = (base, 0.0f32, 0.0f32, 0.0f32);
@@ -1530,7 +1908,9 @@ const SCAN_ACCEPT: f32 = 0.7;
 
 /// Applica `f` agli elementi divisi fra pochi thread (gli elementi possono essere tanti).
 fn par_chunks<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let n = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
+    let n = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 8);
     let size = items.len().div_ceil(n).max(1);
     let f = &f;
     // (Lo schermo in bianco e nero vale anche nei thread che leggono le carte.)
@@ -1545,16 +1925,29 @@ fn par_chunks<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<
                 })
             })
             .collect();
-        handles.into_iter().flat_map(|h| h.join().expect("lettura di una carta")).collect()
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("lettura di una carta"))
+            .collect()
     })
 }
 
 /// Toglie dalla maschera il rettangolo (allargato di due pixel).
 fn clear(mask: &mut [bool], w: usize, h: usize, r: &RotRect) {
-    let big = RotRect { hw: r.hw + 2.0, hh: r.hh + 2.0, ..*r };
+    let big = RotRect {
+        hw: r.hw + 2.0,
+        hh: r.hh + 2.0,
+        ..*r
+    };
     let ext = big.hw.max(big.hh);
-    let (x0, x1) = ((r.cx - ext).max(0.0) as usize, ((r.cx + ext) as usize + 1).min(w));
-    let (y0, y1) = ((r.cy - ext).max(0.0) as usize, ((r.cy + ext) as usize + 1).min(h));
+    let (x0, x1) = (
+        (r.cx - ext).max(0.0) as usize,
+        ((r.cx + ext) as usize + 1).min(w),
+    );
+    let (y0, y1) = (
+        (r.cy - ext).max(0.0) as usize,
+        ((r.cy + ext) as usize + 1).min(h),
+    );
     for y in y0..y1 {
         for x in x0..x1 {
             if big.contains(x as f32, y as f32) {
@@ -1578,7 +1971,10 @@ fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> 
                 })
             })
             .collect();
-        handles.into_iter().map(|h| h.join().expect("lettura di una carta")).collect()
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("lettura di una carta"))
+            .collect()
     })
 }
 
@@ -1640,13 +2036,17 @@ pub fn set_offset(x: f32, y: f32) {
 /// delle carte e mai riconosciuto davvero, non è una carta in gioco.
 fn drop_fixtures(cards: &mut Vec<Found>, card_l: f32) {
     let doubtful = |f: &Found| {
-        f.score < 0.6 && f.rect.long() < 0.9 * card_l && f.view.best(cards::CardSet::FULL).is_none_or(|b| b.1 < 0.3)
+        f.score < 0.6
+            && f.rect.long() < 0.9 * card_l
+            && f.view.best(cards::CardSet::FULL).is_none_or(|b| b.1 < 0.3)
     };
     // (Le posizioni sono sullo schermo intero: la lettura può essere di un ritaglio.)
     let (ox, oy) = OFFSET.with(|o| o.get());
     FIXTURES.with(|fx| {
         let mut fx = fx.borrow_mut();
-        let near = |a: &(f32, f32, u32), f: &Found| (a.0 - f.rect.cx - ox).abs() < 6.0 && (a.1 - f.rect.cy - oy).abs() < 6.0;
+        let near = |a: &(f32, f32, u32), f: &Found| {
+            (a.0 - f.rect.cx - ox).abs() < 6.0 && (a.1 - f.rect.cy - oy).abs() < 6.0
+        };
         let mut next: Vec<(f32, f32, u32)> = Vec::new();
         for f in cards.iter().filter(|f| doubtful(f)) {
             let n = fx.iter().find(|a| near(a, f)).map_or(0, |a| a.2);
@@ -1654,7 +2054,11 @@ fn drop_fixtures(cards: &mut Vec<Found>, card_l: f32) {
         }
         // (Una lettura in cui il pezzo non si è trovato non lo fa dimenticare subito.)
         for a in fx.iter() {
-            if a.2 >= 8 && !next.iter().any(|b| (a.0 - b.0).abs() < 6.0 && (a.1 - b.1).abs() < 6.0) {
+            if a.2 >= 8
+                && !next
+                    .iter()
+                    .any(|b| (a.0 - b.0).abs() < 6.0 && (a.1 - b.1).abs() < 6.0)
+            {
                 next.push((a.0, a.1, a.2 - 2));
             }
         }
@@ -1673,7 +2077,10 @@ pub fn analyze(img: &Img) -> Analysis {
     // Schermo senza colori: quasi nessun punto colorato.
     let (mut n, mut tinted) = (0usize, 0usize);
     for p in img.px.iter().step_by(7) {
-        let (hi, lo) = (p[0].max(p[1]).max(p[2]) as u32, p[0].min(p[1]).min(p[2]) as u32);
+        let (hi, lo) = (
+            p[0].max(p[1]).max(p[2]) as u32,
+            p[0].min(p[1]).min(p[2]) as u32,
+        );
         n += 1;
         tinted += (hi - lo > 40) as usize;
     }
@@ -1684,11 +2091,15 @@ pub fn analyze(img: &Img) -> Analysis {
     const TRIES: usize = 7;
     let darker = std::cell::OnceCell::new();
     let paper = Paper::of(img);
-    let white_background = img.px.iter().step_by(7).filter(|&&p| paper.is(p)).count() * 100 > n.max(1) * 55;
+    let white_background =
+        img.px.iter().step_by(7).filter(|&&p| paper.is(p)).count() * 100 > n.max(1) * 55;
     let run = |k: usize| -> Option<Analysis> {
         match k {
             0 => Some(analyze_inner(img, &paper)),
-            1..=3 => darker.get_or_init(|| Paper::darker(img)).get(k - 1).map(|p| analyze_inner(img, p)),
+            1..=3 => darker
+                .get_or_init(|| Paper::darker(img))
+                .get(k - 1)
+                .map(|p| analyze_inner(img, p)),
             4 => Some(analyze_inner(img, &Paper::strict(img, 249))),
             5 => Some(analyze_inner(img, &Paper::strict(img, 243))),
             _ => Some(analyze_shaped(img, &Paper::of(img), card_shaped_wide)),
@@ -1696,7 +2107,11 @@ pub fn analyze(img: &Img) -> Analysis {
     };
     // Sul tavolo bianco si riprova prima il contorno completo (anche l'ombra),
     // evitando di riusare una ripiega che aveva ritagliato soltanto il disegno.
-    let first = if white_background { 0 } else { LAST_TRY.with(|t| t.get()) };
+    let first = if white_background {
+        0
+    } else {
+        LAST_TRY.with(|t| t.get())
+    };
     let last_n = LAST_N.with(|t| t.get());
     let mut best: Option<(usize, Analysis)> = None;
     for k in std::iter::once(first).chain((0..TRIES).filter(|&k| k != first)) {
@@ -1704,9 +2119,18 @@ pub fn analyze(img: &Img) -> Analysis {
         let Some(a) = run(k) else { continue };
         let n = a.cards.len();
         if std::env::var_os("TEMPI").is_some() {
-            eprintln!("    prova {k}: {} carte in {:?} ({}x{})", n, tk.elapsed(), img.w, img.h);
+            eprintln!(
+                "    prova {k}: {} carte in {:?} ({}x{})",
+                n,
+                tk.elapsed(),
+                img.w,
+                img.h
+            );
         }
-        if best.as_ref().is_none_or(|(_, b)| n > b.cards.len() && (k == 0 || n >= 2)) {
+        if best
+            .as_ref()
+            .is_none_or(|(_, b)| n > b.cards.len() && (k == 0 || n >= 2))
+        {
             best = Some((k, a));
         }
         // Abbastanza carte, o quante se ne vedevano prima con la stessa prova (a fine partita ne
@@ -1723,15 +2147,26 @@ pub fn analyze(img: &Img) -> Analysis {
     // (la sagoma sotto la mano): il bianco severo spesso la trova già divisa, inquadrata meglio e
     // più in fretta. Se trova (quasi) le stesse carte, riconosciute almeno altrettanto bene, si
     // tiene quello, e le letture dopo partono da lì.
-    if let Some((0, b)) = &best.as_ref().filter(|_| std::env::var_os("SENZA_DIVISA").is_none()) {
+    if let Some((0, b)) = &best
+        .as_ref()
+        .filter(|_| std::env::var_os("SENZA_DIVISA").is_none())
+    {
         if b.split {
             if let Some(c) = run(5) {
-                let mean = |a: &Analysis| a.cards.iter().map(|f| f.score).sum::<f32>() / a.cards.len().max(1) as f32;
+                let mean = |a: &Analysis| {
+                    a.cards.iter().map(|f| f.score).sum::<f32>() / a.cards.len().max(1) as f32
+                };
                 // (Una carta in meno solo se quella in più della prova solita era letta male: un pezzo
                 // di sagoma o di scritta preso per carta.)
                 let weakest = b.cards.iter().map(|f| f.score).fold(f32::MAX, f32::min);
-                let enough = c.cards.len() >= b.cards.len() || (c.cards.len() + 1 == b.cards.len() && weakest < 0.9);
-                if !c.split && enough && c.cards.len() <= b.cards.len() && c.cards.len() >= 2 && mean(&c) >= mean(b) {
+                let enough = c.cards.len() >= b.cards.len()
+                    || (c.cards.len() + 1 == b.cards.len() && weakest < 0.9);
+                if !c.split
+                    && enough
+                    && c.cards.len() <= b.cards.len()
+                    && c.cards.len() >= 2
+                    && mean(&c) >= mean(b)
+                {
                     best = Some((5, c));
                     PREFER_STRICT.with(|p| p.set(p.get() + 1));
                     LAST_FROM_SPLIT.with(|f| f.set(true));
@@ -1741,10 +2176,15 @@ pub fn analyze(img: &Img) -> Analysis {
             }
         }
     }
-    if let Some((4, b)) = &best.as_ref().filter(|_| std::env::var_os("SENZA_SEVERO").is_none()) {
+    if let Some((4, b)) = &best
+        .as_ref()
+        .filter(|_| std::env::var_os("SENZA_SEVERO").is_none())
+    {
         if let Some(c) = run(5) {
             let total = |a: &Analysis| a.cards.iter().map(|f| f.score).sum::<f32>();
-            if c.cards.len() > b.cards.len() || (c.cards.len() == b.cards.len() && total(&c) > total(b) + 0.05) {
+            if c.cards.len() > b.cards.len()
+                || (c.cards.len() == b.cards.len() && total(&c) > total(b) + 0.05)
+            {
                 best = Some((5, c));
             }
         }
@@ -1756,13 +2196,55 @@ pub fn analyze(img: &Img) -> Analysis {
     // (Solo su un mazzo che non si riconosce bene: dove le carte trovate somigliano chiaramente a
     // un mazzo noto le prove coi bianchi le trovano già, e i contorni aggiungerebbero solo
     // rettangoli dubbi.)
-    let known = a.cards.iter().filter(|c| !c.partial() && c.score >= KNOWN_DECK).count();
+    let known = a
+        .cards
+        .iter()
+        .filter(|c| !c.partial() && c.score >= KNOWN_DECK)
+        .count();
     let whole = a.cards.iter().filter(|c| !c.partial()).count();
     let unknown_deck = whole == 0 || known * 2 < whole || off("SENZA_NOTO");
+    // Le regole dei mazzi sconosciuti accettano carte che somigliano poco ai mazzi noti: dove le
+    // carte trovate sono chiaramente di un mazzo noto, una carta così è un pezzo di carta (le carte
+    // disegnate larghe, tagliate a metà) o un riquadro del sito, e si toglie.
+    if !unknown_deck && !off("SENZA_NOTO_SCONOSCIUTE") {
+        a.cards.retain(|c| c.partial() || c.score >= ACCEPT);
+    }
+    // Una carta di un mazzo sconosciuto presa da sola deve avere la misura delle altre carte
+    // trovate (tutte dello stesso mazzo): più piccola o di altre proporzioni è un pezzo di una carta
+    // (le carte disegnate larghe prese a metà, la briscola sotto il mazzo).
+    if !off("SENZA_MISURA") {
+        let mut ls: Vec<f32> = a
+            .cards
+            .iter()
+            .filter(|c| !c.alone && !c.partial())
+            .map(|c| c.rect.long())
+            .collect();
+        let mut ws: Vec<f32> = a
+            .cards
+            .iter()
+            .filter(|c| !c.alone && !c.partial())
+            .map(|c| c.rect.short())
+            .collect();
+        if !ls.is_empty() {
+            ls.sort_by(|x, y| x.total_cmp(y));
+            ws.sort_by(|x, y| x.total_cmp(y));
+            let (l, w) = (ls[ls.len() / 2], ws[ws.len() / 2]);
+            let near = |v: f32, m: f32| (v - m).abs() <= 0.15 * m;
+            a.cards
+                .retain(|c| !c.alone || (near(c.rect.long(), l) && near(c.rect.short(), w)));
+        }
+    }
     if EDGES && !a.cards.is_empty() && unknown_deck {
         let extra = edge_cards(img, &a);
         if std::env::var_os("TEMPI").is_some() && !extra.is_empty() {
-            eprintln!("    dai contorni: {}", extra.iter().map(|f| format!("{:.0},{:.0}", f.rect.cx, f.rect.cy)).collect::<Vec<_>>().join(" "));
+            eprintln!(
+                "    dai contorni: {}",
+                extra
+                    .iter()
+                    .map(|f| format!("{:.0},{:.0}", f.rect.cx, f.rect.cy))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
         }
         a.cards.extend(extra);
     }
@@ -1773,18 +2255,28 @@ pub fn analyze(img: &Img) -> Analysis {
         let l = a.card_l;
         let upright: Vec<&Found> = a.cards.iter().filter(|c| !c.rect.landscape()).collect();
         let low = upright.iter().map(|c| c.rect.cy).fold(f32::MIN, f32::max);
-        let hand: Vec<&&Found> = upright.iter().filter(|c| c.rect.cy >= low - 0.35 * l).collect();
+        let hand: Vec<&&Found> = upright
+            .iter()
+            .filter(|c| c.rect.cy >= low - 0.35 * l)
+            .collect();
         if !hand.is_empty() {
             let hx0 = hand.iter().map(|c| c.rect.cx).fold(f32::MAX, f32::min);
             let hx1 = hand.iter().map(|c| c.rect.cx).fold(f32::MIN, f32::max);
-            let (x0, x1) = ((hx0 - 1.2 * l).max(0.0) as usize, ((hx1 + 1.2 * l) as usize).min(img.w));
+            let (x0, x1) = (
+                (hx0 - 1.2 * l).max(0.0) as usize,
+                ((hx1 + 1.2 * l) as usize).min(img.w),
+            );
             let y1 = ((low - 0.6 * l).max(0.0) as usize).min(img.h);
             if x1 > x0 + 10 && y1 as f32 > l {
                 let band = img.crop(x0, 0, x1, y1);
                 let steady = STEADY.with(|s| s.get());
                 let extra = analyze_inner(&band, &paper);
                 STEADY.with(|s| s.set(steady));
-                let w = a.cards.iter().map(|c| c.rect.short()).fold(0.0f32, f32::max);
+                let w = a
+                    .cards
+                    .iter()
+                    .map(|c| c.rect.short())
+                    .fold(0.0f32, f32::max);
                 for mut f in extra.cards {
                     f.rect.cx += x0 as f32;
                     f.view.at = f.rect.bounds(img);
@@ -1805,17 +2297,36 @@ pub fn analyze(img: &Img) -> Analysis {
     // sito la fa svanire. Così la prova in più non rallenta le altre letture.)
     // (In pixel dello schermo intero: le letture possono essere di tutto lo schermo o di una zona.)
     let (ox, oy) = OFFSET.with(|o| o.get());
-    let here: Vec<(f32, f32)> = a.cards.iter().map(|c| (c.rect.cx + ox, c.rect.cy + oy)).collect();
+    let here: Vec<(f32, f32)> = a
+        .cards
+        .iter()
+        .map(|c| (c.rect.cx + ox, c.rect.cy + oy))
+        .collect();
     let tol = if a.card_l > 0.0 { 0.3 * a.card_l } else { 30.0 };
     // (Una carta sparita da poco: il sito può farla svanire del tutto per qualche lettura e poi
     // ridisegnarla sbiadita.)
-    let near = |x: f32, y: f32, v: &[(f32, f32)]| v.iter().any(|&(hx, hy)| (hx - x).abs() < tol && (hy - y).abs() < tol);
+    let near = |x: f32, y: f32, v: &[(f32, f32)]| {
+        v.iter()
+            .any(|&(hx, hy)| (hx - x).abs() < tol && (hy - y).abs() < tol)
+    };
     // (Solo le carte sparite da sopra la mano: quelle della mano si spostano di continuo.)
-    let low = a.cards.iter().filter(|c| !c.rect.landscape()).map(|c| c.rect.cy).fold(f32::MIN, f32::max);
+    let low = a
+        .cards
+        .iter()
+        .filter(|c| !c.rect.landscape())
+        .map(|c| c.rect.cy)
+        .fold(f32::MIN, f32::max);
     let row = low - 0.5 * a.card_l + oy;
     // (Per qualche lettura, e solo finché in tavola non si vedono già due carte.)
     let on_table = here.iter().filter(|&&(_, y)| y < row).count();
-    let vanished = SBIADITE && std::env::var_os("SENZA_SBIADITE").is_none() && on_table < 2 && PREV_CARDS.with(|p| p.borrow().iter().any(|&(x, y, _)| y < row && !near(x, y, &here)));
+    let vanished = SBIADITE
+        && std::env::var_os("SENZA_SBIADITE").is_none()
+        && on_table < 2
+        && PREV_CARDS.with(|p| {
+            p.borrow()
+                .iter()
+                .any(|&(x, y, _)| y < row && !near(x, y, &here))
+        });
     VANISHED.with(|v| v.set(vanished));
     if !a.cards.is_empty() && vanished {
         // Una prova sola: la solita se si era partiti da un'altra, se no quella coi bianchi più scuri.
@@ -1825,7 +2336,11 @@ pub fn analyze(img: &Img) -> Analysis {
         } else if let Some(p) = darker.get_or_init(|| Paper::darker(img)).first() {
             papers.push(p.clone());
         }
-        let w = a.cards.iter().map(|c| c.rect.short()).fold(0.0f32, f32::max);
+        let w = a
+            .cards
+            .iter()
+            .map(|c| c.rect.short())
+            .fold(0.0f32, f32::max);
         let l = a.card_l;
         for p in &papers {
             // (La prova in più non deve invecchiare la misura delle carte imparata.)
@@ -1834,14 +2349,21 @@ pub fn analyze(img: &Img) -> Analysis {
             STEADY.with(|s| s.set(steady));
             let before = a.cards.len();
             for f in extra.cards {
-                let free = a.cards.iter().all(|c| c.rect.dist(&f.rect) > 0.75 * w && !c.rect.contains(f.rect.cx, f.rect.cy) && !f.rect.contains(c.rect.cx, c.rect.cy));
+                let free = a.cards.iter().all(|c| {
+                    c.rect.dist(&f.rect) > 0.75 * w
+                        && !c.rect.contains(f.rect.cx, f.rect.cy)
+                        && !f.rect.contains(c.rect.cx, c.rect.cy)
+                });
                 let size = l <= 0.0 || (f.rect.long() / l - 1.0).abs() < 0.15;
                 if std::env::var_os("TEMPI").is_some() {
                     eprintln!("    sbiadita candidata a {:.0},{:.0} punteggio {:.2} libera {free} misura {size} parziale {}", f.rect.cx, f.rect.cy, f.score, f.partial());
                 }
                 if free && size && !f.partial() && f.score >= 0.75 {
                     if std::env::var_os("TEMPI").is_some() {
-                        eprintln!("    sbiadita aggiunta a {:.0},{:.0} punteggio {:.2}", f.rect.cx, f.rect.cy, f.score);
+                        eprintln!(
+                            "    sbiadita aggiunta a {:.0},{:.0} punteggio {:.2}",
+                            f.rect.cx, f.rect.cy, f.score
+                        );
                     }
                     a.cards.push(f);
                 }
@@ -1852,7 +2374,11 @@ pub fn analyze(img: &Img) -> Analysis {
         }
     }
     {
-        let now: Vec<(f32, f32)> = a.cards.iter().map(|c| (c.rect.cx + ox, c.rect.cy + oy)).collect();
+        let now: Vec<(f32, f32)> = a
+            .cards
+            .iter()
+            .map(|c| (c.rect.cx + ox, c.rect.cy + oy))
+            .collect();
         PREV_CARDS.with(|p| {
             let mut p = p.borrow_mut();
             let mut next: Vec<(f32, f32, u32)> = now.iter().map(|&(x, y)| (x, y, 0)).collect();
@@ -1866,12 +2392,27 @@ pub fn analyze(img: &Img) -> Analysis {
     }
     // (Il bianco severo scelto al posto della prova solita divisa diventa il punto di partenza solo
     // dopo tre letture di fila: un'altra schermata, un altro sito, non deve ereditarlo.)
-    let sticky = k != 5 || first == 5 || PREFER_STRICT.with(|p| p.get()) >= 3 || !LAST_FROM_SPLIT.with(|f| f.replace(false));
-    LAST_TRY.with(|t| t.set(if a.cards.is_empty() { 0 } else if sticky { k } else { 0 }));
+    let sticky = k != 5
+        || first == 5
+        || PREFER_STRICT.with(|p| p.get()) >= 3
+        || !LAST_FROM_SPLIT.with(|f| f.replace(false));
+    LAST_TRY.with(|t| {
+        t.set(if a.cards.is_empty() {
+            0
+        } else if sticky {
+            k
+        } else {
+            0
+        })
+    });
     LAST_N.with(|t| t.set(a.cards.len()));
     LAST_CARD_L.with(|l| l.set(if a.cards.is_empty() { 0.0 } else { a.card_l }));
     // La misura delle carte quando se ne riconoscono bene almeno tre della stessa misura.
-    let good: Vec<&Found> = a.cards.iter().filter(|c| c.score >= 0.9 && !c.view.partial && !c.rect.landscape()).collect();
+    let good: Vec<&Found> = a
+        .cards
+        .iter()
+        .filter(|c| c.score >= 0.9 && !c.view.partial && !c.rect.landscape())
+        .collect();
     if good.len() >= 3 {
         let mid = |mut v: Vec<f32>| {
             v.sort_by(|a, b| a.total_cmp(b));
@@ -1941,25 +2482,37 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
     mark(&mut tm, "zone");
     let mut cards: Vec<Found> = Vec::new();
     let mut rest: Vec<Blob> = Vec::new();
-    let light: Vec<Blob> = base.iter().copied().filter(|b| {
-        if b.light() { return true; }
-        // Su un tavolo bianco l'anello esterno è bianco quanto la carta: resta
-        // però l'ombra immediatamente fuori dal bordo. Si usa solo per sagome
-        // di carta, mai per una grande zona bianca del desktop.
-        if b.white <= 0.25 || b.rect.long() < 40.0 || b.rect.long() > 0.7 * img.h as f32 || !shaped(&b.rect) {
-            return false;
-        }
-        let (mut n, mut dark) = (0, 0);
-        for k in 0..64 {
-            let (x, y) = b.rect.outline(k as f32 / 16.0, 1.0, 1.5);
-            if x >= 0.0 && y >= 0.0 && x < img.w as f32 && y < img.h as f32 {
-                n += 1;
-                dark += !paper[y as usize * img.w + x as usize] as usize;
+    let light: Vec<Blob> = base
+        .iter()
+        .copied()
+        .filter(|b| {
+            if b.light() {
+                return true;
             }
-        }
-        n >= 16 && dark * 2 >= n
-    }).collect();
-    let found = par_map(&light, |b| shaped(&b.rect).then(|| as_full(img, &b.rect)).flatten());
+            // Su un tavolo bianco l'anello esterno è bianco quanto la carta: resta
+            // però l'ombra immediatamente fuori dal bordo. Si usa solo per sagome
+            // di carta, mai per una grande zona bianca del desktop.
+            if b.white <= 0.25
+                || b.rect.long() < 40.0
+                || b.rect.long() > 0.7 * img.h as f32
+                || !shaped(&b.rect)
+            {
+                return false;
+            }
+            let (mut n, mut dark) = (0, 0);
+            for k in 0..64 {
+                let (x, y) = b.rect.outline(k as f32 / 16.0, 1.0, 1.5);
+                if x >= 0.0 && y >= 0.0 && x < img.w as f32 && y < img.h as f32 {
+                    n += 1;
+                    dark += !paper[y as usize * img.w + x as usize] as usize;
+                }
+            }
+            n >= 16 && dark * 2 >= n
+        })
+        .collect();
+    let found = par_map(&light, |b| {
+        shaped(&b.rect).then(|| as_full(img, &b.rect)).flatten()
+    });
     mark(&mut tm, "intere");
     for (b, f) in light.into_iter().zip(found) {
         match f {
@@ -1980,10 +2533,18 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
     let steady = STEADY.with(|s| {
         let (l, w, age) = s.get();
         s.set((l, w, age.saturating_add(1)));
-        if age < 30 { (l, w) } else { (0.0, 0.0) }
+        if age < 30 {
+            (l, w)
+        } else {
+            (0.0, 0.0)
+        }
     });
-    let known_l = (!cards.is_empty()).then(|| median(cards.iter().map(|c| c.rect.long()).collect())).or((steady.0 > 0.0).then_some(steady.0));
-    let known_w = (!cards.is_empty()).then(|| median(cards.iter().map(|c| c.rect.short()).collect())).or((steady.1 > 0.0).then_some(steady.1));
+    let known_l = (!cards.is_empty())
+        .then(|| median(cards.iter().map(|c| c.rect.long()).collect()))
+        .or((steady.0 > 0.0).then_some(steady.0));
+    let known_w = (!cards.is_empty())
+        .then(|| median(cards.iter().map(|c| c.rect.short()).collect()))
+        .or((steady.1 > 0.0).then_some(steady.1));
     let mut levels: Vec<(usize, Vec<Blob>)> = Vec::new();
     let mut leftover = Vec::new();
     let mut was_split = false;
@@ -2013,7 +2574,9 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
             let level = blobs_in(img, &paper, r, bbox);
             split = level
                 .iter()
-                .filter(|q| b.rect.contains(q.rect.cx, q.rect.cy) && card_shaped(&q.rect) && piece(q))
+                .filter(|q| {
+                    b.rect.contains(q.rect.cx, q.rect.cy) && card_shaped(&q.rect) && piece(q)
+                })
                 .filter_map(|q| as_full(img, &q.rect))
                 .collect();
             if !split.is_empty() {
@@ -2058,24 +2621,40 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
         }
     }
     if cards.is_empty() {
-        return Analysis { cards, card_l: 0.0, table: None, blobs: base, split: false };
+        return Analysis {
+            cards,
+            card_l: 0.0,
+            table: None,
+            blobs: base,
+            split: false,
+        };
     }
     mark(&mut tm, "divise");
     // Quello che resta togliendo le carte trovate: la carta che ne toccava un'altra (e che
     // l'erosione ha spezzato perché il disegno arriva ai bordi) torna intera. Serve solo se una
     // zona è stata divisa o ne tocca una riconosciuta.
-    let touching = |b: &Blob| cards.iter().any(|c| b.rect.dist(&c.rect) < (b.rect.long() + c.rect.long()) / 2.0);
+    let touching = |b: &Blob| {
+        cards
+            .iter()
+            .any(|c| b.rect.dist(&c.rect) < (b.rect.long() + c.rect.long()) / 2.0)
+    };
     if was_split || leftover.iter().any(touching) {
         let mut rest_paper = paper.clone();
         for c in &cards {
             clear(&mut rest_paper, img.w, img.h, &c.rect);
         }
         leftover.clear();
-        for b in blobs_r(img, &rest_paper, 1).into_iter().filter(|b| b.light()) {
+        for b in blobs_r(img, &rest_paper, 1)
+            .into_iter()
+            .filter(|b| b.light())
+        {
             if cards.iter().any(|c| c.rect.contains(b.rect.cx, b.rect.cy)) {
                 continue;
             }
-            match card_shaped(&b.rect).then(|| as_full(img, &b.rect)).flatten() {
+            match card_shaped(&b.rect)
+                .then(|| as_full(img, &b.rect))
+                .flatten()
+            {
                 Some(f) => cards.push(f),
                 None => leftover.push(b),
             }
@@ -2091,7 +2670,10 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
     mark(&mut tm, "resto");
     for q in thin.iter().filter(|q| q.light()) {
         // Già esaminato se sta in una zona chiara come una carta (non nella cornice di un dorso).
-        let known = base.iter().filter(|b| b.light() && b.white > 0.3).any(|b| b.rect.contains(q.rect.cx, q.rect.cy))
+        let known = base
+            .iter()
+            .filter(|b| b.light() && b.white > 0.3)
+            .any(|b| b.rect.contains(q.rect.cx, q.rect.cy))
             || cards.iter().any(|c| c.rect.contains(q.rect.cx, q.rect.cy));
         if !known {
             leftover.push(*q);
@@ -2122,13 +2704,20 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
         .collect();
     let tried = par_chunks(&pairs, |&(i, j)| {
         let (a, b) = (&leftover[i].rect, &leftover[j].rect);
-        let pts: Vec<(f32, f32)> = (0..4).flat_map(|k| [a.outline(k as f32, 1.0, 0.0), b.outline(k as f32, 1.0, 0.0)]).collect();
+        let pts: Vec<(f32, f32)> = (0..4)
+            .flat_map(|k| [a.outline(k as f32, 1.0, 0.0), b.outline(k as f32, 1.0, 0.0)])
+            .collect();
         let u = min_area_rect(pts)?;
         // Due pezzi che insieme sono una fila di carte sovrapposte (la mano attraversata da una
         // fascia): alti come una carta e larghi più di una. Si cercano tutte le carte della fila.
-        let row = (0.8..=1.25).contains(&(u.short() / card_l)) && (1.3..=4.5).contains(&(u.long() / card_w));
+        let row = (0.8..=1.25).contains(&(u.short() / card_l))
+            && (1.3..=4.5).contains(&(u.long() / card_w));
         if row {
-            let around = RotRect { hw: u.hw + 0.15 * card_w, hh: u.hh + 0.15 * card_w, ..u };
+            let around = RotRect {
+                hw: u.hw + 0.15 * card_w,
+                hh: u.hh + 0.15 * card_w,
+                ..u
+            };
             let mut found = row_cards(img, &u, card_l, card_w);
             for f in scan(img, &paper, &around, card_l, card_w) {
                 if !found.iter().any(|g| g.rect.dist(&f.rect) < 0.3 * card_w) {
@@ -2137,15 +2726,29 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
             }
             return (!found.is_empty()).then_some(found);
         }
-        if !(0.6..=1.2).contains(&(u.long() / card_l)) || !(0.6..=1.25).contains(&(u.short() / card_w)) {
+        if !(0.6..=1.2).contains(&(u.long() / card_l))
+            || !(0.6..=1.25).contains(&(u.short() / card_w))
+        {
             return None;
         }
         // Si cerca una carta intera attorno ai due pezzi (una parte può essere coperta).
-        let (hw, hh) = if u.hh >= u.hw { (card_w, card_l) } else { (card_l, card_w) };
-        let around = RotRect { hw: u.hw.max(hw / 2.0) + 0.2 * card_w, hh: u.hh.max(hh / 2.0) + 0.2 * card_w, ..u };
+        let (hw, hh) = if u.hh >= u.hw {
+            (card_w, card_l)
+        } else {
+            (card_l, card_w)
+        };
+        let around = RotRect {
+            hw: u.hw.max(hw / 2.0) + 0.2 * card_w,
+            hh: u.hh.max(hh / 2.0) + 0.2 * card_w,
+            ..u
+        };
         // (O una carta vista solo in parte: la briscola sotto il mazzo, spezzata dal disegno.)
         as_full(img, &u)
-            .or_else(|| scan(img, &paper, &around, card_l, card_w).into_iter().next())
+            .or_else(|| {
+                scan(img, &paper, &around, card_l, card_w)
+                    .into_iter()
+                    .next()
+            })
             .or_else(|| as_partial(img, &u, card_l, card_w))
             .map(|f| vec![f])
     });
@@ -2159,33 +2762,54 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
             (joined[i], joined[j]) = (true, true);
         }
     }
-    let leftover: Vec<Blob> = leftover.into_iter().zip(joined).filter(|(_, j)| !j).map(|(b, _)| b).collect();
+    let leftover: Vec<Blob> = leftover
+        .into_iter()
+        .zip(joined)
+        .filter(|(_, j)| !j)
+        .map(|(b, _)| b)
+        .collect();
     mark(&mut tm, "unite");
     // Carte coperte in parte.
-    cards.extend(par_map(&leftover, |b| as_partial(img, &b.rect, card_l, card_w)).into_iter().flatten());
+    cards.extend(
+        par_map(&leftover, |b| as_partial(img, &b.rect, card_l, card_w))
+            .into_iter()
+            .flatten(),
+    );
     mark(&mut tm, "parziali");
     // Una carta divisa da una scritta che la attraversa: dentro la sagoma della carta vista in parte
     // c'è anche l'altro pezzo, e si confronta la carta da un pezzo all'altro.
     for c in cards.iter_mut().filter(|c| c.partial()) {
         let r = c.rect;
         let mut span = c.view.vis;
-        for b in base.iter().filter(|b| b.light() && r.contains(b.rect.cx, b.rect.cy)) {
+        for b in base
+            .iter()
+            .filter(|b| b.light() && r.contains(b.rect.cx, b.rect.cy))
+        {
             // Estensione del pezzo lungo l'asse della carta, in frazioni dell'altezza.
             let t = (b.rect.cx - r.cx) * r.v.0 + (b.rect.cy - r.cy) * r.v.1;
             let half = (b.rect.u.0 * r.v.0 + b.rect.u.1 * r.v.1).abs() * b.rect.hw
                 + (b.rect.v.0 * r.v.0 + b.rect.v.1 * r.v.1).abs() * b.rect.hh;
-            let (lo, hi) = ((t - half) / (2.0 * r.hh) + 0.5, (t + half) / (2.0 * r.hh) + 0.5);
+            let (lo, hi) = (
+                (t - half) / (2.0 * r.hh) + 0.5,
+                (t + half) / (2.0 * r.hh) + 0.5,
+            );
             if hi < span[0] - 0.02 || lo > span[1] + 0.02 {
                 span = [span[0].min(lo).max(0.0), span[1].max(hi).min(1.0)];
             }
         }
         if span != c.view.vis && span[1] - span[0] >= 0.8 {
             // Il verso scelto guardando un pezzo solo può essere sbagliato: si riprovano tutti e due.
-            let tries = [Try::new(img, r, span), Try::new(img, r.flipped(), [1.0 - span[1], 1.0 - span[0]])];
-            let t = tries.into_iter().max_by(|a, b| a.m.top().total_cmp(&b.m.top())).expect("due versi");
+            let tries = [
+                Try::new(img, r, span),
+                Try::new(img, r.flipped(), [1.0 - span[1], 1.0 - span[0]]),
+            ];
+            let t = tries
+                .into_iter()
+                .max_by(|a, b| a.m.top().total_cmp(&b.m.top()))
+                .expect("due versi");
             let f = t.finish(img);
             if f.accepted(ACCEPT) {
-                *c = f;
+                *c = f.mark_alone();
             }
         }
     }
@@ -2200,8 +2824,17 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
     // Restano le carte sullo stesso tavolo della maggior parte, e quelle vicine (il sito può avere
     // una fascia di un altro colore sotto la mano, attorno alla briscola c'è soprattutto il mazzo):
     // non quelle disegnate altrove sullo schermo.
-    let colors: Vec<Option<[u8; 3]>> = kept.iter().map(|c| table_color(img, &paper, &c.rect)).collect();
-    let agree = |a: [u8; 3]| colors.iter().flatten().filter(|&&b| same_table(a, b)).count();
+    let colors: Vec<Option<[u8; 3]>> = kept
+        .iter()
+        .map(|c| table_color(img, &paper, &c.rect))
+        .collect();
+    let agree = |a: [u8; 3]| {
+        colors
+            .iter()
+            .flatten()
+            .filter(|&&b| same_table(a, b))
+            .count()
+    };
     let table = colors.iter().flatten().copied().max_by_key(|&a| agree(a));
     let main: Vec<bool> = colors
         .iter()
@@ -2216,7 +2849,9 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
     loop {
         let more: Vec<usize> = (0..kept.len())
             .filter(|&i| !keep[i])
-            .filter(|&i| (0..kept.len()).any(|j| keep[j] && kept[j].rect.dist(&kept[i].rect) < 4.5 * card_l))
+            .filter(|&i| {
+                (0..kept.len()).any(|j| keep[j] && kept[j].rect.dist(&kept[i].rect) < 4.5 * card_l)
+            })
             .collect();
         if more.is_empty() {
             break;
@@ -2225,8 +2860,19 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
             keep[i] = true;
         }
     }
-    let cards = kept.iter().zip(keep).filter(|(_, k)| *k).map(|(c, _)| c.clone()).collect();
-    Analysis { cards, card_l, table, blobs: base, split: was_split }
+    let cards = kept
+        .iter()
+        .zip(keep)
+        .filter(|(_, k)| *k)
+        .map(|(c, _)| c.clone())
+        .collect();
+    Analysis {
+        cards,
+        card_l,
+        table,
+        blobs: base,
+        split: was_split,
+    }
 }
 
 /// La carta riconosciuta con più sicurezza.
@@ -2244,10 +2890,20 @@ pub fn scene(img: &Img) -> Scene {
     // Le carte possono essere quasi senza colori anche se il tavolo è colorato.
     // Anche una lettura incompleta di poche carte non deve impedire la ripiega:
     // si misura il colore nelle carte, non nello sfondo.
-    let weak_color = a.cards.iter().filter(|c| {
-        let colored = c.view.img.px.iter().filter(|p| p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]) > 70).count();
-        colored * 100 < c.view.img.px.len()
-    }).count();
+    let weak_color = a
+        .cards
+        .iter()
+        .filter(|c| {
+            let colored = c
+                .view
+                .img
+                .px
+                .iter()
+                .filter(|p| p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]) > 70)
+                .count();
+            colored * 100 < c.view.img.px.len()
+        })
+        .count();
     let desaturated = !a.cards.is_empty() && weak_color * 2 >= a.cards.len();
     if (a.cards.is_empty() || desaturated) && !reference::gray_screen() {
         reference::set_gray_screen(true);
@@ -2255,7 +2911,9 @@ pub fn scene(img: &Img) -> Scene {
         // Senza il colore, testi e loghi hanno più possibilità di somigliare a
         // una carta: per questa ripiega serve una corrispondenza molto forte.
         fallback.cards.retain(|c| c.score >= 0.85);
-        if !fallback.cards.is_empty() { a = fallback; }
+        if !fallback.cards.is_empty() {
+            a = fallback;
+        }
     }
     let card_l = a.card_l;
     // Solo briscola: con carte piccole il pezzo di briscola sotto il mazzo può essere
@@ -2264,9 +2922,17 @@ pub fn scene(img: &Img) -> Scene {
     if card_l > 0.0 && card_l < 110.0 {
         let card_w = a.cards.iter().map(|c| c.rect.short()).sum::<f32>() / a.cards.len() as f32;
         for b in &a.blobs {
-            if b.rect.long() < 40.0 && b.rect.long() >= 0.35 * card_l && b.white > 0.08 && b.bg > 0.3 {
+            if b.rect.long() < 40.0
+                && b.rect.long() >= 0.35 * card_l
+                && b.white > 0.08
+                && b.bg > 0.3
+            {
                 if let Some(card) = as_partial(img, &b.rect, card_l, card_w) {
-                    if !a.cards.iter().any(|c| c.rect.dist(&card.rect) < 0.5 * card_w) {
+                    if !a
+                        .cards
+                        .iter()
+                        .any(|c| c.rect.dist(&card.rect) < 0.5 * card_w)
+                    {
                         a.cards.push(card);
                     }
                 }
@@ -2280,20 +2946,43 @@ pub fn scene(img: &Img) -> Scene {
         let known = a.cards.clone();
         let card_w = known.iter().map(|c| c.rect.short()).sum::<f32>() / known.len() as f32;
         for blob in &a.blobs {
-            if !blob.light() || blob.rect.landscape() { continue; }
+            if !blob.light() || blob.rect.landscape() {
+                continue;
+            }
             let [left, top, right, bottom] = blob.rect.bounds(img);
-            let (left, top, right, bottom) = (left * img.w as f32, top * img.h as f32, right * img.w as f32, bottom * img.h as f32);
-            let cut = known.iter().filter(|c| !c.rect.landscape()).filter_map(|c| {
-                let [l, t, r, _] = c.rect.bounds(img);
-                let (l, t, r) = (l * img.w as f32, t * img.h as f32, r * img.w as f32);
-                (t > top && t < bottom && l < right && r > left).then_some(t)
-            }).min_by(|a, b| a.total_cmp(b));
+            let (left, top, right, bottom) = (
+                left * img.w as f32,
+                top * img.h as f32,
+                right * img.w as f32,
+                bottom * img.h as f32,
+            );
+            let cut = known
+                .iter()
+                .filter(|c| !c.rect.landscape())
+                .filter_map(|c| {
+                    let [l, t, r, _] = c.rect.bounds(img);
+                    let (l, t, r) = (l * img.w as f32, t * img.h as f32, r * img.w as f32);
+                    (t > top && t < bottom && l < right && r > left).then_some(t)
+                })
+                .min_by(|a, b| a.total_cmp(b));
             let Some(cut) = cut else { continue };
-            if cut - top < 0.35 * card_l || bottom - cut < 3.0 { continue; }
-            let rect = RotRect { cx: (left + right) / 2.0, cy: (top + cut) / 2.0,
-                hw: (right - left) / 2.0, hh: (cut - top) / 2.0, u: (1.0, 0.0), v: (0.0, 1.0) };
+            if cut - top < 0.35 * card_l || bottom - cut < 3.0 {
+                continue;
+            }
+            let rect = RotRect {
+                cx: (left + right) / 2.0,
+                cy: (top + cut) / 2.0,
+                hw: (right - left) / 2.0,
+                hh: (cut - top) / 2.0,
+                u: (1.0, 0.0),
+                v: (0.0, 1.0),
+            };
             if let Some(card) = as_partial(img, &rect, card_l, card_w) {
-                if !a.cards.iter().any(|c| c.rect.dist(&card.rect) < 0.5 * card_w) {
+                if !a
+                    .cards
+                    .iter()
+                    .any(|c| c.rect.dist(&card.rect) < 0.5 * card_w)
+                {
                     a.cards.push(card);
                 }
             }
@@ -2307,7 +2996,9 @@ pub fn scene(img: &Img) -> Scene {
         let id = card.view.best(cards::CardSet::FULL).map(|b| b.0);
         let twin = |c: &Found, other: &Found| {
             let i = c.view.best(cards::CardSet::FULL).map(|b| b.0);
-            i.is_some() && i == other.view.best(cards::CardSet::FULL).map(|b| b.0) && other.rect.dist(&c.rect) < 0.8 * card_l
+            i.is_some()
+                && i == other.view.best(cards::CardSet::FULL).map(|b| b.0)
+                && other.rect.dist(&c.rect) < 0.8 * card_l
         };
         let _ = id;
         if !distinct.iter().any(|other| twin(&card, other)) {
@@ -2317,7 +3008,10 @@ pub fn scene(img: &Img) -> Scene {
         // La stessa carta due volte, vicina: la copia più debole è spesso un'altra carta accanto
         // (quasi bianca, come un asso) letta insieme a un pezzo di quella. Si riprova spostata:
         // se lì c'è un'altra carta, si tiene.
-        let away = distinct.iter().find(|other| twin(&card, other)).map(|o| o.rect);
+        let away = distinct
+            .iter()
+            .find(|other| twin(&card, other))
+            .map(|o| o.rect);
         let moved = away
             .filter(|_| card.view.vis == WHOLE && !card.rect.landscape())
             .and_then(|a| relocate_twin(img, &card, &a))
@@ -2333,23 +3027,42 @@ pub fn scene(img: &Img) -> Scene {
     for card in distinct {
         let span = |f: &Found| f.view.vis[1] - f.view.vis[0];
         let same = |o: &Found| {
-            !o.rect.landscape() && !card.rect.landscape() && span(o) < 0.6 && span(&card) < 0.6
+            !o.rect.landscape()
+                && !card.rect.landscape()
+                && span(o) < 0.6
+                && span(&card) < 0.6
                 && (o.rect.cx - card.rect.cx).abs() < 0.25 * card.rect.short()
                 && (o.rect.cy - card.rect.cy).abs() < 0.75 * card_l
         };
-        if !whole.iter().any(same) { whole.push(card); }
+        if !whole.iter().any(same) {
+            whole.push(card);
+        }
     }
     // Un pezzo riconosciuto appena (un disegno del sito che somiglia a una carta) sotto tutte le
     // carte vere non è la mano: senza di lui la riga più bassa è quella delle carte vere.
-    let weak = |f: &Found| f.score < 0.6 && f.view.best(cards::CardSet::FULL).is_none_or(|b| b.1 < 0.3);
-    let floor = whole.iter().filter(|f| !f.rect.landscape() && !weak(f)).map(|f| f.rect.cy).fold(f32::MIN, f32::max);
+    let weak =
+        |f: &Found| f.score < 0.6 && f.view.best(cards::CardSet::FULL).is_none_or(|b| b.1 < 0.3);
+    let floor = whole
+        .iter()
+        .filter(|f| !f.rect.landscape() && !weak(f))
+        .map(|f| f.rect.cy)
+        .fold(f32::MIN, f32::max);
     if floor > f32::MIN {
         whole.retain(|f| !(weak(f) && f.rect.cy > floor + 0.35 * card_l));
     }
-    let dbg = |w: &[Found]| w.iter().map(|c| format!("{:.0},{:.0}", c.rect.cx, c.rect.cy)).collect::<Vec<_>>().join(" ");
-    if std::env::var_os("TEMPI").is_some() { eprintln!("    prima dei fissi: {}", dbg(&whole)); }
+    let dbg = |w: &[Found]| {
+        w.iter()
+            .map(|c| format!("{:.0},{:.0}", c.rect.cx, c.rect.cy))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    if std::env::var_os("TEMPI").is_some() {
+        eprintln!("    prima dei fissi: {}", dbg(&whole));
+    }
     drop_fixtures(&mut whole, card_l);
-    if std::env::var_os("TEMPI").is_some() { eprintln!("    dopo i fissi: {}", dbg(&whole)); }
+    if std::env::var_os("TEMPI").is_some() {
+        eprintln!("    dopo i fissi: {}", dbg(&whole));
+    }
     // Le carte lette senza sicurezza si riprovano un po' girate e spostate: il rettangolo trovato
     // può essere storto (le carte ai lati di un ventaglio) o preso a metà con la carta accanto.
     let tp = std::time::Instant::now();
@@ -2369,7 +3082,13 @@ pub fn scene(img: &Img) -> Scene {
     // (una scritta che attraversa la mano, carte sovrapposte): un pezzo di carta più piccolo (la
     // briscola sotto il mazzo) non conta.
     let full_size = |f: &&Found| (0.85..1.2).contains(&(f.rect.long() / card_l));
-    let bottom = a.cards.iter().filter(upright).filter(full_size).map(|f| f.rect.cy).fold(f32::MIN, f32::max);
+    let bottom = a
+        .cards
+        .iter()
+        .filter(upright)
+        .filter(full_size)
+        .map(|f| f.rect.cy)
+        .fold(f32::MIN, f32::max);
     if bottom == f32::MIN {
         // Nessuna carta in piedi: al più la briscola.
         if let Some(t) = best(a.cards.iter()) {
@@ -2385,16 +3104,47 @@ pub fn scene(img: &Img) -> Scene {
     // sopra la più bassa, attaccate l'una all'altra; le carte giocate stanno più staccate.
     // (Fra una riga e l'altra della mano c'è un piccolo spazio, mai una sovrapposizione; e in mano
     // non ci sono più di tre carte.)
-    let mut rows: Vec<f32> = a.cards.iter().filter(upright).filter(full_size).map(|f| f.rect.cy).collect();
+    let mut rows: Vec<f32> = a
+        .cards
+        .iter()
+        .filter(upright)
+        .filter(full_size)
+        .map(|f| f.rect.cy)
+        .collect();
     rows.sort_by(|x, y| y.total_cmp(x));
     let mut top = bottom;
     // (Di una carta vista solo in parte, sotto una fascia, l'altezza esatta non si sa: sta nella
     // riga anche se la sua sagoma risulta più su di mezza carta.)
-    let slack = |f: &Found| if f.view.vis[1] - f.view.vis[0] < 0.6 { 0.65 * card_l } else { 0.35 * card_l };
-    let loose = a.cards.iter().filter(upright).filter(full_size).filter(|f| f.rect.cy >= bottom - 0.35 * card_l).all(|f| slack(f) > 0.5 * card_l);
+    let slack = |f: &Found| {
+        if f.view.vis[1] - f.view.vis[0] < 0.6 {
+            0.65 * card_l
+        } else {
+            0.35 * card_l
+        }
+    };
+    let loose = a
+        .cards
+        .iter()
+        .filter(upright)
+        .filter(full_size)
+        .filter(|f| f.rect.cy >= bottom - 0.35 * card_l)
+        .all(|f| slack(f) > 0.5 * card_l);
     let slack = |f: &Found| if loose { slack(f) } else { 0.35 * card_l };
-    let in_rows = |top: f32| a.cards.iter().filter(upright).filter(full_size).filter(|f| f.rect.cy >= top - slack(f)).count();
-    let row_of: Vec<(f32, f32)> = a.cards.iter().filter(upright).filter(full_size).map(|f| (f.rect.cy, slack(f))).collect();
+    let in_rows = |top: f32| {
+        a.cards
+            .iter()
+            .filter(upright)
+            .filter(full_size)
+            .filter(|f| f.rect.cy >= top - slack(f))
+            .count()
+    };
+    let row_of: Vec<(f32, f32)> = a
+        .cards
+        .iter()
+        .filter(upright)
+        .filter(full_size)
+        .map(|f| (f.rect.cy, slack(f)))
+        .collect();
     for cy in rows {
         if row_of.iter().any(|&(y, s)| y == cy && cy >= top - s) {
             continue;
@@ -2407,7 +3157,9 @@ pub fn scene(img: &Img) -> Scene {
         }
     }
     let in_hand = |f: &Found| {
-        !f.rect.landscape() && (0.85..1.2).contains(&(f.rect.long() / card_l)) && f.rect.cy >= top - slack(f)
+        !f.rect.landscape()
+            && (0.85..1.2).contains(&(f.rect.long() / card_l))
+            && f.rect.cy >= top - slack(f)
     };
     let mut hand: Vec<&Found> = a.cards.iter().filter(|f| in_hand(f)).collect();
     // Per righe, da sinistra a destra.
@@ -2417,7 +3169,8 @@ pub fn scene(img: &Img) -> Scene {
     });
     // La briscola: di traverso, o coperta in parte vicino alla mano (sotto il mazzo).
     let others: Vec<&Found> = a.cards.iter().filter(|f| !in_hand(f)).collect();
-    let hand_cx = (!hand.is_empty()).then(|| hand.iter().map(|f| f.rect.cx).sum::<f32>() / hand.len() as f32);
+    let hand_cx =
+        (!hand.is_empty()).then(|| hand.iter().map(|f| f.rect.cx).sum::<f32>() / hand.len() as f32);
     let central = |f: &Found| hand_cx.is_none_or(|x| (f.rect.cx - x).abs() < 2.5 * card_l);
     // Altrimenti, su alcuni siti la briscola è dritta (appoggiata sopra il mazzo) e in disparte:
     // l'unica carta scoperta fuori dalla zona delle carte giocate, a metà altezza fra le carte
@@ -2425,10 +3178,19 @@ pub fn scene(img: &Img) -> Scene {
     let aside: Vec<&Found> = others
         .iter()
         .copied()
-        .filter(|f| !central(f) && f.rect.long() > 0.7 * card_l && f.rect.cy < bottom - 0.6 * card_l)
+        .filter(|f| {
+            !central(f) && f.rect.long() > 0.7 * card_l && f.rect.cy < bottom - 0.6 * card_l
+        })
         .collect();
     let trump = best(others.iter().copied().filter(|f| f.rect.landscape()))
-        .or_else(|| best(others.iter().copied().filter(|f| f.partial() && f.rect.cy > bottom - 0.9 * card_l)))
+        .or_else(|| {
+            best(
+                others
+                    .iter()
+                    .copied()
+                    .filter(|f| f.partial() && f.rect.cy > bottom - 0.9 * card_l),
+            )
+        })
         .or_else(|| (aside.len() == 1).then(|| aside[0]));
     if let Some(t) = trump {
         scene.trump = Some(t.view.clone());
@@ -2437,16 +3199,27 @@ pub fn scene(img: &Img) -> Scene {
     let backs_y = a
         .blobs
         .iter()
-        .filter(|b| b.white <= 0.3 && b.rect.long() > 0.8 * card_l && b.rect.cy < bottom - 1.25 * card_l)
+        .filter(|b| {
+            b.white <= 0.3 && b.rect.long() > 0.8 * card_l && b.rect.cy < bottom - 1.25 * card_l
+        })
         .map(|b| b.rect.cy)
         .fold(f32::MAX, f32::min);
-    let mid = if backs_y < f32::MAX { (backs_y + bottom) / 2.0 } else { bottom - 2.1 * card_l };
+    let mid = if backs_y < f32::MAX {
+        (backs_y + bottom) / 2.0
+    } else {
+        bottom - 2.1 * card_l
+    };
     // In tavola: carte in piedi non troppo più piccole di quelle in mano (un pezzo di carta non lo è)
     // e più o meno sopra la mano: le carte giocate vanno al centro del tavolo, non in un punto
     // qualsiasi dello sfondo.
     let mut table: Vec<&Found> = others
         .into_iter()
-        .filter(|f| upright(f) && f.rect.long() > 0.7 * card_l && central(f) && !trump.is_some_and(|t| std::ptr::eq(t, *f)))
+        .filter(|f| {
+            upright(f)
+                && f.rect.long() > 0.7 * card_l
+                && central(f)
+                && !trump.is_some_and(|t| std::ptr::eq(t, *f))
+        })
         .collect();
     table.sort_by(|x, y| x.rect.cy.total_cmp(&y.rect.cy));
     match table.as_slice() {
@@ -2488,7 +3261,10 @@ fn bare_table(img: &Img) -> Option<[u8; 3]> {
         .map(|(x, y)| img.at(x, y))
         .filter(|&px| !p.is(px))
         .collect();
-    let color = center.iter().copied().max_by_key(|&a| center.iter().filter(|&&b| same_table(a, b)).count())?;
+    let color = center
+        .iter()
+        .copied()
+        .max_by_key(|&a| center.iter().filter(|&&b| same_table(a, b)).count())?;
     let (_, s, v) = hsv(color);
     let (mut n, mut ok) = (0, 0);
     for y in (0..img.h).step_by(8) {
@@ -2503,7 +3279,10 @@ fn bare_table(img: &Img) -> Option<[u8; 3]> {
 /// Riga più in basso dello schermo in cui il tavolo occupa almeno un quarto della larghezza.
 fn table_bottom(img: &Img, table: [u8; 3]) -> f32 {
     for y in (0..img.h).rev().step_by(4) {
-        let n = (0..img.w).step_by(6).filter(|&x| same_table(img.at(x, y), table)).count();
+        let n = (0..img.w)
+            .step_by(6)
+            .filter(|&x| same_table(img.at(x, y), table))
+            .count();
         if n * 4 >= img.w / 6 {
             return y as f32;
         }
@@ -2524,7 +3303,8 @@ pub fn scopa(img: &Img) -> Option<ScopaScene> {
     // La mano sta sul bordo basso del tavolo: entro una carta e un quarto dal fondo.
     let bottom = a.table.map_or(img.h as f32, |c| table_bottom(img, c));
     let hand_from = bottom - 1.25 * card_l;
-    let (mut hand, table): (Vec<&Found>, Vec<&Found>) = upright.iter().partition(|f| f.rect.cy >= hand_from);
+    let (mut hand, table): (Vec<&Found>, Vec<&Found>) =
+        upright.iter().partition(|f| f.rect.cy >= hand_from);
     hand.sort_by(|x, y| x.rect.cx.total_cmp(&y.rect.cx));
     // Per righe: due carte sono nella stessa riga se i centri distano meno di mezza carta.
     let mut table = table;
@@ -2541,7 +3321,10 @@ pub fn scopa(img: &Img) -> Option<ScopaScene> {
         r.sort_by(|x, y| x.rect.cx.total_cmp(&y.rect.cx));
         out.extend(r.iter().map(|f| f.view.clone()));
     }
-    Some(ScopaScene { hand: hand.iter().map(|f| f.view.clone()).collect(), table: out })
+    Some(ScopaScene {
+        hand: hand.iter().map(|f| f.view.clone()).collect(),
+        table: out,
+    })
 }
 
 #[cfg(test)]
@@ -2553,12 +3336,26 @@ mod prove_carte {
     #[test]
     #[ignore]
     fn prove_una_per_una() {
-        let img = super::super::capture::load_png(std::path::Path::new(&std::env::var("IMG").unwrap())).unwrap();
+        let img =
+            super::super::capture::load_png(std::path::Path::new(&std::env::var("IMG").unwrap()))
+                .unwrap();
         if std::env::var_os("SOLO").is_some() {
             let mem = std::sync::Mutex::new(super::super::memory::Memory::in_memory());
             let r = super::super::read_briscola(&img, &mem).unwrap();
-            let h: Vec<String> = r.hand.iter().map(|v| { let x = v.best(briscola_core::cards::CardSet::FULL).unwrap(); format!("{}({:.1})", briscola_core::cards::short(x.0), x.1) }).collect();
-            println!("solo lettura: mano {} tavola {} {}", h.join(" "), r.opp_slot.is_some(), r.my_slot.is_some());
+            let h: Vec<String> = r
+                .hand
+                .iter()
+                .map(|v| {
+                    let x = v.best(briscola_core::cards::CardSet::FULL).unwrap();
+                    format!("{}({:.1})", briscola_core::cards::short(x.0), x.1)
+                })
+                .collect();
+            println!(
+                "solo lettura: mano {} tavola {} {}",
+                h.join(" "),
+                r.opp_slot.is_some(),
+                r.my_slot.is_some()
+            );
             return;
         }
         let paper = Paper::of(&img);
@@ -2566,43 +3363,109 @@ mod prove_carte {
         for k in 0..7usize {
             let a = match k {
                 0 => analyze_inner(&img, &paper),
-                1..=3 => match darker.get(k - 1) { Some(p) => analyze_inner(&img, p), None => continue },
+                1..=3 => match darker.get(k - 1) {
+                    Some(p) => analyze_inner(&img, p),
+                    None => continue,
+                },
                 4 => analyze_inner(&img, &Paper::strict(&img, 249)),
                 5 => analyze_inner(&img, &Paper::strict(&img, 243)),
                 _ => analyze_shaped(&img, &Paper::of(&img), card_shaped_wide),
             };
-            let cards: Vec<String> = a.cards.iter().map(|c| {
-                let b = c.view.best(briscola_core::cards::CardSet::FULL).unwrap();
-                format!("{}({:.1}) a {:.0},{:.0} {:.0}x{:.0}", briscola_core::cards::short(b.0), b.1, c.rect.cx, c.rect.cy, c.rect.long(), c.rect.short())
-            }).collect();
+            let cards: Vec<String> = a
+                .cards
+                .iter()
+                .map(|c| {
+                    let b = c.view.best(briscola_core::cards::CardSet::FULL).unwrap();
+                    format!(
+                        "{}({:.1}) a {:.0},{:.0} {:.0}x{:.0}",
+                        briscola_core::cards::short(b.0),
+                        b.1,
+                        c.rect.cx,
+                        c.rect.cy,
+                        c.rect.long(),
+                        c.rect.short()
+                    )
+                })
+                .collect();
             println!("prova {k}: {}", cards.join(" · "));
         }
         let a = analyze(&img);
-        println!("analisi: {}", a.cards.iter().map(|c| format!("{:.0},{:.0} {:.2}", c.rect.cx, c.rect.cy, c.score)).collect::<Vec<_>>().join(" · "));
+        println!(
+            "analisi: {}",
+            a.cards
+                .iter()
+                .map(|c| format!("{:.0},{:.0} {:.2}", c.rect.cx, c.rect.cy, c.score))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        );
         let sc = scene(&img);
-        let b = |v: &Option<CardView>| v.as_ref().and_then(|v| v.best(briscola_core::cards::CardSet::FULL)).map(|b| briscola_core::cards::short(b.0).to_string()).unwrap_or("-".into());
-        println!("scena: B {} A {} T {} mano {}", b(&sc.trump), b(&sc.opp_slot), b(&sc.my_slot), sc.hand.len());
+        let b = |v: &Option<CardView>| {
+            v.as_ref()
+                .and_then(|v| v.best(briscola_core::cards::CardSet::FULL))
+                .map(|b| briscola_core::cards::short(b.0).to_string())
+                .unwrap_or("-".into())
+        };
+        println!(
+            "scena: B {} A {} T {} mano {}",
+            b(&sc.trump),
+            b(&sc.opp_slot),
+            b(&sc.my_slot),
+            sc.hand.len()
+        );
         super::super::detect::forget_reading_state();
         let mem = std::sync::Mutex::new(super::super::memory::Memory::in_memory());
         // PRIMA=cartella:da:a — le schermate (jpg) lette prima, nello stesso ordine della partita.
         if let Ok(p) = std::env::var("PRIMA") {
             let v: Vec<&str> = p.split(':').collect();
-            let (dir, from, to): (&str, usize, usize) = (v[0], v[1].parse().unwrap(), v[2].parse().unwrap());
+            let (dir, from, to): (&str, usize, usize) =
+                (v[0], v[1].parse().unwrap(), v[2].parse().unwrap());
             for i in from..to {
                 let path = format!("{dir}/{i:04}.png");
                 if let Ok(im) = super::super::capture::load_png(std::path::Path::new(&path)) {
                     let r = super::super::read_briscola(&im, &mem);
                     if let Some(r) = r {
-                        let h: Vec<String> = r.hand.iter().map(|v| { let x = v.best(briscola_core::cards::CardSet::FULL).unwrap(); format!("{}({:.1})", briscola_core::cards::short(x.0), x.1) }).collect();
-                        let t = |v: &Option<CardView>| v.as_ref().and_then(|v| v.best(briscola_core::cards::CardSet::FULL)).map(|b| format!("{}({:.1})", briscola_core::cards::short(b.0), b.1)).unwrap_or("-".into());
-                        println!("  {i}: A {} T {} mano {}", t(&r.opp_slot), t(&r.my_slot), h.join(" "));
+                        let h: Vec<String> = r
+                            .hand
+                            .iter()
+                            .map(|v| {
+                                let x = v.best(briscola_core::cards::CardSet::FULL).unwrap();
+                                format!("{}({:.1})", briscola_core::cards::short(x.0), x.1)
+                            })
+                            .collect();
+                        let t = |v: &Option<CardView>| {
+                            v.as_ref()
+                                .and_then(|v| v.best(briscola_core::cards::CardSet::FULL))
+                                .map(|b| {
+                                    format!("{}({:.1})", briscola_core::cards::short(b.0), b.1)
+                                })
+                                .unwrap_or("-".into())
+                        };
+                        println!(
+                            "  {i}: A {} T {} mano {}",
+                            t(&r.opp_slot),
+                            t(&r.my_slot),
+                            h.join(" ")
+                        );
                     }
                 }
             }
         }
         if let Some(r) = super::super::read_briscola(&img, &mem) {
-            let h: Vec<String> = r.hand.iter().map(|v| { let x = v.best(briscola_core::cards::CardSet::FULL).unwrap(); format!("{}({:.1})", briscola_core::cards::short(x.0), x.1) }).collect();
-            println!("lettura completa: B {} A {} T {} mano {}", b(&r.trump), b(&r.opp_slot), b(&r.my_slot), h.join(" "));
+            let h: Vec<String> = r
+                .hand
+                .iter()
+                .map(|v| {
+                    let x = v.best(briscola_core::cards::CardSet::FULL).unwrap();
+                    format!("{}({:.1})", briscola_core::cards::short(x.0), x.1)
+                })
+                .collect();
+            println!(
+                "lettura completa: B {} A {} T {} mano {}",
+                b(&r.trump),
+                b(&r.opp_slot),
+                b(&r.my_slot),
+                h.join(" ")
+            );
         }
     }
 }

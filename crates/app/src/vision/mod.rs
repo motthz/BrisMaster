@@ -1928,6 +1928,58 @@ mod other_sites {
         (ok, auto, n)
     }
 
+    /// Banco dei mazzi sconosciuti: per ogni cartella di MAZZI (40 immagini, "00.png".."39.png"
+    /// col numero della carta) le carte su tutti i tavoli, in due ordini diversi.
+    /// `MAZZI=cartella cargo test --release -p brismaster mazzi_sconosciuti -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn mazzi_sconosciuti() {
+        let root = std::path::PathBuf::from(std::env::var("MAZZI").expect("MAZZI=cartella"));
+        let mut dirs: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        dirs.sort();
+        let verbose = std::env::var("VERBOSO").is_ok();
+        let (mut tok, mut tauto, mut tn) = (0, 0, 0);
+        for dir in dirs {
+            let cards: Vec<(Card, Img)> = (0..40u8)
+                .filter_map(|c| {
+                    let p = dir.join(format!("{c:02}.png"));
+                    p.exists().then(|| (c, load_jpg(&p)))
+                })
+                .collect();
+            if cards.len() < 40 {
+                continue;
+            }
+            let label = dir.file_name().unwrap().to_string_lossy().to_string();
+            let (mut ok, mut auto, mut n) = (0, 0, 0);
+            for (mul, add) in [(7u8, 0u8), (13, 5)] {
+                let deck: Vec<(Card, Img)> = (0..40u8).map(|i| cards[((i * mul + add) % 40) as usize].clone()).collect();
+                let r = run(&deck, &label, false, verbose);
+                ok += r.0;
+                auto += r.1;
+                n += r.2;
+            }
+            println!("== {label}: giuste {ok}/{n}, senza conferma {auto}/{n}");
+            tok += ok;
+            tauto += auto;
+            tn += n;
+        }
+        println!("== TOTALE: giuste {tok}/{tn} ({:.1}%), senza conferma {tauto}/{tn} ({:.1}%)", 100.0 * tok as f32 / tn.max(1) as f32, 100.0 * tauto as f32 / tn.max(1) as f32);
+    }
+
+    /// Salva le carte dei mazzi di riferimento (ESPORTA=cartella/stile/NN.png).
+    #[test]
+    #[ignore]
+    fn esporta_riferimenti() {
+        let root = std::path::PathBuf::from(std::env::var("ESPORTA").expect("ESPORTA=cartella"));
+        for style in 0..3 {
+            let d = root.join(format!("rif{style}"));
+            std::fs::create_dir_all(&d).unwrap();
+            for c in 0..40u8 {
+                reference::card_image(style, c).save_png(&d.join(format!("{c:02}.png"))).unwrap();
+            }
+        }
+    }
+
     fn known_deck(style: usize) -> Vec<(Card, Img)> {
         // Un ordine che mescola semi e valori.
         (0..40u8).map(|i| i.wrapping_mul(7) % 40).map(|c| (c, reference::card_image(style, c))).collect()

@@ -481,6 +481,28 @@ fn balance(card: &mut Img) {
 /// chiara e poco colorata come la carta: una carta ha la cornice bianca tutta attorno, una scritta
 /// o una cifra ha attorno lo sfondo. L'inchiostro è la frazione dell'interno disegnata a colori:
 /// le napoletane hanno sempre figure e semi colorati, le scritte sono quasi sempre di un colore solo.
+/// La frazione dell'interno della carta (tolta la cornice) chiara come la cornice: il fondo
+/// bianco attorno ai semi e alle figure. Il dorso di una carta (un disegno che riempie tutto) e i
+/// riquadri colorati del sito non ne hanno.
+pub fn inner_paper(card: &Img) -> f32 {
+    let lum = |p: [u8; 3]| (p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10;
+    let mut rim: Vec<u32> = (0..CARD_H).step_by(4).flat_map(|y| [lum(card.at(2, y)), lum(card.at(CARD_W - 3, y))]).collect();
+    rim.sort_unstable();
+    let white = rim[rim.len() / 2] as f32;
+    let (mut n, mut w) = (0, 0);
+    for y in (CARD_H / 8..CARD_H - CARD_H / 8).step_by(3) {
+        for x in (CARD_W / 6..CARD_W - CARD_W / 6).step_by(3) {
+            let p = card.at(x, y);
+            let (_, sat, _) = hsv(p);
+            n += 1;
+            if lum(p) as f32 >= 0.85 * white && sat < 60 {
+                w += 1;
+            }
+        }
+    }
+    w as f32 / n.max(1) as f32
+}
+
 pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
     let (y0, y1) = ((vis[0] * CARD_H as f32) as usize, ((vis[1] * CARD_H as f32) as usize).min(CARD_H));
     if y1 <= y0 + 8 {
@@ -597,7 +619,7 @@ const RATIO: f32 = 0.62;
 
 /// Proporzioni (lato corto / lato lungo) accettate per una carta intera.
 fn card_shaped(r: &RotRect) -> bool {
-    (0.52..=0.76).contains(&(r.short() / r.long()))
+    (0.46..=0.76).contains(&(r.short() / r.long()))
 }
 
 /// Come `card_shaped`, per le carte disegnate stirate dal sito (più strette o quasi quadrate).
@@ -627,7 +649,17 @@ impl Found {
     /// somiglia molto: una carta sfocata, un po' storta o tagliata male) e un po' di colore.
     /// Scritte, cifre, finestrelle e loghi possono somigliare per caso a una carta, non averne la
     /// cornice e i colori.
+    /// Una carta di un mazzo sconosciuto (vedi `as_full`): cornice bianca quasi tutta attorno,
+    /// disegno colorato e niente tavolo dentro, anche se non somiglia a nessuna carta nota.
+    fn unknown_deck_card(&self) -> bool {
+        let (border, ink) = traits(&self.view.img, self.view.vis);
+        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && inner_paper(&self.view.img) >= 0.2
+    }
+
     fn accepted(&self, min: f32) -> bool {
+        if self.score < min && self.unknown_deck_card() {
+            return true;
+        }
         let (border, ink) = traits(&self.view.img, self.view.vis);
         // Con la cornice tutta attorno basta la somiglianza. Con la cornice incerta (carta sfocata,
         // toccata da un'altra, tagliata male; ma anche il riquadro di una lettera o di una scritta)
@@ -700,11 +732,28 @@ fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
     // Il verso si sceglie col confronto veloce; quello completo si fa solo per il verso scelto.
     let up = reference::quick_tops(&warp(img, r), &[WHOLE])[0];
     let down = reference::quick_tops(&warp(img, &r.flipped()), &[WHOLE])[0];
+    // Un mazzo mai visto non somiglia a nessuna carta di riferimento, ma resta una carta: un
+    // rettangolo con le proporzioni di una carta, la cornice bianca tutta attorno e dentro un
+    // disegno colorato (non il tavolo). Si legge comunque; quale carta sia lo dice il confronto, con
+    // poca sicurezza.
+    if up.max(down) < 0.25 && card_shaped(r) {
+        let f = Try::new(img, *r, WHOLE).finish(img);
+        if f.unknown_deck_card() {
+            return Some(f);
+        }
+    }
     if up.max(down) < 0.25 {
+        if std::env::var_os("SCARTI").is_some() {
+            eprintln!("    scartata subito a {:.0},{:.0} {:.0}x{:.0}: veloce {:.2}", r.cx, r.cy, r.long(), r.short(), up.max(down));
+        }
         return None;
     }
     let rect = if down > up + 0.03 { r.flipped() } else { *r };
     let f = Try::new(img, rect, WHOLE).finish(img);
+    if std::env::var_os("SCARTI").is_some() && !f.accepted(ACCEPT) {
+        let (border, ink) = traits(&f.view.img, f.view.vis);
+        eprintln!("    scartata a {:.0},{:.0} {:.0}x{:.0}: veloce {:.2} punteggio {:.2} cornice {border:.2} disegno {ink:.2} tavolo dentro {:.2}", r.cx, r.cy, r.long(), r.short(), up.max(down), f.score, f.inside);
+    }
     f.accepted(ACCEPT).then_some(f)
 }
 

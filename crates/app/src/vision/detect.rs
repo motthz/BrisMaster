@@ -515,7 +515,7 @@ pub fn hues(card: &Img) -> usize {
 
 /// La parte della carta (senza la cornice) coperta di disegno colorato: anche l'asso più spoglio di
 /// un mazzo vero ne ha più di una finestrella bianca con scritte e un'icona.
-pub fn colored(card: &Img) -> f32 {
+pub fn drawn_color(card: &Img) -> f32 {
     let (mut n, mut c) = (0, 0);
     for y in (CARD_H / 10..CARD_H - CARD_H / 10).step_by(2) {
         for x in (CARD_W / 8..CARD_W - CARD_W / 8).step_by(2) {
@@ -529,7 +529,7 @@ pub fn colored(card: &Img) -> f32 {
     c as f32 / n.max(1) as f32
 }
 
-/// Colore minimo (vedi `colored`) di una carta di un mazzo sconosciuto.
+/// Colore minimo (vedi `drawn_color`) di una carta di un mazzo sconosciuto.
 const MIN_COLORED: f32 = 0.12;
 
 /// Gruppi di colori ben distinti nel disegno (tinte vicine fanno un gruppo solo): il disegno di una
@@ -757,7 +757,7 @@ impl Found {
     /// disegno colorato e niente tavolo dentro, anche se non somiglia a nessuna carta nota.
     fn unknown_deck_card(&self) -> bool {
         let (border, ink) = traits(&self.view.img, self.view.vis);
-        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && self.apart_alone() && hue_groups(&self.view.img) >= 2 && colored(&self.view.img) >= MIN_COLORED && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
+        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && self.apart_alone() && hue_groups(&self.view.img) >= 2 && drawn_color(&self.view.img) >= MIN_COLORED && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
     }
 
     /// Come `unknown_deck_card`, dentro una zona che contiene già carte della misura giusta (la mano
@@ -766,7 +766,7 @@ impl Found {
     /// panno verde).
     fn unknown_in_group(&self) -> bool {
         let (border, ink) = traits(&self.view.img, self.view.vis);
-        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && self.apart_opposite() && hue_groups(&self.view.img) >= 2 && colored(&self.view.img) >= MIN_COLORED && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
+        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && self.apart_opposite() && hue_groups(&self.view.img) >= 2 && drawn_color(&self.view.img) >= MIN_COLORED && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
     }
 
     fn accepted(&self, min: f32) -> bool {
@@ -994,7 +994,7 @@ fn edge_cards(img: &Img, a: &Analysis) -> Vec<Found> {
         let f = Try::new(img, rect, WHOLE).finish(img);
         let (border, ink) = traits(&f.view.img, f.view.vis);
         let face = inner_paper(&f.view.img) >= 0.2 || hues(&f.view.img) >= 3;
-        if border >= 0.85 && ink >= 0.05 && face && f.apart_alone() && hue_groups(&f.view.img) >= 2 && colored(&f.view.img) >= MIN_COLORED {
+        if border >= 0.85 && ink >= 0.05 && face && f.apart_alone() && hue_groups(&f.view.img) >= 2 && drawn_color(&f.view.img) >= MIN_COLORED {
             out.push(f);
         }
         if out.len() >= 8 {

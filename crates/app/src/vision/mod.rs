@@ -1875,8 +1875,35 @@ mod other_sites {
     }
 
     /// Per ogni ruolo: (giusta, abbastanza sicura da non chiedere conferma).
+    /// La memoria condivisa fra i tavoli (con MEMORIA: come sullo stesso sito), e se le carte
+    /// lette si insegnano (l'utente conferma o corregge ogni carta della prima partita).
+    static SHARED: Mutex<Option<Memory>> = Mutex::new(None);
+    static TEACH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
     fn check(img: &Img, want: &[(&str, Card)]) -> Vec<(String, bool, bool)> {
-        let s = read_briscola(img, &Mutex::new(Memory::in_memory()));
+        let shared = std::env::var_os("MEMORIA").is_some();
+        let mem = if shared { SHARED.lock().unwrap().take().unwrap_or_else(Memory::in_memory) } else { Memory::in_memory() };
+        let mem = Mutex::new(mem);
+        let s = read_briscola(img, &mem);
+        if shared {
+            let mut m = mem.into_inner().unwrap();
+            if TEACH.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(sc) = &s {
+                    for (role, c) in want {
+                        let v = match *role {
+                            "briscola" => sc.trump.as_ref(),
+                            "avversario" => sc.opp_slot.as_ref(),
+                            "tua" => sc.my_slot.as_ref(),
+                            r => sc.hand.get(r[4..].parse::<usize>().unwrap_or(9)),
+                        };
+                        if let Some(v) = v {
+                            m.remember(&v.img, v.vis, *c);
+                        }
+                    }
+                }
+            }
+            *SHARED.lock().unwrap() = Some(m);
+        }
         let get = |role: &str| -> Option<CardView> {
             let s = s.as_ref()?;
             match role {
@@ -1892,6 +1919,10 @@ mod other_sites {
                 Some((b, m)) => {
                     let note = if b != *c {
                         let v = get(role).unwrap();
+                        if let Ok(d) = std::env::var("SBAGLIATE") {
+                            let n = std::fs::read_dir(&d).map(|r| r.count()).unwrap_or(0);
+                            let _ = v.img.save_png(std::path::Path::new(&format!("{d}/{n:03}_vera{c:02}_letta{b:02}.png")));
+                        }
                         let nn = super::nn::log_probs(&v.img).map(|lp| (0..40).max_by(|&a, &b| lp[a].total_cmp(&lp[b])).unwrap() as Card);
                         format!(" (sbagliata; rete {} {}, parziale {})", nn.map(cards::name).unwrap_or_default(), if nn == Some(*c) { "GIUSTA" } else { "no" }, v.partial)
                     } else if m < 1.4 {
@@ -1990,9 +2021,18 @@ mod other_sites {
             }
             let label = dir.file_name().unwrap().to_string_lossy().to_string();
             let (mut ok, mut auto, mut n) = (0, 0, 0);
-            for (mul, add) in [(7u8, 0u8), (13, 5)] {
+            let learning = std::env::var_os("MEMORIA").is_some();
+            *SHARED.lock().unwrap() = None;
+            for (pass, (mul, add)) in [(7u8, 0u8), (13, 5)].into_iter().enumerate() {
+                TEACH.store(learning && pass == 0, std::sync::atomic::Ordering::Relaxed);
                 let deck: Vec<(Card, Img)> = (0..40u8).map(|i| cards[((i * mul + add) % 40) as usize].clone()).collect();
                 let r = run(&deck, &format!("{label}{mul}"), false, verbose);
+                if learning {
+                    println!("   {label} giro {} ({}): giuste {}/{}, senza conferma {}/{}", pass + 1, if pass == 0 { "si impara" } else { "dopo aver imparato" }, r.0, r.2, r.1, r.2);
+                    if pass == 0 {
+                        continue;
+                    }
+                }
                 ok += r.0;
                 auto += r.1;
                 n += r.2;

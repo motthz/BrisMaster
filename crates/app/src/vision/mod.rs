@@ -416,6 +416,11 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
     let top = view.sim.iter().copied().fold(f32::MIN, f32::max);
     let (from, k) = nn_params();
     let w = ((from - top) / 0.25).clamp(0.0, 1.0);
+    if cfg!(test) && std::env::var_os("NN_LOG").is_some() {
+        let lp = nn::log_probs(&view.img).unwrap_or([0.0; 40]);
+        let am = |v: &[f32; 40]| (0..40).max_by(|&a, &b| v[a].total_cmp(&v[b])).unwrap();
+        eprintln!("RETE top {top:.2} peso {w:.2} parziale {} rif {} rete {}", view.partial, am(&view.sim), am(&lp));
+    }
     if w > 0.0 && !view.partial {
         if let Some(lp) = nn::log_probs(&view.img) {
             for c in 0..40 {

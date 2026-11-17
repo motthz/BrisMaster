@@ -656,9 +656,22 @@ impl Found {
         border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && inner_paper(&self.view.img) >= 0.2
     }
 
+    /// Come `unknown_deck_card`, dentro una zona che contiene già carte della misura giusta (la mano
+    /// a ventaglio, le carte sovrapposte in tavola): la cornice deve essere bianca tutta attorno e
+    /// il fondo bianco, ma il colore del tavolo dentro può essere nel disegno (bastoni verdi su un
+    /// panno verde).
+    fn unknown_in_group(&self) -> bool {
+        let (border, ink) = traits(&self.view.img, self.view.vis);
+        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && inner_paper(&self.view.img) >= 0.25
+    }
+
     fn accepted(&self, min: f32) -> bool {
         if self.score < min && self.unknown_deck_card() {
             return true;
+        }
+        if self.score < min && std::env::var_os("SCARTI").is_some() {
+            let (border, ink) = traits(&self.view.img, self.view.vis);
+            eprintln!("    rifiutata a {:.0},{:.0} {:.0}x{:.0} vis {:?}: punteggio {:.2} cornice {border:.2} disegno {ink:.2} tavolo {:.2} fondo {:.2}", self.rect.cx, self.rect.cy, self.rect.long(), self.rect.short(), self.view.vis, self.score, self.inside, inner_paper(&self.view.img));
         }
         let (border, ink) = traits(&self.view.img, self.view.vis);
         // Con la cornice tutta attorno basta la somiglianza. Con la cornice incerta (carta sfocata,
@@ -738,6 +751,10 @@ fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
     // poca sicurezza.
     if up.max(down) < 0.25 && card_shaped(r) {
         let f = Try::new(img, *r, WHOLE).finish(img);
+        if std::env::var_os("SCARTI").is_some() {
+            let (border, ink) = traits(&f.view.img, f.view.vis);
+            eprintln!("    sconosciuta? a {:.0},{:.0} {:.0}x{:.0}: cornice {border:.2} disegno {ink:.2} tavolo dentro {:.2} fondo {:.2} -> {}", r.cx, r.cy, r.long(), r.short(), f.inside, inner_paper(&f.view.img), f.unknown_deck_card());
+        }
         if f.unknown_deck_card() {
             return Some(f);
         }
@@ -756,6 +773,22 @@ fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
     }
     f.accepted(ACCEPT).then_some(f)
 }
+
+/// Fra le posizioni possibili di una carta di un mazzo sconosciuto (che non somiglia a nessuna
+/// carta di riferimento), la prima che ha cornice, disegno e fondo di una carta.
+fn unknown_pick(img: &Img, rects: &[RotRect]) -> Option<Found> {
+    if !UNKNOWN_IN_GROUP {
+        return None;
+    }
+    let found = par_chunks(rects, |r| {
+        let f = Try::new(img, *r, WHOLE).finish(img);
+        f.unknown_in_group().then_some(f)
+    });
+    found.into_iter().flatten().max_by(|a, b| a.score.total_cmp(&b.score))
+}
+
+/// Si cercano anche le carte dei mazzi sconosciuti dentro le zone con più carte attaccate.
+const UNKNOWN_IN_GROUP: bool = true;
 
 /// Fra molte posizioni possibili di una carta, la più promettente al confronto veloce (None se
 /// nessuna somiglia a qualcosa).
@@ -842,6 +875,8 @@ fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
                 if f.accepted(ACCEPT) {
                     out.push(f);
                 }
+            } else if let Some(f) = unknown_pick(img, &tries) {
+                out.push(f);
             }
         }
         if !out.is_empty() {
@@ -878,6 +913,8 @@ fn stacked(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
             if f.accepted(ACCEPT) {
                 out.push(f);
             }
+        } else if let Some(f) = unknown_pick(img, &tries) {
+            out.push(f);
         }
     }
     out
@@ -1042,7 +1079,7 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
         // Il confronto completo solo per la posizione migliore.
         let f = Try::with_cols(img, best, WHOLE, cols).finish(img);
         // Cercando dappertutto qualcosa somiglia per caso: si chiede di più.
-        if f.accepted(SCAN_ACCEPT) {
+        if f.accepted(SCAN_ACCEPT) || (UNKNOWN_IN_GROUP && f.unknown_in_group()) {
             out.push(f);
         }
     }

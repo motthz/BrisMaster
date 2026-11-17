@@ -1602,7 +1602,14 @@ mod tests {
                 }
             }
         }
-        assert!(read_briscola(&img, &Mutex::new(Memory::in_memory())).is_none());
+        let r = read_briscola(&img, &Mutex::new(Memory::in_memory()));
+        if let Some(sc) = &r {
+            eprintln!("DBG trump {:?} opp {:?} my {:?} hand {:?}", sc.trump.as_ref().map(|v| v.at), sc.opp_slot.as_ref().map(|v| v.at), sc.my_slot.as_ref().map(|v| v.at), sc.hand.iter().map(|v| v.at).collect::<Vec<_>>());
+            if let Some(v) = sc.hand.first().or(sc.opp_slot.as_ref()).or(sc.my_slot.as_ref()).or(sc.trump.as_ref()) {
+                let _ = v.img.save_png(std::path::Path::new("/tmp/claude-0/-home-user-BrisMaster/d24f798c-d50f-589c-9613-cb98cc726917/scratchpad/notcard.png"));
+            }
+        }
+        assert!(r.is_none());
     }
 
     /// Una carta ricordata si riconosce dalla memoria anche quando le forme non bastano.
@@ -2245,7 +2252,7 @@ mod other_sites {
         // sicurezza: le finestrelle bianche spostano di poco il bianco dello schermo, e una può
         // chiedere conferma.
         for (label, deck, confirm) in [("sconosciuto", unknown_deck(), 1), ("noto", known_deck(1), 0)] {
-            let (ok, auto, n) = run(&deck, label, true, false);
+            let (ok, auto, n) = run(&deck, label, true, std::env::var_os("VERBOSO").is_some());
             assert!(ok == n && auto + confirm >= n, "{label} con scritte: giuste {ok}/{n}, senza conferma {auto}/{n}");
         }
     }

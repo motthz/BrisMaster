@@ -506,6 +506,27 @@ pub fn inner_paper(card: &Img) -> f32 {
 /// Quanti colori diversi (tinte ben distinte) ha il disegno della carta: le figure delle carte
 /// italiane ne hanno molti (rosso, giallo, blu, verde), il dorso di una carta uno o due.
 pub fn hues(card: &Img) -> usize {
+    let (bins, n) = hue_bins(card);
+    if n < 30 {
+        return 0;
+    }
+    bins.iter().filter(|&&b| b as f32 >= 0.06 * n as f32).count()
+}
+
+/// Gruppi di colori ben distinti nel disegno (tinte vicine fanno un gruppo solo): il disegno di una
+/// carta ne ha almeno due (rosso e blu, giallo e verde...), una scritta di un solo colore uno.
+pub fn hue_groups(card: &Img) -> usize {
+    let (bins, n) = hue_bins(card);
+    if n < 30 {
+        return 0;
+    }
+    let on: Vec<bool> = bins.iter().map(|&b| b as f32 >= 0.06 * n as f32).collect();
+    // Inizi di gruppo: una tinta presente con la precedente (in cerchio) assente.
+    let starts = (0..12).filter(|&i| on[i] && !on[(i + 11) % 12]).count();
+    if starts == 0 && on.iter().any(|&o| o) { 1 } else { starts }
+}
+
+fn hue_bins(card: &Img) -> ([u32; 12], u32) {
     let mut bins = [0u32; 12];
     let mut n = 0;
     for y in (CARD_H / 10..CARD_H - CARD_H / 10).step_by(2) {
@@ -517,10 +538,7 @@ pub fn hues(card: &Img) -> usize {
             }
         }
     }
-    if n < 30 {
-        return 0;
-    }
-    bins.iter().filter(|&&b| b as f32 >= 0.06 * n as f32).count()
+    (bins, n)
 }
 
 pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
@@ -657,9 +675,56 @@ pub struct Found {
     pub score: f32,
     /// Frazione dell'interno coi colori del tavolo attorno (vedi `table_inside`).
     pub inside: f32,
+    /// I lati della carta staccati da quello che c'è fuori (vedi `sides_apart`).
+    pub apart: [bool; 4],
+}
+
+/// Se due lati opposti del rettangolo hanno fuori un colore diverso dal bordo appena dentro: una
+/// carta spicca sul tavolo almeno sopra e sotto (o ai due lati), anche in una mano a ventaglio; un
+/// rettangolo preso in mezzo o in un angolo di una finestrella bianca no.
+fn sides_apart(img: &Img, r: &RotRect) -> [bool; 4] {
+    let at = |a: f32, b: f32| -> Option<[f32; 3]> {
+        let (x, y) = (r.cx + a * r.u.0 + b * r.v.0, r.cy + a * r.u.1 + b * r.v.1);
+        if x < 0.0 || y < 0.0 || x >= img.w as f32 || y >= img.h as f32 {
+            return None;
+        }
+        Some(img.at(x as usize, y as usize).map(|c| c as f32))
+    };
+    let d = (r.short() * 0.04).max(3.0);
+    let mut apart = [false; 4];
+    for side in 0..4 {
+        let (mut n, mut diff) = (0, 0);
+        for k in 1..10 {
+            let t = k as f32 / 10.0 * 2.0 - 1.0;
+            let (pin, pout) = match side {
+                0 => ((t * r.hw * 0.8, -r.hh + d), (t * r.hw * 0.8, -r.hh - d)),
+                1 => ((t * r.hw * 0.8, r.hh - d), (t * r.hw * 0.8, r.hh + d)),
+                2 => ((-r.hw + d, t * r.hh * 0.8), (-r.hw - d, t * r.hh * 0.8)),
+                _ => ((r.hw - d, t * r.hh * 0.8), (r.hw + d, t * r.hh * 0.8)),
+            };
+            let (Some(i), Some(o)) = (at(pin.0, pin.1), at(pout.0, pout.1)) else { continue };
+            n += 1;
+            if (0..3).map(|c| (i[c] - o[c]).abs()).sum::<f32>() > 60.0 {
+                diff += 1;
+            }
+        }
+        // (Fuori dallo schermo conta come staccato: la carta tagliata dal bordo della cattura.)
+        apart[side] = n == 0 || diff * 2 >= n;
+    }
+    apart
 }
 
 impl Found {
+    /// Staccata dal tavolo su due lati opposti (una carta in una mano a ventaglio).
+    fn apart_opposite(&self) -> bool {
+        (self.apart[0] && self.apart[1]) || (self.apart[2] && self.apart[3])
+    }
+
+    /// Staccata dal tavolo tutto attorno (una carta da sola).
+    fn apart_alone(&self) -> bool {
+        self.apart.iter().all(|&a| a)
+    }
+
     pub fn partial(&self) -> bool {
         self.view.partial
     }
@@ -673,7 +738,7 @@ impl Found {
     /// disegno colorato e niente tavolo dentro, anche se non somiglia a nessuna carta nota.
     fn unknown_deck_card(&self) -> bool {
         let (border, ink) = traits(&self.view.img, self.view.vis);
-        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
+        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && self.apart_alone() && hue_groups(&self.view.img) >= 2 && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
     }
 
     /// Come `unknown_deck_card`, dentro una zona che contiene già carte della misura giusta (la mano
@@ -682,7 +747,7 @@ impl Found {
     /// panno verde).
     fn unknown_in_group(&self) -> bool {
         let (border, ink) = traits(&self.view.img, self.view.vis);
-        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
+        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && self.apart_opposite() && hue_groups(&self.view.img) >= 2 && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
     }
 
     fn accepted(&self, min: f32) -> bool {
@@ -754,7 +819,8 @@ impl Try {
         view.px = [self.rect.long(), self.rect.short()];
         view.partial |= self.cols != WHOLE;
         view.at = self.rect.bounds(img);
-        Found { rect: self.rect, view, score, inside }
+        let apart = sides_apart(img, &self.rect);
+        Found { rect: self.rect, view, score, inside, apart }
     }
 }
 
@@ -773,7 +839,7 @@ fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
         let f = Try::new(img, *r, WHOLE).finish(img);
         if std::env::var_os("SCARTI").is_some() {
             let (border, ink) = traits(&f.view.img, f.view.vis);
-            eprintln!("    sconosciuta? a {:.0},{:.0} {:.0}x{:.0}: cornice {border:.2} disegno {ink:.2} tavolo dentro {:.2} fondo {:.2} -> {}", r.cx, r.cy, r.long(), r.short(), f.inside, inner_paper(&f.view.img), f.unknown_deck_card());
+            eprintln!("    sconosciuta? a {:.0},{:.0} {:.0}x{:.0}: cornice {border:.2} disegno {ink:.2} tavolo dentro {:.2} fondo {:.2} lati {:?} gruppi {} -> {}", r.cx, r.cy, r.long(), r.short(), f.inside, inner_paper(&f.view.img), f.apart, hue_groups(&f.view.img), f.unknown_deck_card());
         }
         if f.unknown_deck_card() {
             return Some(f);
@@ -906,7 +972,7 @@ fn edge_cards(img: &Img, a: &Analysis) -> Vec<Found> {
         let f = Try::new(img, rect, WHOLE).finish(img);
         let (border, ink) = traits(&f.view.img, f.view.vis);
         let face = inner_paper(&f.view.img) >= 0.2 || hues(&f.view.img) >= 3;
-        if border >= 0.85 && ink >= 0.05 && face {
+        if border >= 0.85 && ink >= 0.05 && face && f.apart_alone() && hue_groups(&f.view.img) >= 2 {
             out.push(f);
         }
         if out.len() >= 8 {

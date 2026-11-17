@@ -1,0 +1,27 @@
+{
+  "seme": 20261117,
+  "set": 500,
+  "risultati": {
+    "R1000": {
+      "range": 1.2038,
+      "teorico": 1.2616,
+      "dev_min": -4.5,
+      "dev_max": 4.5,
+      "set_fuori_range": 194
+    },
+    "R10000": {
+      "range": 0.3815,
+      "teorico": 0.3989,
+      "dev_min": -1.54,
+      "dev_max": 1.31,
+      "set_fuori_range": 210
+    },
+    "R100000": {
+      "range": 0.1252,
+      "teorico": 0.1262,
+      "dev_min": -0.509,
+      "dev_max": 0.414,
+      "set_fuori_range": 207
+    }
+  }
+}

@@ -532,6 +532,25 @@ pub fn drawn_color(card: &Img) -> f32 {
 /// Colore minimo (vedi `drawn_color`) di una carta di un mazzo sconosciuto.
 const MIN_COLORED: f32 = 0.12;
 
+/// Gruppi di colori ben distinti nel disegno (tinte vicine fanno un gruppo solo): il disegno di una
+/// carta ne ha almeno due (rosso e blu, giallo e verde...), una scritta di un solo colore uno.
+fn hue_groups(card: &Img) -> usize {
+    let (bins, n) = hue_bins(card);
+    if n < 30 {
+        return 0;
+    }
+    let on: Vec<bool> = bins.iter().map(|&b| b as f32 >= 0.06 * n as f32).collect();
+    // Inizi di gruppo: una tinta presente con la precedente (in cerchio) assente.
+    let starts = (0..12).filter(|&i| on[i] && !on[(i + 11) % 12]).count();
+    if starts == 0 && on.iter().any(|&o| o) { 1 } else { starts }
+}
+
+/// Un disegno di più colori: almeno tre tinte, o due ben distinte (un numero o una scritta di un
+/// colore solo, anche grande, no).
+fn many_colors(card: &Img) -> bool {
+    off("SENZA_GRUPPI") || hues(card) >= 3 || hue_groups(card) >= 2
+}
+
 fn hue_bins(card: &Img) -> ([u32; 12], u32) {
     let mut bins = [0u32; 12];
     let mut n = 0;
@@ -731,9 +750,9 @@ impl Found {
         off("SENZA_LATI") || (self.apart[0] && self.apart[1]) || (self.apart[2] && self.apart[3])
     }
 
-    /// Staccata dal tavolo su almeno tre lati (una carta da sola).
+    /// Staccata dal tavolo tutto attorno (una carta da sola).
     fn apart_alone(&self) -> bool {
-        off("SENZA_LATI") || self.apart.iter().filter(|&&a| a).count() >= 3
+        off("SENZA_LATI") || self.apart.iter().all(|&a| a)
     }
 
     pub fn partial(&self) -> bool {
@@ -749,7 +768,7 @@ impl Found {
     /// disegno colorato e niente tavolo dentro, anche se non somiglia a nessuna carta nota.
     fn unknown_deck_card(&self) -> bool {
         let (border, ink) = traits(&self.view.img, self.view.vis);
-        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && self.apart_alone() && (off("SENZA_COLORE") || drawn_color(&self.view.img) >= MIN_COLORED) && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
+        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && self.apart_alone() && (off("SENZA_COLORE") || drawn_color(&self.view.img) >= MIN_COLORED) && many_colors(&self.view.img) && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
     }
 
     /// Come `unknown_deck_card`, dentro una zona che contiene già carte della misura giusta (la mano
@@ -758,7 +777,7 @@ impl Found {
     /// panno verde).
     fn unknown_in_group(&self) -> bool {
         let (border, ink) = traits(&self.view.img, self.view.vis);
-        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && self.apart_opposite() && (off("SENZA_COLORE") || drawn_color(&self.view.img) >= MIN_COLORED) && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
+        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && self.apart_opposite() && (off("SENZA_COLORE") || drawn_color(&self.view.img) >= MIN_COLORED) && many_colors(&self.view.img) && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
     }
 
     fn accepted(&self, min: f32) -> bool {
@@ -986,7 +1005,7 @@ fn edge_cards(img: &Img, a: &Analysis) -> Vec<Found> {
         let f = Try::new(img, rect, WHOLE).finish(img);
         let (border, ink) = traits(&f.view.img, f.view.vis);
         let face = inner_paper(&f.view.img) >= 0.2 || hues(&f.view.img) >= 3;
-        if border >= 0.85 && ink >= 0.05 && face && f.apart_alone() && (off("SENZA_COLORE") || drawn_color(&f.view.img) >= MIN_COLORED) {
+        if border >= 0.85 && ink >= 0.05 && face && f.apart_alone() && (off("SENZA_COLORE") || drawn_color(&f.view.img) >= MIN_COLORED) && many_colors(&f.view.img) {
             out.push(f);
         }
         if out.len() >= 8 {

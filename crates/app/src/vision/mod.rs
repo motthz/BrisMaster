@@ -2248,7 +2248,14 @@ mod other_sites {
     fn writing_is_not_a_card() {
         for look in looks() {
             let img = writing_only(&look);
+            let _ = img.save_png(std::path::Path::new("/tmp/claude-0/-home-user-BrisMaster/d24f798c-d50f-589c-9613-cb98cc726917/scratchpad/scritte.png"));
             let s = read_briscola(&img, &Mutex::new(Memory::in_memory()));
+            if let Some(sc) = &s {
+                for v in sc.trump.iter().chain(&sc.opp_slot).chain(&sc.my_slot).chain(&sc.hand) {
+                    eprintln!("FALSA at {:?} partial {}", v.at, v.partial);
+                    let _ = v.img.save_png(std::path::Path::new("/tmp/claude-0/-home-user-BrisMaster/d24f798c-d50f-589c-9613-cb98cc726917/scratchpad/falsa.png"));
+                }
+            }
             assert!(s.is_none(), "{look:?}: carte viste fra le scritte");
         }
         // Tutte giuste. Le carte del mazzo sconosciuto più piccole (85 pixel) sono al limite della

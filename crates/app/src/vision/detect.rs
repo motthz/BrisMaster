@@ -807,6 +807,115 @@ fn unknown_pick(img: &Img, rects: &[RotRect]) -> Option<Found> {
     found.into_iter().flatten().max_by(|a, b| a.score.total_cmp(&b.score))
 }
 
+/// Si cercano anche le carte dai contorni (vedi `edge_cards`).
+const EDGES: bool = true;
+
+/// Le carte dritte trovate dai contorni: rettangoli della misura delle carte già trovate (lato
+/// lungo e corto mediani) con tutti e quattro i lati lungo un bordo netto dell'immagine, lontani
+/// dalle carte già trovate, e che dentro sono una carta (cornice bianca; fondo bianco o i molti
+/// colori di una figura: non il dorso di una carta).
+fn edge_cards(img: &Img, a: &Analysis) -> Vec<Found> {
+    let mut ls: Vec<f32> = a.cards.iter().filter(|c| !c.partial() && !c.rect.landscape()).map(|c| c.rect.long()).collect();
+    let mut ws: Vec<f32> = a.cards.iter().filter(|c| !c.partial() && !c.rect.landscape()).map(|c| c.rect.short()).collect();
+    if ls.is_empty() {
+        return Vec::new();
+    }
+    ls.sort_by(|x, y| x.total_cmp(y));
+    ws.sort_by(|x, y| x.total_cmp(y));
+    let (l, w) = (ls[ls.len() / 2], ws[ws.len() / 2]);
+    if l < 40.0 || w < 24.0 {
+        return Vec::new();
+    }
+    let (iw, ih) = (img.w, img.h);
+    let lum: Vec<i32> = img.px.iter().map(|p| (p[0] as i32 * 3 + p[1] as i32 * 6 + p[2] as i32) / 10).collect();
+    // Bordi verticali e orizzontali netti, e le loro somme cumulate lungo le colonne e le righe.
+    const T: i32 = 28;
+    let mut vcum = vec![0u32; iw * (ih + 1)];
+    let mut hcum = vec![0u32; ih * (iw + 1)];
+    for x in 1..iw.saturating_sub(1) {
+        for y in 0..ih {
+            let e = ((lum[y * iw + x + 1] - lum[y * iw + x - 1]).abs() >= T) as u32;
+            vcum[x * (ih + 1) + y + 1] = vcum[x * (ih + 1) + y] + e;
+        }
+    }
+    for y in 1..ih.saturating_sub(1) {
+        for x in 0..iw {
+            let e = ((lum[(y + 1) * iw + x] - lum[(y - 1) * iw + x]).abs() >= T) as u32;
+            hcum[y * (iw + 1) + x + 1] = hcum[y * (iw + 1) + x] + e;
+        }
+    }
+    // Quanto di un lato (colonna x da y0 a y1, o riga y da x0 a x1) è bordo, cercando di un pixel
+    // attorno.
+    let vside = |x: i32, y0: usize, y1: usize| -> f32 {
+        (x - 1..=x + 1)
+            .filter(|&xx| xx >= 1 && (xx as usize) < iw - 1)
+            .map(|xx| {
+                let c = xx as usize * (ih + 1);
+                (vcum[c + y1] - vcum[c + y0]) as f32 / (y1 - y0).max(1) as f32
+            })
+            .fold(0.0, f32::max)
+    };
+    let hside = |y: i32, x0: usize, x1: usize| -> f32 {
+        (y - 1..=y + 1)
+            .filter(|&yy| yy >= 1 && (yy as usize) < ih - 1)
+            .map(|yy| {
+                let c = yy as usize * (iw + 1);
+                (hcum[c + x1] - hcum[c + x0]) as f32 / (x1 - x0).max(1) as f32
+            })
+            .fold(0.0, f32::max)
+    };
+    let (hw, hh) = (w / 2.0, l / 2.0);
+    let step = 2usize;
+    let mut cands: Vec<(f32, f32, f32)> = Vec::new();
+    let (xs, xe) = (hw.ceil() as usize + 2, (iw as f32 - hw) as usize - 2);
+    let (ys, ye) = (hh.ceil() as usize + 2, (ih as f32 - hh) as usize - 2);
+    if xe <= xs || ye <= ys {
+        return Vec::new();
+    }
+    for cy in (ys..ye).step_by(step) {
+        for cx in (xs..xe).step_by(step) {
+            let (x0, x1) = ((cx as f32 - hw) as i32, (cx as f32 + hw) as i32);
+            let (y0, y1) = ((cy as f32 - hh) as i32, (cy as f32 + hh) as i32);
+            // (Gli angoli delle carte sono arrotondati: si guarda il lato senza le punte.)
+            let (iy0, iy1) = ((y0 as f32 + 0.1 * l) as usize, (y1 as f32 - 0.1 * l) as usize);
+            let (ix0, ix1) = ((x0 as f32 + 0.15 * w) as usize, (x1 as f32 - 0.15 * w) as usize);
+            let left = vside(x0, iy0, iy1);
+            if left < 0.7 {
+                continue;
+            }
+            let right = vside(x1, iy0, iy1);
+            if right < 0.7 {
+                continue;
+            }
+            let top = hside(y0, ix0, ix1);
+            let bottom = hside(y1, ix0, ix1);
+            let score = left.min(right).min(top).min(bottom);
+            if score >= 0.7 {
+                cands.push((score, cx as f32, cy as f32));
+            }
+        }
+    }
+    cands.sort_by(|p, q| q.0.total_cmp(&p.0));
+    let mut out: Vec<Found> = Vec::new();
+    for (_, cx, cy) in cands {
+        let near = |r: &RotRect| (r.cx - cx).abs() < 0.6 * w && (r.cy - cy).abs() < 0.6 * l;
+        if a.cards.iter().any(|c| near(&c.rect)) || out.iter().any(|f| near(&f.rect)) {
+            continue;
+        }
+        let rect = RotRect { cx, cy, u: (1.0, 0.0), v: (0.0, 1.0), hw, hh };
+        let f = Try::new(img, rect, WHOLE).finish(img);
+        let (border, ink) = traits(&f.view.img, f.view.vis);
+        let face = inner_paper(&f.view.img) >= 0.2 || hues(&f.view.img) >= 3;
+        if border >= 0.85 && ink >= 0.05 && face {
+            out.push(f);
+        }
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    out
+}
+
 /// Si cercano anche le carte dei mazzi sconosciuti dentro le zone con più carte attaccate.
 const UNKNOWN_IN_GROUP: bool = true;
 
@@ -1524,6 +1633,16 @@ pub fn analyze(img: &Img) -> Analysis {
         }
     }
     let (k, mut a) = best.expect("almeno una prova");
+    // Le carte che le prove coi bianchi non trovano (figure con la cornice sottile, carte su un
+    // tavolo chiaro, mazzi mai visti): si cercano dai contorni, rettangoli della misura delle carte
+    // già trovate con tutti e quattro i lati netti.
+    if EDGES && !a.cards.is_empty() {
+        let extra = edge_cards(img, &a);
+        if std::env::var_os("TEMPI").is_some() && !extra.is_empty() {
+            eprintln!("    dai contorni: {}", extra.iter().map(|f| format!("{:.0},{:.0}", f.rect.cx, f.rect.cy)).collect::<Vec<_>>().join(" "));
+        }
+        a.cards.extend(extra);
+    }
     // Col bianco severo le carte appena giocate, che il sito disegna ancora sbiadite, non si
     // vedono: si cercano col bianco solito, ma solo nella striscia del tavolo sopra la mano (lì
     // non c'è la sagoma bianca sotto la mano che col bianco solito si attacca alle carte).

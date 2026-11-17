@@ -1,0 +1,14 @@
+iter_2000|infer:2000:1:1000:0.25
+iter_5000|infer:5000:1:1000:0.25
+iter_10000|infer:10000:1:1000:0.25
+mani_100|infer:20000:1:100:0.25
+mani_300|infer:20000:1:300:0.25
+ucb_0.3|prova:ucb=0.3@infer:20000:1:1000:0.25
+ucb_1.4|prova:ucb=1.4@infer:20000:1:1000:0.25
+minimo_0|infer:20000:1:1000:0
+minimo_1|infer:20000:1:1000:1
+ucb_0.5|prova:ucb=0.5@infer:20000:1:1000:0.25
+ucb_1.0|prova:ucb=1.0@infer:20000:1:1000:0.25
+minimo_0.1|infer:20000:1:1000:0.1
+minimo_0.5|infer:20000:1:1000:0.5
+mani_3000|infer:20000:1:3000:0.25

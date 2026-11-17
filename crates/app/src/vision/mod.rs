@@ -9,6 +9,7 @@ pub mod live;
 pub mod memory;
 pub mod reference;
 pub mod pips;
+pub mod nn;
 pub mod layout;
 pub mod screen;
 #[cfg(test)]
@@ -127,6 +128,17 @@ const EXACT_BONUS: f32 = 1.0;
 const PIP_PENALTY: f32 = 3.0;
 
 /// Punteggi delle 40 carte dalla somiglianza con le carte di riferimento.
+/// Da quale somiglianza in giù conta la rete, e quanto (nelle prove si cambiano con NN_DA e NN_K).
+fn nn_params() -> (f32, f32) {
+    if cfg!(test) {
+        let get = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        return (get("NN_DA", NN_FROM), get("NN_K", NN_WEIGHT));
+    }
+    (NN_FROM, NN_WEIGHT)
+}
+const NN_FROM: f32 = 0.85;
+const NN_WEIGHT: f32 = 1.0;
+
 fn reference_scores(sim: &[f32; 40]) -> [f32; 40] {
     let mut s = sim.map(|v| v * SCALE);
     let mut order: Vec<usize> = (0..40).collect();
@@ -398,6 +410,19 @@ fn focused_scene_inner(img: &Img) -> Scene {
 /// carte già viste su questo sito (che quando c'è decide).
 pub fn recognize(view: &mut CardView, mem: &Memory) {
     let mut s = reference_scores(&view.sim);
+    // Un mazzo che l'app non conosce somiglia poco a tutte le carte di riferimento: allora conta
+    // anche la rete (vedi `nn`), che riconosce seme e valore anche di un mazzo mai visto. Più la
+    // carta è sconosciuta, più conta la rete; sui mazzi noti non cambia niente.
+    let top = view.sim.iter().copied().fold(f32::MIN, f32::max);
+    let (from, k) = nn_params();
+    let w = ((from - top) / 0.25).clamp(0.0, 1.0);
+    if w > 0.0 && !view.partial {
+        if let Some(lp) = nn::log_probs(&view.img) {
+            for c in 0..40 {
+                s[c] += w * k * lp[c].max(-12.0);
+            }
+        }
+    }
     // I simboli contati sulla carta (vista intera) escludono le carte con un altro numero di
     // simboli, in qualunque mazzo: un quattro di coppe un po' storto non diventa un due.
     // Il conteggio decide solo fra le carte che la lettura dà già per possibili: se nessuna delle
@@ -1978,6 +2003,17 @@ mod other_sites {
                 reference::card_image(style, c).save_png(&d.join(format!("{c:02}.png"))).unwrap();
             }
         }
+    }
+
+    /// La rete su una carta 100x160 (RETE=immagine): le tre carte più probabili.
+    #[test]
+    #[ignore]
+    fn prova_rete() {
+        let img = load_jpg(std::path::Path::new(&std::env::var("RETE").unwrap()));
+        let p = super::nn::log_probs(&img).expect("rete");
+        let mut o: Vec<usize> = (0..40).collect();
+        o.sort_by(|&a, &b| p[b].total_cmp(&p[a]));
+        println!("rete: {:?}", o[..3].iter().map(|&c| (c, (p[c] * 1000.0).round() / 1000.0)).collect::<Vec<_>>());
     }
 
     fn known_deck(style: usize) -> Vec<(Card, Img)> {

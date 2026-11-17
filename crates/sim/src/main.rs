@@ -118,14 +118,15 @@ fn chunk_cached(player: &str, opponent: &str, seed: u64, start: u64, end: u64) -
     })
 }
 
-/// Mazzi per blocco di salvataggio.
+/// Mazzi per blocco di salvataggio (BRISCOLA_SIM_CHUNK per cambiarlo, es. blocchi piccoli in cloud).
 const CHUNK: u64 = 250;
 
 /// Risultati per mazzo dei primi `deals` mazzi, a blocchi salvati (vedi `chunk_cached`).
 fn deals_cached(player: &str, opponent: &str, deals: u64, seed: u64) -> Vec<MatchStats> {
     let mut out = Vec::with_capacity(deals as usize);
-    for start in (0..deals).step_by(CHUNK as usize) {
-        out.extend(chunk_cached(player, opponent, seed, start, (start + CHUNK).min(deals)));
+    let chunk = std::env::var("BRISCOLA_SIM_CHUNK").ok().and_then(|c| c.parse::<u64>().ok()).filter(|&c| c > 0).unwrap_or(CHUNK);
+    for start in (0..deals).step_by(chunk as usize) {
+        out.extend(chunk_cached(player, opponent, seed, start, (start + chunk).min(deals)));
     }
     out
 }

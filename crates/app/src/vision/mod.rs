@@ -470,7 +470,7 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
     order.sort_by(|a, b| b.1.total_cmp(&a.1));
     if let Some(&(c, v)) = order.first() {
         let second = order.get(1).map_or(f32::MIN, |o| o.1);
-        if v >= memory::SURE && v - second >= memory::SURE_GAP {
+        if v >= memory::SURE && v - second >= memory::SURE_GAP && !(cfg!(test) && std::env::var_os("SENZA_DECISIVA").is_some()) {
             let top = s.iter().copied().fold(f32::MIN, f32::max);
             s[c] = s[c].max(top + 6.0);
         }

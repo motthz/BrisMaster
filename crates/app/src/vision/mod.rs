@@ -136,7 +136,11 @@ fn nn_params() -> (f32, f32) {
     }
     (NN_FROM, NN_WEIGHT)
 }
-const NN_FROM: f32 = 0.85;
+const NN_FROM: f32 = 0.65;
+/// La memoria decide la carta solo se la carta somiglia poco ai mazzi noti (un mazzo che l'app non
+/// conosce): su un mazzo noto la lettura è già sicura, e un'immagine ricordata sotto il nome
+/// sbagliato non deve ripetere l'errore.
+const DECISIVE_BELOW: f32 = 0.75;
 const NN_WEIGHT: f32 = 1.0;
 
 fn reference_scores(sim: &[f32; 40]) -> [f32; 40] {
@@ -470,7 +474,7 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
     order.sort_by(|a, b| b.1.total_cmp(&a.1));
     if let Some(&(c, v)) = order.first() {
         let second = order.get(1).map_or(f32::MIN, |o| o.1);
-        if v >= memory::SURE && v - second >= memory::SURE_GAP && !(cfg!(test) && std::env::var_os("SENZA_DECISIVA").is_some()) {
+        if top < DECISIVE_BELOW && v >= memory::SURE && v - second >= memory::SURE_GAP && !(cfg!(test) && std::env::var_os("SENZA_DECISIVA").is_some()) {
             let top = s.iter().copied().fold(f32::MIN, f32::max);
             s[c] = s[c].max(top + 6.0);
         }

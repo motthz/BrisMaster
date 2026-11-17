@@ -1,6 +1,13 @@
 iter_2000|infer:2000:1:1000:0.25
 iter_5000|infer:5000:1:1000:0.25
 iter_10000|infer:10000:1:1000:0.25
+rete_17M|rl:rete_17M.brl
+rete_28M|rl:rete_28M.brl
+rete_35M|rl:rete_35M.brl
+rete_38M|rl:rete_38M.brl
+rete_51M|rl:rete_51M.brl
+rete_81M|rl:rete_81M.brl
+rete_grande_49M|rl:grande_49M.brl
 mani_100|infer:20000:1:100:0.25
 mani_300|infer:20000:1:300:0.25
 ucb_0.3|prova:ucb=0.3@infer:20000:1:1000:0.25
@@ -12,3 +19,7 @@ ucb_1.0|prova:ucb=1.0@infer:20000:1:1000:0.25
 minimo_0.1|infer:20000:1:1000:0.1
 minimo_0.5|infer:20000:1:1000:0.5
 mani_3000|infer:20000:1:3000:0.25
+iter_40000|infer:40000:1:1000:0.25
+iter_80000|infer:80000:1:1000:0.25
+mani_10000|infer:20000:1:10000:0.25
+iter_160000|infer:160000:1:1000:0.25

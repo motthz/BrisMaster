@@ -1913,6 +1913,10 @@ mod other_sites {
                             let b = v.best(CardSet::FULL).unwrap().0;
                             if b != *c {
                                 let sim = m.similarity(&v.img, v.vis);
+                                if let Ok(d) = std::env::var("MEMDUMP") {
+                                    let n = std::fs::read_dir(&d).map(|r| r.count()).unwrap_or(0);
+                                    let _ = v.img.save_png(std::path::Path::new(&format!("{d}/v{c:02}_{n:03}_{:.2}.png", sim[*c as usize].unwrap_or(-1.0))));
+                                }
                                 eprintln!("MEM vera {c} sim {:?} punti {:.1}; letta {b} sim {:?} punti {:.1}; parziale {}", sim[*c as usize], v.scores[*c as usize], sim[b as usize], v.scores[b as usize], v.partial);
                             }
                         }
@@ -1920,8 +1924,11 @@ mod other_sites {
                 }
             }
             if TEACH.load(std::sync::atomic::Ordering::Relaxed) {
+                // (L'utente conferma la carta che vede: se manca una carta della mano, le altre
+                // non si possono abbinare per posizione e non si insegnano.)
+                let hand = want.iter().filter(|(r, _)| r.starts_with("mano")).count();
                 if let Some(sc) = &s {
-                    for (role, c) in want {
+                    for (role, c) in want.iter().filter(|(r, _)| !r.starts_with("mano") || sc.hand.len() == hand) {
                         let v = match *role {
                             "briscola" => sc.trump.as_ref(),
                             "avversario" => sc.opp_slot.as_ref(),
@@ -1929,6 +1936,10 @@ mod other_sites {
                             r => sc.hand.get(r[4..].parse::<usize>().unwrap_or(9)),
                         };
                         if let Some(v) = v {
+                            if let Ok(d) = std::env::var("MEMDUMP") {
+                                let n = std::fs::read_dir(&d).map(|r| r.count()).unwrap_or(0);
+                                let _ = v.img.save_png(std::path::Path::new(&format!("{d}/t{c:02}_{n:03}.png")));
+                            }
                             m.remember(&v.img, v.vis, *c);
                         }
                     }

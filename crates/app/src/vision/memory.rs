@@ -138,6 +138,48 @@ pub fn faint(img: &Img) -> bool {
     hi.saturating_sub(lo) < 110
 }
 
+/// Il bordo della carta vista intera non è uguale tutto intorno: il ritaglio ha preso un pezzo di
+/// tavolo o di un'altra carta (una carta tagliata male), e ricordarlo insegnerebbe un'immagine
+/// sbagliata. Si confronta il colore medio di otto tratti del bordo (due per lato).
+pub fn uneven_border(img: &Img, vis: [f32; 2]) -> bool {
+    if vis[1] - vis[0] < 0.9 || img.w < 20 || img.h < 20 {
+        return false;
+    }
+    let (w, h) = (img.w, img.h);
+    let band = (w / 25).max(2);
+    let mean = |x0: usize, x1: usize, y0: usize, y1: usize| -> [f32; 3] {
+        let mut acc = [0f32; 3];
+        let mut n = 0f32;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = img.at(x, y);
+                for c in 0..3 {
+                    acc[c] += p[c] as f32;
+                }
+                n += 1.0;
+            }
+        }
+        acc.map(|v| v / n.max(1.0))
+    };
+    let (i, b) = (1, 1 + band);
+    let parts = [
+        mean(b, w / 2, i, b),
+        mean(w / 2, w - b, i, b),
+        mean(b, w / 2, h - b, h - i),
+        mean(w / 2, w - b, h - b, h - i),
+        mean(i, b, b, h / 2),
+        mean(i, b, h / 2, h - b),
+        mean(w - b, w - i, b, h / 2),
+        mean(w - b, w - i, h / 2, h - b),
+    ];
+    let dist = |a: &[f32; 3], b: &[f32; 3]| (0..3).map(|c| (a[c] - b[c]).abs()).sum::<f32>();
+    parts.iter().any(|a| parts.iter().any(|b| dist(a, b) > UNEVEN))
+}
+
+/// Differenza di colore (somma sui tre canali) oltre la quale due tratti del bordo non sono lo
+/// stesso bordo di carta.
+const UNEVEN: f32 = 120.0;
+
 pub fn similarity(a: &Img, b: &Img, vis: [f32; 2]) -> f32 {
     ncc(&thumb(a), &thumb(b), rows(vis))
 }
@@ -205,7 +247,7 @@ impl Memory {
     pub fn remember(&mut self, img: &Img, vis: [f32; 2], card: Card) {
         // Un'immagine sbiadita (una carta che il sito fa svanire, mezza trasparente sul tavolo)
         // non si ricorda: senza bianco né inchiostro scuro somiglia a troppe carte.
-        if faint(img) {
+        if faint(img) || uneven_border(img, vis) {
             return;
         }
         let t = thumb(img);

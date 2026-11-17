@@ -1992,7 +1992,7 @@ mod other_sites {
             let (mut ok, mut auto, mut n) = (0, 0, 0);
             for (mul, add) in [(7u8, 0u8), (13, 5)] {
                 let deck: Vec<(Card, Img)> = (0..40u8).map(|i| cards[((i * mul + add) % 40) as usize].clone()).collect();
-                let r = run(&deck, &label, false, verbose);
+                let r = run(&deck, &format!("{label}{mul}"), false, verbose);
                 ok += r.0;
                 auto += r.1;
                 n += r.2;

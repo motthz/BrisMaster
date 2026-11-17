@@ -503,6 +503,26 @@ pub fn inner_paper(card: &Img) -> f32 {
     w as f32 / n.max(1) as f32
 }
 
+/// Quanti colori diversi (tinte ben distinte) ha il disegno della carta: le figure delle carte
+/// italiane ne hanno molti (rosso, giallo, blu, verde), il dorso di una carta uno o due.
+pub fn hues(card: &Img) -> usize {
+    let mut bins = [0u32; 12];
+    let mut n = 0;
+    for y in (CARD_H / 10..CARD_H - CARD_H / 10).step_by(2) {
+        for x in (CARD_W / 8..CARD_W - CARD_W / 8).step_by(2) {
+            let (h, sat, v) = hsv(card.at(x, y));
+            if sat >= 80 && v >= 60 {
+                bins[((h / 30.0) as usize).min(11)] += 1;
+                n += 1;
+            }
+        }
+    }
+    if n < 30 {
+        return 0;
+    }
+    bins.iter().filter(|&&b| b as f32 >= 0.06 * n as f32).count()
+}
+
 pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
     let (y0, y1) = ((vis[0] * CARD_H as f32) as usize, ((vis[1] * CARD_H as f32) as usize).min(CARD_H));
     if y1 <= y0 + 8 {
@@ -653,7 +673,7 @@ impl Found {
     /// disegno colorato e niente tavolo dentro, anche se non somiglia a nessuna carta nota.
     fn unknown_deck_card(&self) -> bool {
         let (border, ink) = traits(&self.view.img, self.view.vis);
-        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && inner_paper(&self.view.img) >= 0.2
+        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
     }
 
     /// Come `unknown_deck_card`, dentro una zona che contiene già carte della misura giusta (la mano
@@ -662,7 +682,7 @@ impl Found {
     /// panno verde).
     fn unknown_in_group(&self) -> bool {
         let (border, ink) = traits(&self.view.img, self.view.vis);
-        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && inner_paper(&self.view.img) >= 0.25
+        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
     }
 
     fn accepted(&self, min: f32) -> bool {

@@ -1929,6 +1929,8 @@ mod other_sites {
                 deck: true,
             };
             let img = table(&deal, look);
+            // (Ogni tavolo è un sito diverso: niente di quello imparato sul tavolo prima.)
+            detect::forget_reading_state();
             if verbose {
                 let dir = std::env::var("SALVA").ok();
                 if let Some(d) = dir {

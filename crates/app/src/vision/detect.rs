@@ -838,6 +838,9 @@ impl Found {
     /// Una carta di un mazzo sconosciuto (vedi `as_full`): cornice bianca quasi tutta attorno,
     /// disegno colorato e niente tavolo dentro, anche se non somiglia a nessuna carta nota.
     fn unknown_deck_card(&self) -> bool {
+        if off("SENZA_SCONOSCIUTA") || no_unknown() {
+            return false;
+        }
         let (border, ink) = traits(&self.view.img, self.view.vis);
         border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && self.apart_alone() && (off("SENZA_COLORE") || drawn_color(&self.view.img) >= MIN_COLORED) && many_colors(&self.view.img) && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
     }
@@ -847,6 +850,9 @@ impl Found {
     /// il fondo bianco, ma il colore del tavolo dentro può essere nel disegno (bastoni verdi su un
     /// panno verde).
     fn unknown_in_group(&self) -> bool {
+        if no_unknown() {
+            return false;
+        }
         let (border, ink) = traits(&self.view.img, self.view.vis);
         border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && self.apart_opposite() && (off("SENZA_COLORE") || drawn_color(&self.view.img) >= MIN_COLORED) && many_colors(&self.view.img) && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
     }
@@ -974,7 +980,7 @@ fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
 /// Fra le posizioni possibili di una carta di un mazzo sconosciuto (che non somiglia a nessuna
 /// carta di riferimento), la prima che ha cornice, disegno e fondo di una carta.
 fn unknown_pick(img: &Img, rects: &[RotRect]) -> Option<Found> {
-    if !UNKNOWN_IN_GROUP {
+    if !UNKNOWN_IN_GROUP || off("SENZA_NELGRUPPO") || no_unknown() {
         return None;
     }
     let found = par_chunks(rects, |r| {
@@ -1751,6 +1757,32 @@ pub fn last_card_l() -> f32 {
 
 /// Trova e riconosce le carte scoperte.
 pub fn analyze(img: &Img) -> Analysis {
+    let a = analyze_once(img);
+    // Una carta presa con le regole dei mazzi sconosciuti dove le altre carte sono chiaramente di un
+    // mazzo noto è quasi sempre un rettangolo sbagliato (un pezzo di tavolo con la briscola), che
+    // in più toglie il posto alle carte vere: si rilegge lo schermo senza quelle regole.
+    if UNKNOWN_ON_KNOWN.with(|u| u.replace(false)) && !off("SENZA_RILETTURA") {
+        NO_UNKNOWN.with(|n| n.set(true));
+        let b = analyze_once(img);
+        NO_UNKNOWN.with(|n| n.set(false));
+        UNKNOWN_ON_KNOWN.with(|u| u.set(false));
+        return b;
+    }
+    a
+}
+
+thread_local! {
+    /// L'ultima lettura ha usato le regole dei mazzi sconosciuti su un mazzo noto (vedi `analyze`).
+    static UNKNOWN_ON_KNOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Lettura senza le regole dei mazzi sconosciuti.
+    static NO_UNKNOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn no_unknown() -> bool {
+    NO_UNKNOWN.with(|n| n.get())
+}
+
+fn analyze_once(img: &Img) -> Analysis {
     // Schermo senza colori: quasi nessun punto colorato.
     let (mut n, mut tinted) = (0usize, 0usize);
     for p in img.px.iter().step_by(7) {
@@ -1840,6 +1872,12 @@ pub fn analyze(img: &Img) -> Analysis {
     let known = a.cards.iter().filter(|c| !c.partial() && c.score >= KNOWN_DECK).count();
     let whole = a.cards.iter().filter(|c| !c.partial()).count();
     let unknown_deck = whole == 0 || known * 2 < whole || off("SENZA_NOTO");
+    {
+        let sure: Vec<&Found> = a.cards.iter().filter(|c| !c.partial() && c.score >= ACCEPT).collect();
+        let sure_known = sure.iter().filter(|c| c.score >= KNOWN_DECK).count();
+        let used = a.cards.iter().any(|c| !c.partial() && c.score < ACCEPT);
+        UNKNOWN_ON_KNOWN.with(|u| u.set(used && !sure.is_empty() && sure_known * 2 >= sure.len()));
+    }
     // Le regole dei mazzi sconosciuti accettano carte che somigliano poco ai mazzi noti: dove le
     // carte trovate sono chiaramente di un mazzo noto, una carta così è un pezzo di carta o un
     // riquadro del sito, e si toglie.
@@ -1860,7 +1898,7 @@ pub fn analyze(img: &Img) -> Analysis {
             a.cards.retain(|c| !c.alone || (near(c.rect.long(), l) && near(c.rect.short(), w)));
         }
     }
-    if EDGES && !a.cards.is_empty() && unknown_deck {
+    if EDGES && !a.cards.is_empty() && unknown_deck && !off("SENZA_BORDI") && !no_unknown() {
         let extra = edge_cards(img, &a);
         if std::env::var_os("TEMPI").is_some() && !extra.is_empty() {
             eprintln!("    dai contorni: {}", extra.iter().map(|f| format!("{:.0},{:.0}", f.rect.cx, f.rect.cy)).collect::<Vec<_>>().join(" "));

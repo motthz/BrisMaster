@@ -909,6 +909,9 @@ fn unknown_pick(img: &Img, rects: &[RotRect]) -> Option<Found> {
 /// Si cercano anche le carte dai contorni (vedi `edge_cards`).
 const EDGES: bool = true;
 
+/// Somiglianza oltre la quale una carta trovata è di un mazzo noto.
+const KNOWN_DECK: f32 = 0.6;
+
 /// Le carte dritte trovate dai contorni: rettangoli della misura delle carte già trovate (lato
 /// lungo e corto mediani) con tutti e quattro i lati lungo un bordo netto dell'immagine, lontani
 /// dalle carte già trovate, e che dentro sono una carta (cornice bianca; fondo bianco o i molti
@@ -1750,7 +1753,13 @@ pub fn analyze(img: &Img) -> Analysis {
     // Le carte che le prove coi bianchi non trovano (figure con la cornice sottile, carte su un
     // tavolo chiaro, mazzi mai visti): si cercano dai contorni, rettangoli della misura delle carte
     // già trovate con tutti e quattro i lati netti.
-    if EDGES && !a.cards.is_empty() {
+    // (Solo su un mazzo che non si riconosce bene: dove le carte trovate somigliano chiaramente a
+    // un mazzo noto le prove coi bianchi le trovano già, e i contorni aggiungerebbero solo
+    // rettangoli dubbi.)
+    let known = a.cards.iter().filter(|c| !c.partial() && c.score >= KNOWN_DECK).count();
+    let whole = a.cards.iter().filter(|c| !c.partial()).count();
+    let unknown_deck = whole == 0 || known * 2 < whole || off("SENZA_NOTO");
+    if EDGES && !a.cards.is_empty() && unknown_deck {
         let extra = edge_cards(img, &a);
         if std::env::var_os("TEMPI").is_some() && !extra.is_empty() {
             eprintln!("    dai contorni: {}", extra.iter().map(|f| format!("{:.0},{:.0}", f.rect.cx, f.rect.cy)).collect::<Vec<_>>().join(" "));

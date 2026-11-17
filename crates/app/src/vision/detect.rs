@@ -513,6 +513,25 @@ pub fn hues(card: &Img) -> usize {
     bins.iter().filter(|&&b| b as f32 >= 0.06 * n as f32).count()
 }
 
+/// La parte della carta (senza la cornice) coperta di disegno colorato: anche l'asso più spoglio di
+/// un mazzo vero ne ha più di una finestrella bianca con scritte e un'icona.
+pub fn colored(card: &Img) -> f32 {
+    let (mut n, mut c) = (0, 0);
+    for y in (CARD_H / 10..CARD_H - CARD_H / 10).step_by(2) {
+        for x in (CARD_W / 8..CARD_W - CARD_W / 8).step_by(2) {
+            let (_, sat, v) = hsv(card.at(x, y));
+            n += 1;
+            if sat >= 80 && v >= 60 {
+                c += 1;
+            }
+        }
+    }
+    c as f32 / n.max(1) as f32
+}
+
+/// Colore minimo (vedi `colored`) di una carta di un mazzo sconosciuto.
+const MIN_COLORED: f32 = 0.12;
+
 /// Gruppi di colori ben distinti nel disegno (tinte vicine fanno un gruppo solo): il disegno di una
 /// carta ne ha almeno due (rosso e blu, giallo e verde...), una scritta di un solo colore uno.
 pub fn hue_groups(card: &Img) -> usize {
@@ -720,9 +739,9 @@ impl Found {
         (self.apart[0] && self.apart[1]) || (self.apart[2] && self.apart[3])
     }
 
-    /// Staccata dal tavolo tutto attorno (una carta da sola).
+    /// Staccata dal tavolo su almeno tre lati (una carta da sola).
     fn apart_alone(&self) -> bool {
-        self.apart.iter().all(|&a| a)
+        self.apart.iter().filter(|&&a| a).count() >= 3
     }
 
     pub fn partial(&self) -> bool {
@@ -738,7 +757,7 @@ impl Found {
     /// disegno colorato e niente tavolo dentro, anche se non somiglia a nessuna carta nota.
     fn unknown_deck_card(&self) -> bool {
         let (border, ink) = traits(&self.view.img, self.view.vis);
-        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && self.apart_alone() && hue_groups(&self.view.img) >= 2 && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
+        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && self.apart_alone() && hue_groups(&self.view.img) >= 2 && colored(&self.view.img) >= MIN_COLORED && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
     }
 
     /// Come `unknown_deck_card`, dentro una zona che contiene già carte della misura giusta (la mano
@@ -747,7 +766,7 @@ impl Found {
     /// panno verde).
     fn unknown_in_group(&self) -> bool {
         let (border, ink) = traits(&self.view.img, self.view.vis);
-        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && self.apart_opposite() && hue_groups(&self.view.img) >= 2 && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
+        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && self.apart_opposite() && hue_groups(&self.view.img) >= 2 && colored(&self.view.img) >= MIN_COLORED && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
     }
 
     fn accepted(&self, min: f32) -> bool {
@@ -868,6 +887,9 @@ fn unknown_pick(img: &Img, rects: &[RotRect]) -> Option<Found> {
     }
     let found = par_chunks(rects, |r| {
         let f = Try::new(img, *r, WHOLE).finish(img);
+        if std::env::var_os("SCARTI").is_some() && f.unknown_in_group() {
+            eprintln!("    nel gruppo a {:.0},{:.0} lati {:?}", f.rect.cx, f.rect.cy, f.apart);
+        }
         f.unknown_in_group().then_some(f)
     });
     found.into_iter().flatten().max_by(|a, b| a.score.total_cmp(&b.score))
@@ -972,7 +994,7 @@ fn edge_cards(img: &Img, a: &Analysis) -> Vec<Found> {
         let f = Try::new(img, rect, WHOLE).finish(img);
         let (border, ink) = traits(&f.view.img, f.view.vis);
         let face = inner_paper(&f.view.img) >= 0.2 || hues(&f.view.img) >= 3;
-        if border >= 0.85 && ink >= 0.05 && face && f.apart_alone() && hue_groups(&f.view.img) >= 2 {
+        if border >= 0.85 && ink >= 0.05 && face && f.apart_alone() && hue_groups(&f.view.img) >= 2 && colored(&f.view.img) >= MIN_COLORED {
             out.push(f);
         }
         if out.len() >= 8 {
@@ -1274,6 +1296,9 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
         // Il confronto completo solo per la posizione migliore.
         let f = Try::with_cols(img, best, WHOLE, cols).finish(img);
         // Cercando dappertutto qualcosa somiglia per caso: si chiede di più.
+        if std::env::var_os("SCARTI").is_some() && !f.accepted(SCAN_ACCEPT) && UNKNOWN_IN_GROUP && f.unknown_in_group() {
+            eprintln!("    nella zona a {:.0},{:.0} lati {:?}", f.rect.cx, f.rect.cy, f.apart);
+        }
         if f.accepted(SCAN_ACCEPT) || (UNKNOWN_IN_GROUP && f.unknown_in_group()) {
             out.push(f);
         }

@@ -1989,6 +1989,9 @@ mod other_sites {
         let hand = want.iter().filter(|(r, _)| r.starts_with("mano")).count();
         let seen = s.as_ref().map_or(0, |s| s.hand.len());
         if seen != hand {
+            if std::env::var_os("SCARTI").is_some() {
+                eprintln!("MANO {:?}", s.as_ref().map(|s| s.hand.iter().map(|v| v.at).collect::<Vec<_>>()));
+            }
             out.push((format!("mano di {seen} carte invece di {hand}"), false, false));
         }
         out

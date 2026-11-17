@@ -750,9 +750,9 @@ impl Found {
         off("SENZA_LATI") || (self.apart[0] && self.apart[1]) || (self.apart[2] && self.apart[3])
     }
 
-    /// Staccata dal tavolo tutto attorno (una carta da sola).
+    /// Staccata dal tavolo su almeno tre lati (una carta da sola).
     fn apart_alone(&self) -> bool {
-        off("SENZA_LATI") || self.apart.iter().all(|&a| a)
+        off("SENZA_LATI") || self.apart.iter().filter(|&&a| a).count() >= 3
     }
 
     pub fn partial(&self) -> bool {
@@ -1085,6 +1085,7 @@ fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
         if len < 1.2 * card_w || !(0.8..=1.25).contains(&(height / card_l)) {
             continue;
         }
+        let mut unknown = 0;
         for side in [-1.0f32, 1.0] {
             let off = side * (len - card_w) / 2.0;
             let (cx, cy) = (r.cx + row.0 * off, r.cy + row.1 * off);
@@ -1105,7 +1106,13 @@ fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
                 }
             } else if let Some(f) = unknown_pick(img, &tries) {
                 out.push(f);
+                unknown += 1;
             }
+        }
+        // Una carta di un mazzo sconosciuto a un'estremità sola: una finestrella alta come una
+        // carta, non una fila di carte (che ne ha una a ciascuna estremità).
+        if unknown > 0 && out.len() < 2 {
+            out.clear();
         }
         if !out.is_empty() {
             break;
@@ -1125,6 +1132,7 @@ fn stacked(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
         return Vec::new();
     }
     let mut out = Vec::new();
+    let mut unknown = 0;
     for end in [-1.0f32, 1.0] {
         let mut tries = Vec::new();
         let a = end * (len - card_l) / 2.0;
@@ -1143,7 +1151,11 @@ fn stacked(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
             }
         } else if let Some(f) = unknown_pick(img, &tries) {
             out.push(f);
+            unknown += 1;
         }
+    }
+    if unknown > 0 && out.len() < 2 {
+        out.clear();
     }
     out
 }

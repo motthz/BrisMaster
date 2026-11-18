@@ -1873,9 +1873,13 @@ fn analyze_once(img: &Img) -> Analysis {
     let whole = a.cards.iter().filter(|c| !c.partial()).count();
     let unknown_deck = whole == 0 || known * 2 < whole || off("SENZA_NOTO");
     {
-        let sure: Vec<&Found> = a.cards.iter().filter(|c| !c.partial() && c.score >= ACCEPT).collect();
+        let unknown_rule = |c: &Found| c.alone || (!c.partial() && c.score < ACCEPT);
+        let sure: Vec<&Found> = a.cards.iter().filter(|c| !unknown_rule(c) && c.score >= ACCEPT).collect();
         let sure_known = sure.iter().filter(|c| c.score >= KNOWN_DECK).count();
-        let used = a.cards.iter().any(|c| !c.partial() && c.score < ACCEPT);
+        let used = a.cards.iter().any(unknown_rule);
+        if std::env::var_os("VEDI_RILETTURA").is_some() {
+            eprintln!("    rilettura? usate {used} sicure {} note {sure_known}: {}", sure.len(), a.cards.iter().map(|c| format!("{:.0},{:.0}={:.2}{}", c.rect.cx, c.rect.cy, c.score, if c.alone { "S" } else { "" })).collect::<Vec<_>>().join(" "));
+        }
         UNKNOWN_ON_KNOWN.with(|u| u.set(used && !sure.is_empty() && sure_known * 2 >= sure.len()));
     }
     // Le regole dei mazzi sconosciuti accettano carte che somigliano poco ai mazzi noti: dove le

@@ -1,7 +1,7 @@
 //! Una piccola rete neurale che riconosce seme e valore di una carta raddrizzata, allenata solo sui
 //! mazzi di riferimento dell'app (con colori, tratti, sfocature e coperture cambiati a caso) per
 //! riconoscere anche i mazzi mai visti: il disegno dei semi e quanti sono, non il disegno esatto di
-//! un mazzo. I pesi stanno in `assets/carte_rete.bin` (numeri a 32 bit, vedi `esporta.py`).
+//! un mazzo. I pesi stanno in `assets/carte_rete.bin` (numeri a 32 bit; per riallenarla vedi `scripts/rete-carte/allena.py`).
 
 use super::{Img, CARD_H, CARD_W};
 use std::sync::OnceLock;

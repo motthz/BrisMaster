@@ -309,6 +309,29 @@ Note: one point of score is worth about 1/8 of similarity. A lead of 1.4 (`AUTO_
   has never seen, correct cards go from **64.2%** in the first game to **71.7%** after one game
   of learning (`mazzi_sconosciuti` test with `MEMORIA=1`, version 0.6.9).
 
+### 7.1 Base memory, bundled with the app (since 0.6.10)
+
+- Card images that ship with the app (`crates/app/assets/memoria_base.bin`, 39 images). They
+  come from a deck supplied by the user: a sheet of Neapolitan cards with a green frame.
+- They are used together with the images remembered on the computer. They are never changed,
+  forgotten or saved, and they do not count towards the limit of 4 images per card.
+- **Sources** in `crates/app/assets/memoria_base/`: the cards straightened by the app, one PNG
+  per card (100×160). The name starts with the card number (`NN_...png`, suit×10 + rank).
+- **Regenerating the file** after adding or removing images:
+  `BASE=crates/app/assets/memoria_base cargo test --release -p brismaster crea_memoria_base -- --ignored`
+- **Getting the straightened images**: put the card on its own on a table and use
+  `IMG=table.png CARTE=folder ... diagnosi_immagine`, which saves `carta0.png` as the app sees it.
+  Cards with a squat drawing go back to card proportions first.
+- **Checks** (unit tests):
+  - `base_memory_recognizes_its_own_cards`: every image recognises its own card;
+  - `base_memory_never_relabels_reference_cards`: no image looks like a **different** card of the
+    reference decks with similarity ≥ `SAME`.
+
+  The second one excluded the user sheet's "jack with the cup". It is drawn exactly like the
+  app's Jack of Coins (with a coin), and in memory it made the real Jack of Coins read as the
+  Jack of Cups.
+- In the tests, `SENZA_MEMORIA_BASE=1` turns the base memory off.
+
 ---
 
 ## 8. From reading to game (`assistant.rs`)
@@ -397,7 +420,7 @@ much it is worth:
 | `SENZA_LATI`, `SENZA_COLORE`, `SENZA_GRUPPI` | the side check, the colour check, the "two colours" check |
 | `SENZA_PEZZI`, `SENZA_MISURA`, `SENZA_RILETTURA` | the three safeguards for the known decks |
 | `SENZA_NOTO`, `SENZA_NOTO_SCONOSCIUTE` | treats every deck as unknown, or keeps the unknown-deck cards on known decks too |
-| `SENZA_DECISIVA`, `SENZA_MEMORIA` | decisive memory, all memory |
+| `SENZA_DECISIVA`, `SENZA_MEMORIA`, `SENZA_MEMORIA_BASE` | decisive memory, all memory, base memory only |
 | `SENZA_SIMBOLI`, `SENZA_STILE` | symbol count, the site's style |
 
 Other variables:

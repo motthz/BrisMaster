@@ -118,6 +118,32 @@ fn ncc(a: &[u8], b: &[u8], (r0, r1): (usize, usize)) -> f32 {
     }
 }
 
+/// La memoria di base, compresa nell'app: carte di mazzi forniti dall'utente, raddrizzate come le
+/// vede l'app (vedi `crea_memoria_base`). Vale insieme alle carte ricordate sul computer, ma non
+/// si cambia, non si dimentica e non si salva. File `assets/memoria_base.bin`: per ogni immagine
+/// un byte con la carta, la fascia vista (due f32 little endian) e la miniatura (TW x TH x 3 byte).
+fn base() -> &'static [Template] {
+    static BASE: OnceLock<Vec<Template>> = OnceLock::new();
+    BASE.get_or_init(|| {
+        let bytes: &[u8] = include_bytes!("../../assets/memoria_base.bin");
+        let size = 1 + 8 + TW * TH * 3;
+        bytes
+            .chunks_exact(size)
+            .filter(|r| r[0] < 40)
+            .map(|r| {
+                let f = |i: usize| f32::from_le_bytes([r[i], r[i + 1], r[i + 2], r[i + 3]]);
+                Template { card: r[0], vis: [f(1), f(5)], px: r[9..].to_vec() }
+            })
+            .collect()
+    })
+}
+
+/// Le immagini con cui si confronta: quelle di base (se non spente nelle prove) e quelle ricordate.
+fn all<'a>(own: &'a [Template]) -> impl Iterator<Item = &'a Template> {
+    let base: &'static [Template] = if cfg!(test) && std::env::var_os("SENZA_MEMORIA_BASE").is_some() { &[] } else { base() };
+    base.iter().chain(own.iter())
+}
+
 /// Somiglianza oltre la quale la carta è considerata la stessa (fra carte diverse dello stesso
 /// mazzo si arriva al massimo a 0.8: il sei e il sette di denari).
 pub const SAME: f32 = 0.9;
@@ -185,11 +211,14 @@ impl Memory {
     /// sulla fascia visibile `vis` (e su quella che si vedeva nell'immagine ricordata).
     pub fn similarity(&self, img: &Img, vis: [f32; 2]) -> [Option<f32>; 40] {
         let mut out = [None; 40];
-        if self.templates.is_empty() || (cfg!(test) && std::env::var_os("SENZA_MEMORIA").is_some()) {
+        if cfg!(test) && std::env::var_os("SENZA_MEMORIA").is_some() {
+            return out;
+        }
+        if all(&self.templates).next().is_none() {
             return out;
         }
         let thumbs: Vec<Vec<u8>> = SHIFTS.iter().map(|&o| thumb_at(img, o)).collect();
-        for tpl in &self.templates {
+        for tpl in all(&self.templates) {
             let rows = common(vis, tpl.vis);
             let s = thumbs.iter().map(|t| ncc(t, &tpl.px, rows)).fold(f32::MIN, f32::max);
             let o = &mut out[tpl.card as usize];
@@ -293,6 +322,64 @@ impl Memory {
 #[cfg(test)]
 mod persistence_tests {
     use super::*;
+
+    /// Scrive la memoria di base da una cartella di carte raddrizzate dall'app (100x160, file
+    /// `NN_qualcosa.png` con NN il numero della carta):
+    /// `BASE=cartella cargo test --release -p brismaster crea_memoria_base -- --ignored`
+    #[test]
+    #[ignore]
+    fn crea_memoria_base() {
+        let dir = std::path::PathBuf::from(std::env::var("BASE").expect("BASE=cartella"));
+        let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "png")).collect();
+        files.sort();
+        let mut out = Vec::new();
+        for f in &files {
+            let card: u8 = f.file_name().unwrap().to_string_lossy()[..2].parse().unwrap();
+            let img = crate::vision::capture::load_png(f).unwrap();
+            assert!(img.w == CARD_W && img.h == CARD_H && card < 40, "{f:?}");
+            out.push(card);
+            out.extend(0.0f32.to_le_bytes());
+            out.extend(1.0f32.to_le_bytes());
+            out.extend(thumb(&img));
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/memoria_base.bin");
+        std::fs::write(&path, &out).unwrap();
+        println!("{} immagini in {path:?}", files.len());
+    }
+
+    #[test]
+    fn base_memory_recognizes_its_own_cards() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/memoria_base");
+        let mut n = 0;
+        for f in std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()) {
+            let card: Card = f.file_name().unwrap().to_string_lossy()[..2].parse().unwrap();
+            let img = crate::vision::capture::load_png(&f).unwrap();
+            let sims = Memory::in_memory().similarity(&img, WHOLE);
+            let best = (0..40).max_by(|&a, &b| sims[a].unwrap_or(-1.0).total_cmp(&sims[b].unwrap_or(-1.0))).unwrap();
+            assert_eq!(best as Card, card, "{f:?}");
+            n += 1;
+        }
+        assert!(n >= 39 && base().len() == n);
+    }
+
+    /// Un'immagine di base non deve far leggere un'altra carta su un mazzo di riferimento: per ogni
+    /// carta di ogni stile, se la memoria di base ha un'immagine quasi uguale (SAME), è della carta
+    /// giusta.
+    #[test]
+    fn base_memory_never_relabels_reference_cards() {
+        let m = Memory::in_memory();
+        for style in 0..3 {
+            for c in 0..40u8 {
+                let img = crate::vision::reference::card_image(style, c);
+                let sims = m.similarity(&img, WHOLE);
+                for (other, s) in sims.iter().enumerate() {
+                    if other as u8 != c {
+                        assert!(s.unwrap_or(-1.0) < SAME, "stile {style}, carta {c}: somiglia a {other} ({s:?})");
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn atomic_save_replaces_existing_json_and_reports_errors() {

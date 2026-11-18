@@ -54,7 +54,7 @@ jobs:
           if (-not (Test-Path $iscc)) {
             choco install innosetup --no-progress -y
           }
-          $version = "${{ steps.ver.outputs.tag }}".TrimStart("v")
+          $version = "${{ steps.ver.outputs.tag }}".TrimStart("v").Replace("+", ".")
           & $iscc "/DAppVersion=$version" "/DExeDir=..\target\release" installer\BrisMaster.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepara i file

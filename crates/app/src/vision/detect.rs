@@ -941,6 +941,36 @@ impl Try {
     }
 }
 
+/// Recupera un gruppo di carte regionali strette. Due carte intere affiancate
+/// della stessa misura devono avere quattro lati staccati e l'aspetto di carte.
+fn narrow_hand(img: &Img, blobs: &[Blob]) -> Vec<Found> {
+    let narrow: Vec<_> = blobs.iter().filter(|b| b.light() && !b.rect.landscape()
+        && (0.40..0.52).contains(&(b.rect.short() / b.rect.long()))).collect();
+    if narrow.len() < 2 { return Vec::new(); }
+    let found: Vec<_> = narrow.iter().filter_map(|b| {
+        let r = &b.rect;
+        if !sides_apart(img, r).iter().all(|&v| v) { return None; }
+        let card = as_full(img, r).or_else(|| {
+            let f = Try::new(img, *r, WHOLE).finish(img);
+            f.unknown_deck_card().then_some(Found { alone: true, ..f })
+        })?;
+        card.apart.iter().all(|&v| v).then_some(card)
+    }).collect();
+    let similar = |a: RotRect, b: RotRect| {
+        (a.long()/b.long()-1.0).abs() < 0.10 && (a.short()/b.short()-1.0).abs() < 0.12
+    };
+    let anchor = found.iter().enumerate().find_map(|(i, a)| {
+        found[i+1..].iter().any(|b| similar(a.rect, b.rect)
+            && (a.rect.cy-b.rect.cy).abs() < 0.25*a.rect.long()
+            && (0.8..3.0).contains(&((a.rect.cx-b.rect.cx).abs()/a.rect.short()))
+        ).then_some(a.rect)
+    });
+    match anchor {
+        Some(r) => found.into_iter().filter(|f| similar(r, f.rect)).collect(),
+        None => Vec::new(),
+    }
+}
+
 /// La zona come carta intera, se somiglia abbastanza a una carta. Si prova anche girata di mezzo
 /// giro (la carta dell'avversario su alcuni siti), che vince solo se somiglia chiaramente di più:
 /// le carte quasi simmetriche restano dritte, sempre nello stesso verso.
@@ -2392,6 +2422,7 @@ pub fn scene(img: &Img) -> Scene {
         colored * 100 < c.view.img.px.len()
     }).count();
     let desaturated = !a.cards.is_empty() && weak_color * 2 >= a.cards.len();
+    let original_gray = reference::gray_screen();
     if (a.cards.is_empty() || desaturated) && !reference::gray_screen() {
         reference::set_gray_screen(true);
         let mut fallback = analyze_inner(img, &Paper::of(img));
@@ -2400,6 +2431,67 @@ pub fn scene(img: &Img) -> Scene {
         fallback.cards.retain(|c| c.score >= 0.85);
         if !fallback.cards.is_empty() { a = fallback; }
     }
+    let blobs = a.cards.iter().all(|c| c.rect.landscape()).then(|| a.blobs.clone());
+    let mut scene = assign_briscola(img, a);
+    // Il bianco normale può unire la carta color avorio al dorso sotto cui
+    // sporge. La maschera più selettiva separa i due. Conserva le altre letture.
+    if scene.trump.is_none() && scene.hand.len() >= 2
+        && scene.hand.iter().all(|card| warm_paper(img, card.at))
+        && !(cfg!(test) && std::env::var_os("BRIS_SENZA_CONCORDANZA").is_some()) {
+        let strict = analyze_inner(img, &Paper::strict(img, 249));
+        let retry = assign_briscola(img, strict);
+        scene.trump = retry.trump.filter(|card| {
+            card.best(cards::CardSet::FULL).is_some_and(|(id, margin)| {
+                margin >= 2.5 && scene.hand.iter().chain(&scene.my_slot).chain(&scene.opp_slot)
+                    .all(|other| other.best(cards::CardSet::FULL).is_none_or(|(c, _)| c != id))
+            })
+        });
+    }
+    let Some(blobs) = blobs else { return scene };
+    if !scene.hand.is_empty() || scene.my_slot.is_some() || scene.opp_slot.is_some() {
+        return scene;
+    }
+    let previous_gray = reference::gray_screen();
+    reference::set_gray_screen(original_gray);
+    let mut recovered = narrow_hand(img, &blobs);
+    if recovered.is_empty() {
+        for mask in Paper::darker(img) {
+            let pixels = img.px.iter().map(|&p| mask.is(p)).collect::<Vec<_>>();
+            recovered = narrow_hand(img, &blobs_r(img, &pixels, 1));
+            if !recovered.is_empty() { break; }
+        }
+    }
+    if let Some(first) = recovered.first() {
+        let a = Analysis { card_l: first.rect.long(), cards: recovered, table: None, blobs, split: false };
+        let mut fallback = assign_briscola(img, a);
+        for view in fallback.hand.iter_mut().chain(&mut fallback.my_slot).chain(&mut fallback.opp_slot)
+            .chain(&mut fallback.trump) {
+            view.recovered_outline = true;
+        }
+        scene.hand = fallback.hand;
+        scene.my_slot = fallback.my_slot;
+        scene.opp_slot = fallback.opp_slot;
+        scene.trump = scene.trump.or(fallback.trump);
+    }
+    reference::set_gray_screen(previous_gray);
+    scene
+}
+
+/// Carta calda e chiara, misurata sui pixel originali del margine.
+fn warm_paper(img: &Img, [left, top, right, bottom]: [f32; 4]) -> bool {
+    let mut warm = 0;
+    for u in [0.07, 0.15, 0.5, 0.85, 0.93] {
+        for v in [0.10, 0.90] {
+            let x = (left + (right - left) * u) * img.w as f32;
+            let y = (top + (bottom - top) * v) * img.h as f32;
+            let [r, g, b] = img.sample(x, y).map(i32::from);
+            warm += usize::from(r >= 210 && g >= 190 && r > g && g > b && (22..=48).contains(&(r - b)));
+        }
+    }
+    warm >= 4
+}
+
+fn assign_briscola(img: &Img, mut a: Analysis) -> Scene {
     let card_l = a.card_l;
     // Solo briscola: con carte piccole il pezzo di briscola sotto il mazzo può essere
     // più corto dei 40 px richiesti per cercare una carta intera. La misura delle
@@ -2543,7 +2635,11 @@ pub fn scene(img: &Img) -> Scene {
             continue;
         }
         let gap = top - cy - card_l;
-        if (-0.05 * card_l..=0.2 * card_l).contains(&gap) && in_rows(cy) <= 3 {
+        let aligned = a.cards.iter().filter(upright).filter(full_size).filter(|f| (f.rect.cy-cy).abs() <= slack(f)).any(|upper| {
+            a.cards.iter().filter(upright).filter(full_size).any(|lower| (lower.rect.cy-top).abs() <= slack(lower)
+                && (upper.rect.cx-lower.rect.cx).abs() <= 0.20 * upper.rect.short().min(lower.rect.short()))
+        });
+        if (-0.05 * card_l..=0.2 * card_l).contains(&gap) && in_rows(cy) <= 3 && aligned {
             top = cy;
         } else {
             break;

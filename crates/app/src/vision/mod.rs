@@ -92,6 +92,8 @@ pub struct Scene {
 /// Una carta scoperta raddrizzata e riconosciuta.
 #[derive(Clone, Debug)]
 pub struct CardView {
+    /// La sagoma è stata recuperata su un tavolo altrimenti vuoto.
+    pub recovered_outline: bool,
     /// Carta raddrizzata, CARD_W x CARD_H, con la testa in alto.
     pub img: Img,
     /// Vista solo in parte (la briscola sotto il mazzo, una carta tagliata o coperta).
@@ -459,7 +461,18 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
     }
     // (Nemmeno la memoria delle carte viste può dare una carta esclusa: un'immagine ricordata
     // sotto il nome sbagliato non deve ripetere l'errore.)
-    let sims = mem.similarity(&view.img, view.vis);
+    let mut sims = mem.similarity(&view.img, view.vis);
+    if !view.partial && top < DECISIVE_BELOW && sims.iter().any(Option::is_some)
+        && !sims.iter().flatten().any(|&s| s >= memory::SURE) {
+        let mut flipped = view.img.clone();
+        flipped.px.reverse();
+        let reverse = mem.similarity(&flipped, [1.0 - view.vis[1], 1.0 - view.vis[0]]);
+        if reverse.iter().flatten().any(|&s| s >= memory::SURE) {
+            for (score, rotated) in sims.iter_mut().zip(reverse) {
+                if let Some(b) = rotated { *score = Some(score.map_or(b, |a| a.max(b))); }
+            }
+        }
+    }
     for (c, sim) in sims.iter().enumerate() {
         if let Some(v) = *sim {
             if v >= memory::SAME && !excluded[c] {
@@ -472,19 +485,42 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
     // mazzi di riferimento, la rete o il conteggio dei simboli (che su un mazzo nuovo sbagliano).
     let mut order: Vec<(usize, f32)> = sims.iter().enumerate().filter_map(|(c, v)| v.map(|v| (c, v))).collect();
     order.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let mut verified_memory = false;
     if let Some(&(c, v)) = order.first() {
         let second = order.get(1).map_or(f32::MIN, |o| o.1);
         if top < DECISIVE_BELOW && v >= memory::SURE && v - second >= memory::SURE_GAP && !(cfg!(test) && std::env::var_os("SENZA_DECISIVA").is_some()) {
             let top = s.iter().copied().fold(f32::MIN, f32::max);
             s[c] = s[c].max(top + 6.0);
+            verified_memory = true;
         }
+    }
+    // La concordanza tra stampe aumenta la fiducia solo se conferma
+    // l'identità già in testa dopo simboli e memoria.
+    if !view.partial && !verified_memory && !view.recovered_outline
+        && (0.65..0.95).contains(&top)
+        && !(cfg!(test) && std::env::var_os("BRIS_SENZA_CONCORDANZA").is_some()) {
+        if let Some(card) = reference::agreeing_card(&view.styles) {
+            let strongest = s.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            if s[card] == strongest {
+                s[card] += 0.75;
+            }
+        }
+    }
+    if view.recovered_outline && !verified_memory {
+        // La sagoma dà la posizione, ma non dimostra seme e valore. Finché
+        // non si ritrova in memoria, conserva l'ordine dei candidati e limita
+        // il distacco anche dopo aver escluso carte impossibili.
+        let lo = s.iter().copied().fold(f32::INFINITY, f32::min);
+        let hi = s.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let scale = (hi - lo).max(1.0);
+        for score in &mut s { *score = hi + (*score - hi) / scale; }
     }
     view.scores = s;
 }
 
 impl CardView {
     pub fn new(img: Img, vis: [f32; 2], sim: [f32; 40]) -> CardView {
-        CardView { img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim), at: [0.0; 4], styles: Vec::new(), px: [0.0; 2] }
+        CardView { recovered_outline: false, img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim), at: [0.0; 4], styles: Vec::new(), px: [0.0; 2] }
     }
 
     /// La carta più probabile fra `among`, e quanto stacca la seconda.
@@ -554,7 +590,34 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
     for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
         recognize(v, &mem);
     }
+    resolve_hand_duplicates(&mut scene.hand);
     Some(scene)
+}
+
+/// Due posizioni in mano non possono avere la stessa carta. Modifica solo
+/// una lettura già incerta e conserva il margine da confermare.
+fn resolve_hand_duplicates(hand: &mut [CardView]) {
+    if hand.len() < 2 { return; }
+    let mut certain = CardSet::EMPTY;
+    for card in hand.iter().filter(|c| !c.partial) {
+        if let Some((id, margin)) = card.best(CardSet::FULL) {
+            if margin >= 3.0 { certain.insert(id); }
+        }
+    }
+    if certain.is_empty() { return; }
+    for card in hand.iter_mut().filter(|c| !c.partial) {
+        let Some((id, margin)) = card.best(CardSet::FULL) else { continue };
+        if margin >= 1.4 || !certain.contains(id) { continue; }
+        let alternative = CardSet::FULL.minus(certain);
+        let Some((next, _)) = card.best(alternative) else { continue };
+        let plausible = card.scores[next as usize];
+        if card.scores[id as usize] - plausible <= 1.4 {
+            for taken in certain.iter() {
+                let score = &mut card.scores[taken as usize];
+                *score = score.min(plausible - 0.01);
+            }
+        }
+    }
 }
 
 /// Lettura per la scopa: mano e carte in tavola, riconosciute (None se il tavolo non si vede).
@@ -1857,6 +1920,63 @@ mod other_sites {
         (1..=10).map(|k| (cards::make(3, k - 1), load_jpg(&dir.join(format!("bastoni_{k}.jpg"))))).collect()
     }
 
+    #[test]
+    fn learned_unfamiliar_deck_rotated_and_dimmed() {
+        let mut memory = Memory::in_memory();
+        let mut deck = Vec::new();
+        for card in 0..40u8 {
+            let mut image = Img::new(CARD_W, CARD_H);
+            let mut state = u32::from(card) + 101;
+            for y in (12..CARD_H-12).step_by(12) {
+                for x in (12..CARD_W-12).step_by(12) {
+                    state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let ink = if state >> 31 == 0 { [25, 15, 20] } else { [220, 170, 90] };
+                    for row in y..y+8 { image.px[row*CARD_W+x..row*CARD_W+x+8].fill(ink); }
+                }
+            }
+            memory.remember(&image, WHOLE, card);
+            deck.push(image);
+        }
+        for (card, mut image) in deck.into_iter().enumerate() {
+            image.px.reverse();
+            for channel in image.px.iter_mut().flatten() {
+                *channel = (*channel as u16 * 9 / 10) as u8;
+            }
+            let mut view = CardView::new(image, WHOLE, [0.3; 40]);
+            recognize(&mut view, &memory);
+            assert_eq!(view.best(CardSet::FULL).unwrap().0 as usize, card);
+        }
+    }
+
+    #[test]
+    fn outline_alone_never_gives_a_large_identity_margin() {
+        let img = super::reference::card_image(1, 7);
+        let mut sims = [0.0; 40];
+        sims[7] = 0.99;
+        let mut view = CardView::new(img, WHOLE, sims);
+        view.recovered_outline = true;
+        recognize(&mut view, &Memory::in_memory());
+        let (chosen, margin) = view.best(CardSet::FULL).unwrap();
+        assert_eq!(chosen, 7);
+        assert!(margin <= 1.01);
+    }
+
+    #[test]
+    fn duplicate_hand_preserves_confirmations() {
+        let mut hand: Vec<_> = (0..3).map(|_| CardView::new(Img::new(CARD_W, CARD_H), WHOLE, [0.0; 40])).collect();
+        hand[0].scores[2] = 6.0;
+        hand[1].scores[3] = 6.0;
+        hand[2].scores[2] = 3.0;
+        hand[2].scores[3] = 2.9;
+        hand[2].scores[4] = 2.8;
+        resolve_hand_duplicates(&mut hand);
+        let (chosen, margin) = hand[2].best(CardSet::FULL).unwrap();
+        assert_eq!(chosen, 4);
+        assert!(margin < 1.4);
+        assert_eq!(hand[0].scores[2], 6.0);
+        assert_eq!(hand[1].scores[3], 6.0);
+    }
+
     fn looks() -> Vec<Look> {
         let d = Look::default();
         vec![
@@ -2217,6 +2337,31 @@ mod other_sites {
             [("sconosciuto", unknown_deck()), ("wikimedia", known_deck(0)), ("classico", known_deck(1))]
         {
             let (ok, auto, n) = run(&deck, label, writing, true);
+            println!("== {label}: giuste {ok}/{n}, senza conferma {auto}/{n}");
+        }
+    }
+
+    /// Stampe classiche con carta avorio, pigmenti meno contrastati e illustrazione
+    /// spostata leggermente nel riquadro. Si può ripetere con BRIS_SENZA_CONCORDANZA=1.
+    #[test]
+    #[ignore]
+    fn banco_stampe_classiche() {
+        for (style, label) in ["wikimedia-avorio", "classico-avorio"].into_iter().enumerate() {
+            let mut deck = known_deck(style);
+            for (_, image) in &mut deck {
+                let source = image.clone();
+                for y in 0..image.h {
+                    for x in 0..image.w {
+                        let u = (x as f32 - image.w as f32 * 0.018).max(0.0);
+                        let v = (y as f32 + image.h as f32 * 0.015).min((image.h - 1) as f32);
+                        let pixel = source.sample(u, v);
+                        image.px[y * image.w + x] = std::array::from_fn(|c| {
+                            (20.0 + pixel[c] as f32 * [0.91, 0.86, 0.78][c]) as u8
+                        });
+                    }
+                }
+            }
+            let (ok, auto, n) = run(&deck, label, false, true);
             println!("== {label}: giuste {ok}/{n}, senza conferma {auto}/{n}");
         }
     }

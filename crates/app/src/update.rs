@@ -11,11 +11,11 @@ use std::io::Read;
 
 pub const REPO: &str = "motthz/BrisMaster";
 pub const ASSET_NAME: &str = "BrisMaster-Setup.exe";
-pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
+pub const CURRENT: &str = env!("BRISMASTER_VERSION");
 
 #[derive(Clone, Debug)]
 pub struct Release {
-    pub version: semver::Version,
+    pub version: String,
     pub notes: String,
     pub asset_url: String,
     pub page_url: String,
@@ -92,7 +92,7 @@ fn check_api() -> Result<Option<Release>, String> {
         return Ok(None);
     }
     let latest = parse_version(&rel.tag_name)?;
-    let current = semver::Version::parse(CURRENT).map_err(|e| e.to_string())?;
+    let current = parse_version(CURRENT)?;
     if latest <= current {
         return Ok(None);
     }
@@ -102,7 +102,7 @@ fn check_api() -> Result<Option<Release>, String> {
         .find(|a| a.name.eq_ignore_ascii_case(ASSET_NAME))
         .ok_or_else(|| format!("la release {} non contiene {ASSET_NAME}", rel.tag_name))?;
     Ok(Some(Release {
-        version: latest,
+        version: latest.to_string().replace('+', "."),
         notes: rel.body.unwrap_or_default(),
         asset_url: asset.browser_download_url.clone(),
         page_url: rel.html_url,
@@ -116,12 +116,12 @@ fn check_page() -> Result<Option<Release>, String> {
     let page = resp.get_url().to_string();
     let tag = page.rsplit('/').next().unwrap_or_default().to_string();
     let latest = parse_version(&tag)?;
-    let current = semver::Version::parse(CURRENT).map_err(|e| e.to_string())?;
+    let current = parse_version(CURRENT)?;
     if latest <= current {
         return Ok(None);
     }
     Ok(Some(Release {
-        version: latest,
+        version: latest.to_string().replace('+', "."),
         notes: String::new(),
         asset_url: format!("https://github.com/{REPO}/releases/download/{tag}/{ASSET_NAME}"),
         page_url: page,
@@ -129,7 +129,13 @@ fn check_page() -> Result<Option<Release>, String> {
 }
 
 pub fn parse_version(tag: &str) -> Result<semver::Version, String> {
-    semver::Version::parse(tag.trim_start_matches(['v', 'V'])).map_err(|e| format!("tag {tag}: {e}"))
+    let raw = tag.trim_start_matches(['v', 'V']);
+    let revision = raw.rsplit_once('.').filter(|(base, fourth)| {
+        base.split('.').count() == 3 && base.split('.').chain(std::iter::once(*fourth))
+            .all(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+    });
+    let normalized = revision.map(|(base, fourth)| format!("{base}+{fourth}"));
+    semver::Version::parse(normalized.as_deref().unwrap_or(raw)).map_err(|e| format!("tag {tag}: {e}"))
 }
 
 /// Scarica l'installatore della nuova versione nella cartella temporanea, lo avvia (aggiorna
@@ -162,6 +168,6 @@ mod tests {
     #[test]
     fn versions_compare() {
         assert!(parse_version("v0.2.0").unwrap() > parse_version("0.1.9").unwrap());
-        assert!(parse_version("v1.0.0").unwrap() > semver::Version::parse(CURRENT).unwrap());
+        assert!(parse_version("v1.0.0").unwrap() > parse_version(CURRENT).unwrap());
     }
 }

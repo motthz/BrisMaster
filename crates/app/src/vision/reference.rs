@@ -800,6 +800,8 @@ pub fn site_style(seen: &[&[[f32; 40]]]) -> Option<usize> {
     }
     VOTES.with(|v| {
         let mut v = v.borrow_mut();
+        let mut fresh = Vec::new();
+        let mut unfamiliar = 0;
         for per in seen {
             let tops: Vec<(f32, f32)> = per
                 .iter()
@@ -812,11 +814,18 @@ pub fn site_style(seen: &[&[[f32; 40]]]) -> Option<usize> {
             let Some(b) = (0..tops.len()).max_by(|&a, &b| tops[a].0.total_cmp(&tops[b].0)) else { continue };
             let runner = tops.iter().enumerate().filter(|(i, _)| *i != b).map(|(_, p)| p.0).fold(f32::MIN, f32::max);
             if tops[b].0 >= 0.85 && tops[b].1 >= 0.08 && tops[b].0 - runner >= 0.06 {
-                v.push_back(b);
-                if v.len() > RECENT_VOTES {
-                    v.pop_front();
-                }
+                fresh.push(b);
+            } else if tops[b].0 < 0.60 {
+                unfamiliar += 1;
             }
+        }
+        if (fresh.is_empty() && unfamiliar >= 2) || (fresh.len() >= 2
+            && fresh.iter().all(|&s| s == fresh[0]) && v.iter().all(|&s| s != fresh[0])) {
+            v.clear();
+        }
+        v.extend(fresh);
+        while v.len() > RECENT_VOTES {
+            v.pop_front();
         }
         let mut count = vec![0usize; NT / 40];
         for &x in v.iter() {
@@ -830,6 +839,32 @@ pub fn site_style(seen: &[&[[f32; 40]]]) -> Option<usize> {
 /// Dimentica lo stile del sito riconosciuto finora (un'altra lettura indipendente).
 pub fn forget_style() {
     VOTES.with(|v| v.borrow_mut().clear());
+}
+
+/// Identità sostenuta da più stampe, con una distanza minima dalla seconda
+/// carta in ciascuna. Una stampa molto convincente per un'altra carta
+/// impedisce di usare questo indizio.
+pub fn agreeing_card(styles: &[[f32; 40]]) -> Option<usize> {
+    let mut votes = [0u8; 40];
+    let mut strongest = (0usize, 0.0f32);
+    for style in styles {
+        let (mut best, mut second) = ((0, f32::NEG_INFINITY), f32::NEG_INFINITY);
+        for (card, &score) in style.iter().enumerate() {
+            if score > best.1 {
+                second = best.1;
+                best = (card, score);
+            } else {
+                second = second.max(score);
+            }
+        }
+        if best.1 > strongest.1 {
+            strongest = best;
+        }
+        if best.1 >= 0.60 && best.1 - second >= 0.075 {
+            votes[best.0] += 1;
+        }
+    }
+    (votes[strongest.0] >= 2).then_some(strongest.0)
 }
 
 /// La somiglianza di una carta tenendo conto dello stile del sito: gli altri stili pesano meno.
@@ -849,6 +884,41 @@ pub fn with_style(per_style: &[[f32; 40]], style: usize) -> [f32; 40] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corroborates_an_identity_across_distinct_prints() {
+        let mut a = [0.45; 40];
+        let mut b = a;
+        let mut conflict = a;
+        a[13] = 0.72;
+        b[13] = 0.68;
+        conflict[3] = 0.67;
+        assert_eq!(agreeing_card(&[a, b, conflict]), Some(13));
+        conflict[3] = 0.86;
+        assert_eq!(agreeing_card(&[a, b, conflict]), None);
+        b[8] = 0.65;
+        assert_eq!(agreeing_card(&[a, b]), None);
+    }
+
+    #[test]
+    fn style_recovers_after_deck_changes() {
+        forget_style();
+        let clear = |style: usize| {
+            let mut scores = [[0.3; 40]; STYLES.len()];
+            scores[style][0] = 0.95;
+            scores
+        };
+        let a = clear(0);
+        let b = clear(1);
+        let weak = [[0.4; 40]; STYLES.len()];
+        for _ in 0..3 { site_style(&[&a[..]; 4]); }
+        assert_eq!(site_style(&[&weak]), Some(0));
+        assert_eq!(site_style(&[&b[..]; 2]), None);
+        assert_eq!(site_style(&[&b[..]; 2]), Some(1));
+        assert_eq!(site_style(&[&weak[..]; 2]), None);
+        assert_eq!(site_style(&[&a[..]; 4]), Some(0));
+        forget_style();
+    }
 
     /// Ogni carta del foglio, raddrizzata come quelle dello schermo, riconosce sé stessa.
     #[test]

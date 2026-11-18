@@ -293,3 +293,25 @@ pub fn table(deal: &Deal, look: &Look) -> Img {
     }
     img
 }
+
+#[test]
+fn distinguishes_two_rows_from_a_nearby_play() {
+    let cards: Vec<_> = (0..3).map(|id| super::reference::card_image(1, id)).collect();
+    let look = Look { card_h: 205.0, aspect: Some(0.7), ..Look::default() };
+    let mut deal = Deal {
+        hand: vec![&cards[0], &cards[1]], opp: None, mine: Some(&cards[2]), trump: None, deck: false,
+    };
+    super::detect::forget_reading_state();
+    let scene = super::detect::scene(&table(&deal, &look));
+    assert_eq!(scene.hand.len(), 2);
+    assert!(scene.my_slot.is_some());
+
+    deal.mine = None;
+    let mut img = table(&deal, &look);
+    let h = look.card_h;
+    let w = h * look.aspect.unwrap();
+    draw_card(&mut img, &cards[2], &look, W as f32 / 2.0 - (w + 12.0)/2.0,
+              H as f32 - h*0.55 - 10.0 - h - 8.0, h, 0.0);
+    super::detect::forget_reading_state();
+    assert_eq!(super::detect::scene(&img).hand.len(), 3);
+}

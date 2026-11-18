@@ -470,3 +470,79 @@ weight.
 
 Before publishing: unit tests, `briscola_extreme_games`, `partite_registrate` on the recorded
 games compared with the previous version, and `mazzi_sconosciuti` with and without `MEMORIA`.
+
+### 14. Per-case comparison for release candidates
+
+Run each benchmark in both worktrees with the same Rust toolchain, input files,
+environment variables and test arguments. Keep separate build directories and
+save each command's full output. Example for the 17 historical synthetic cases:
+
+```sh
+cargo test --locked --release -p brismaster briscola_extreme_games -- --ignored --nocapture --test-threads=1 > estreme.log 2>&1
+python scripts/confronta-riconoscimento.py estreme BASELINE_LOG CANDIDATE_LOG --casi 17
+```
+
+Run the same command with the expected case count for the reserve seeds. Use
+`replay` for `partite_registrate` (20 original recordings), and `mazzi` for
+`mazzi_sconosciuti` (8 original decks). Run the replay both with and without
+`NESSUN_UTENTE=1`, and the decks both with and without `MEMORIA=1`. The
+unknown-deck benchmark starts at v0.6.9. Run each configuration into its own log.
+The original inputs are external. An absent dataset leaves its check pending.
+
+The comparator returns 1 if a case regresses and 2 if test completion, case count
+or case identities cannot be verified. Replay comparison uses the metrics
+reported by the historical test. It records whether a divergent trick or an
+error was reported. The historical log caps the errors it shows and reports
+only the first divergent trick, so those fields do not count all wrong events.
+The blocked streak is compared at the precision printed by the test.
+
+### 15. Reproduced baseline (v0.6.8 and v0.6.9)
+
+Linux, rustc 1.100.0, release profile with `--locked`, independent worktrees
+at `0b8038577963f336d59b3981de701ee4e62b9c32` and
+`531426fb505e4b1a2f915c68447804ffc7a9c020`. The compiled binaries contained
+their respective source paths. No wall-clock comparison was made because
+several suites ran concurrently.
+
+| Suite | v0.6.8 | v0.6.9 |
+|---|---|---|
+| App tests, excluding ignored benchmarks | 91 passed | 92 passed in an isolated rerun |
+| 17 historical extreme games | 17/17 | 17/17, same interventions and delayed checkpoints in every case |
+| `banco_siti` on the 3 bundled test decks | 198/198 correct and automatic | 198/198, identical per table and role |
+| Four reserve games with the default validation seed | 3/4 | 3/4, same failure at the same play |
+| Original recordings, external decks and spoglio/display | Pending | Pending |
+
+The first concurrent v0.6.9 app run failed in `records_games` at the assertion
+that recording was off. The complete rerun passed with a dedicated temporary
+directory and a fresh `USERPROFILE`. Use independent temporary and profile
+directories for parallel baseline runs.
+
+Historical extreme games with an intervention or a delayed checkpoint had
+the following counts in both releases. Each of the other eight cases had zero
+on both metrics.
+
+| Case | Seed | User interventions | Delayed checkpoints |
+|---|---:|---:|---:|
+| piccole | 1201 | 1 | 0 |
+| grandi | 1202 | 0 | 2 |
+| ventaglio-negativo | 1205 | 0 | 18 |
+| ventaglio-positivo | 1206 | 0 | 1 |
+| tavolo-chiaro | 1207 | 1 | 1 |
+| schermo-scuro | 1209 | 5 | 8 |
+| grigio | 1212 | 1 | 0 |
+| poco-sature | 1213 | 1 | 2 |
+| briscola-coperta | 1215 | 1 | 1 |
+
+The reserve failure is `riserva-freddo`, seed `99003`. To reproduce, set
+`BRIS_STRESS_VALIDAZIONE=1`, `BRIS_STRESS_CASO=riserva-freddo` and
+`BRIS_STRESS_LOG=1` for the extreme benchmark. From frame 6 the played
+Fante di Coppe appears in the detected hand and the own-play slot is empty.
+By frame 10 the true score is 21–12 and the assistant reports 11–12. At
+frame 15 the test halts because recovery asks to insert Quattro di Spade
+while it is already unavailable. This gives a deterministic case to trace
+through role assignment and recovery.
+
+For `schermo-scuro`, the classifier reports Re di Bastoni in the opponent
+slot at frames 47 and 48 with margin 5.47, but the assistant is still waiting
+for the opponent after the cards clear at frame 49. This is a second
+reproduction for distinguishing classification from state updates.

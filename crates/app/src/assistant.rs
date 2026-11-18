@@ -4251,7 +4251,7 @@ mod tests {
             let v = ((i / 7) as u32).wrapping_mul(c as u32 + 3).wrapping_mul(2654435761).wrapping_shr(24) as u8;
             *p = [v, v / 2, 255 - v];
         }
-        CardView { img, partial: false, vis: crate::vision::WHOLE, sim: [0.0; 40], scores, at: [0.0; 4], styles: Vec::new(), px: [0.0; 2] }
+        CardView { recovered_outline: false, img, partial: false, vis: crate::vision::WHOLE, sim: [0.0; 40], scores, at: [0.0; 4], styles: Vec::new(), px: [0.0; 2] }
     }
 
     /// Ogni lettura arriva due volte, come dallo schermo (la prima si scarta per prudenza).

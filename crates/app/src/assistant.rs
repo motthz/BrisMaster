@@ -335,7 +335,7 @@ const AUTO_ACCEPT: u32 = 6;
 const STALL: u32 = 8;
 /// Scatti (circa un terzo di secondo l'uno) di partita diversa dallo schermo prima di ripartire da
 /// quello che si vede anche senza letture sicure.
-const ADOPT: u32 = 15;
+const ADOPT: u32 = 30;
 fn adopt_after() -> u32 {
     if cfg!(test) {
         if let Some(v) = std::env::var("ADOPT").ok().and_then(|v| v.parse().ok()) {

@@ -121,6 +121,10 @@ fn ncc(a: &[u8], b: &[u8], (r0, r1): (usize, usize)) -> f32 {
 /// Somiglianza oltre la quale la carta è considerata la stessa (fra carte diverse dello stesso
 /// mazzo si arriva al massimo a 0.8: il sei e il sette di denari).
 pub const SAME: f32 = 0.9;
+/// Somiglianza oltre la quale l'immagine ricordata è proprio la stessa carta dello stesso sito.
+pub const SURE: f32 = 0.95;
+/// Quanto deve staccare le altre carte ricordate per essere decisiva.
+pub const SURE_GAP: f32 = 0.04;
 
 /// Somiglianza fra due carte raddrizzate, sulla fascia visibile `vis`.
 /// Poco contrasto: fra i punti più chiari e quelli più scuri della carta c'è poca differenza.

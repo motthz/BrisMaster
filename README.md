@@ -27,6 +27,7 @@ tavolo è aggiornato; errori e calcoli interrotti hanno percorsi di ripresa.
 Dopo un tratto giocato a tavolo nascosto, l'app indica se punti
 e carte mancanti non sono verificati; il recupero si può annullare con Ctrl+Z.
 Variabili, prove e limiti sono descritti in [verifica della briscola 0.5.11](docs/BRISCOLA_0.5.11.md).
+Come funziona il riconoscimento delle carte dallo schermo, per chi vuole lavorarci: [docs/RICONOSCIMENTO-CARTE.md](docs/RICONOSCIMENTO-CARTE.md).
 
 - **Assistente**: inserisci a mano la briscola, chi comincia, le tue carte, le carte che peschi e quelle giocate dall'avversario. Per ogni tua mossa il motore indica la carta da giocare, la probabilità di vittoria di ogni alternativa e una spiegazione a parole (prendere o lasciare, tagliare, quante briscole e carichi sono ancora fuori, quanti punti ti mancano). Le carte si inseriscono con un clic sulla griglia o da tastiera, senza cliccare da nessuna parte né premere Invio: scrivi valore e seme (`3c`, `AD`, `Rs`) e la carta entra appena digiti il seme. Per chi comincia premi 1 (tu) o 2 (l'avversario); al tuo turno **Spazio** inserisce la carta consigliata e 1, 2, 3 la carta in quella posizione della mano. Ogni passo si annulla con Ctrl+Z. L'app tiene il conto delle carte uscite, dei punti e del mazzo, sa da sola a chi va la briscola scoperta all'ultima pescata e inserisce da sola le carte obbligate (l'ultima presa). Con **Finestra compatta** l'app diventa una finestra stretta con solo la tua mano, il consiglio e l'inserimento, da tenere accanto al browser (volendo sempre in primo piano).
 

@@ -481,6 +481,91 @@ fn balance(card: &mut Img) {
 /// chiara e poco colorata come la carta: una carta ha la cornice bianca tutta attorno, una scritta
 /// o una cifra ha attorno lo sfondo. L'inchiostro è la frazione dell'interno disegnata a colori:
 /// le napoletane hanno sempre figure e semi colorati, le scritte sono quasi sempre di un colore solo.
+/// La frazione dell'interno della carta (tolta la cornice) chiara come la cornice: il fondo
+/// bianco attorno ai semi e alle figure. Il dorso di una carta (un disegno che riempie tutto) e i
+/// riquadri colorati del sito non ne hanno.
+pub fn inner_paper(card: &Img) -> f32 {
+    let lum = |p: [u8; 3]| (p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10;
+    let mut rim: Vec<u32> = (0..CARD_H).step_by(4).flat_map(|y| [lum(card.at(2, y)), lum(card.at(CARD_W - 3, y))]).collect();
+    rim.sort_unstable();
+    let white = rim[rim.len() / 2] as f32;
+    let (mut n, mut w) = (0, 0);
+    for y in (CARD_H / 8..CARD_H - CARD_H / 8).step_by(3) {
+        for x in (CARD_W / 6..CARD_W - CARD_W / 6).step_by(3) {
+            let p = card.at(x, y);
+            let (_, sat, _) = hsv(p);
+            n += 1;
+            if lum(p) as f32 >= 0.85 * white && sat < 60 {
+                w += 1;
+            }
+        }
+    }
+    w as f32 / n.max(1) as f32
+}
+
+/// Quanti colori diversi (tinte ben distinte) ha il disegno della carta: le figure delle carte
+/// italiane ne hanno molti (rosso, giallo, blu, verde), il dorso di una carta uno o due.
+pub fn hues(card: &Img) -> usize {
+    let (bins, n) = hue_bins(card);
+    if n < 30 {
+        return 0;
+    }
+    bins.iter().filter(|&&b| b as f32 >= 0.06 * n as f32).count()
+}
+
+/// La parte della carta (senza la cornice) coperta di disegno colorato: anche l'asso più spoglio di
+/// un mazzo vero ne ha più di una finestrella bianca con scritte e un'icona.
+pub fn drawn_color(card: &Img) -> f32 {
+    let (mut n, mut c) = (0, 0);
+    for y in (CARD_H / 10..CARD_H - CARD_H / 10).step_by(2) {
+        for x in (CARD_W / 8..CARD_W - CARD_W / 8).step_by(2) {
+            let (_, sat, v) = hsv(card.at(x, y));
+            n += 1;
+            if sat >= 80 && v >= 60 {
+                c += 1;
+            }
+        }
+    }
+    c as f32 / n.max(1) as f32
+}
+
+/// Colore minimo (vedi `drawn_color`) di una carta di un mazzo sconosciuto.
+const MIN_COLORED: f32 = 0.12;
+
+/// Gruppi di colori ben distinti nel disegno (tinte vicine fanno un gruppo solo): il disegno di una
+/// carta ne ha almeno due (rosso e blu, giallo e verde...), una scritta di un solo colore uno.
+fn hue_groups(card: &Img) -> usize {
+    let (bins, n) = hue_bins(card);
+    if n < 30 {
+        return 0;
+    }
+    let on: Vec<bool> = bins.iter().map(|&b| b as f32 >= 0.06 * n as f32).collect();
+    // Inizi di gruppo: una tinta presente con la precedente (in cerchio) assente.
+    let starts = (0..12).filter(|&i| on[i] && !on[(i + 11) % 12]).count();
+    if starts == 0 && on.iter().any(|&o| o) { 1 } else { starts }
+}
+
+/// Un disegno di più colori: almeno tre tinte, o due ben distinte (un numero o una scritta di un
+/// colore solo, anche grande, no).
+fn many_colors(card: &Img) -> bool {
+    off("SENZA_GRUPPI") || hues(card) >= 3 || hue_groups(card) >= 2
+}
+
+fn hue_bins(card: &Img) -> ([u32; 12], u32) {
+    let mut bins = [0u32; 12];
+    let mut n = 0;
+    for y in (CARD_H / 10..CARD_H - CARD_H / 10).step_by(2) {
+        for x in (CARD_W / 8..CARD_W - CARD_W / 8).step_by(2) {
+            let (h, sat, v) = hsv(card.at(x, y));
+            if sat >= 80 && v >= 60 {
+                bins[((h / 30.0) as usize).min(11)] += 1;
+                n += 1;
+            }
+        }
+    }
+    (bins, n)
+}
+
 pub fn traits(card: &Img, vis: [f32; 2]) -> (f32, f32) {
     let (y0, y1) = ((vis[0] * CARD_H as f32) as usize, ((vis[1] * CARD_H as f32) as usize).min(CARD_H));
     if y1 <= y0 + 8 {
@@ -615,11 +700,134 @@ pub struct Found {
     pub score: f32,
     /// Frazione dell'interno coi colori del tavolo attorno (vedi `table_inside`).
     pub inside: f32,
+    /// I lati della carta staccati da quello che c'è fuori (vedi `sides_apart`).
+    pub apart: [bool; 4],
+    /// Presa da sola con le regole dei mazzi sconosciuti (vedi `unknown_deck_card`).
+    pub alone: bool,
+}
+
+/// Se due lati opposti del rettangolo hanno fuori un colore diverso dal bordo appena dentro: una
+/// carta spicca sul tavolo almeno sopra e sotto (o ai due lati), anche in una mano a ventaglio; un
+/// rettangolo preso in mezzo o in un angolo di una finestrella bianca no.
+fn sides_apart(img: &Img, r: &RotRect) -> [bool; 4] {
+    let at = |a: f32, b: f32| -> Option<[f32; 3]> {
+        let (x, y) = (r.cx + a * r.u.0 + b * r.v.0, r.cy + a * r.u.1 + b * r.v.1);
+        if x < 0.0 || y < 0.0 || x >= img.w as f32 || y >= img.h as f32 {
+            return None;
+        }
+        Some(img.at(x as usize, y as usize).map(|c| c as f32))
+    };
+    let d = (r.short() * 0.04).max(3.0);
+    let mut apart = [false; 4];
+    for side in 0..4 {
+        let (mut n, mut diff) = (0, 0);
+        for k in 1..10 {
+            let t = k as f32 / 10.0 * 2.0 - 1.0;
+            let (pin, pout) = match side {
+                0 => ((t * r.hw * 0.8, -r.hh + d), (t * r.hw * 0.8, -r.hh - d)),
+                1 => ((t * r.hw * 0.8, r.hh - d), (t * r.hw * 0.8, r.hh + d)),
+                2 => ((-r.hw + d, t * r.hh * 0.8), (-r.hw - d, t * r.hh * 0.8)),
+                _ => ((r.hw - d, t * r.hh * 0.8), (r.hw + d, t * r.hh * 0.8)),
+            };
+            let (Some(i), Some(o)) = (at(pin.0, pin.1), at(pout.0, pout.1)) else { continue };
+            n += 1;
+            if (0..3).map(|c| (i[c] - o[c]).abs()).sum::<f32>() > 60.0 {
+                diff += 1;
+            }
+        }
+        // (Fuori dallo schermo conta come staccato: la carta tagliata dal bordo della cattura.)
+        apart[side] = n == 0 || diff * 2 >= n;
+    }
+    apart
+}
+
+/// Il lato `side` (vedi `sides_apart`) non è un bordo ma un taglio dentro una carta più grande: i
+/// due lati vicini continuano oltre, staccati dal tavolo come dentro il rettangolo (una carta
+/// disegnata larga presa a metà).
+fn continues_beyond(img: &Img, r: &RotRect, side: usize) -> bool {
+    let at = |a: f32, b: f32| -> Option<[f32; 3]> {
+        let (x, y) = (r.cx + a * r.u.0 + b * r.v.0, r.cy + a * r.u.1 + b * r.v.1);
+        if x < 0.0 || y < 0.0 || x >= img.w as f32 || y >= img.h as f32 {
+            return None;
+        }
+        Some(img.at(x as usize, y as usize).map(|c| c as f32))
+    };
+    let d = (r.short() * 0.04).max(3.0);
+    let ext = r.short() * 0.5;
+    let (mut n, mut diff) = (0, 0);
+    for k in 1..=6 {
+        let e = k as f32 / 6.0 * ext;
+        for lat in [-1.0f32, 1.0] {
+            let (pin, pout) = match side {
+                0 => ((lat * (r.hw - d), -r.hh - e), (lat * (r.hw + d), -r.hh - e)),
+                1 => ((lat * (r.hw - d), r.hh + e), (lat * (r.hw + d), r.hh + e)),
+                2 => ((-r.hw - e, lat * (r.hh - d)), (-r.hw - e, lat * (r.hh + d))),
+                _ => ((r.hw + e, lat * (r.hh - d)), (r.hw + e, lat * (r.hh + d))),
+            };
+            let (Some(i), Some(o)) = (at(pin.0, pin.1), at(pout.0, pout.1)) else { continue };
+            n += 1;
+            if (0..3).map(|c| (i[c] - o[c]).abs()).sum::<f32>() > 60.0 {
+                diff += 1;
+            }
+        }
+    }
+    n > 0 && diff * 3 >= n * 2
+}
+
+/// Lungo il lato `side`, appena dentro, c'è la cornice chiara della carta (non il dorso del mazzo o
+/// un'altra cosa colorata che il rettangolo comprende per sbaglio).
+fn paper_inside(img: &Img, r: &RotRect, side: usize) -> bool {
+    let at = |a: f32, b: f32| -> Option<[u8; 3]> {
+        let (x, y) = (r.cx + a * r.u.0 + b * r.v.0, r.cy + a * r.u.1 + b * r.v.1);
+        if x < 0.0 || y < 0.0 || x >= img.w as f32 || y >= img.h as f32 {
+            return None;
+        }
+        Some(img.at(x as usize, y as usize))
+    };
+    let d = (r.short() * 0.04).max(3.0);
+    let (mut n, mut paper) = (0, 0);
+    for k in 1..10 {
+        let t = k as f32 / 10.0 * 2.0 - 1.0;
+        let p = match side {
+            0 => (t * r.hw * 0.8, -r.hh + d),
+            1 => (t * r.hw * 0.8, r.hh - d),
+            2 => (-r.hw + d, t * r.hh * 0.8),
+            _ => (r.hw - d, t * r.hh * 0.8),
+        };
+        let Some(c) = at(p.0, p.1) else { continue };
+        n += 1;
+        let (_, sat, v) = hsv(c);
+        if sat < 60 && v >= 150 {
+            paper += 1;
+        }
+    }
+    n == 0 || paper * 3 >= n * 2
+}
+
+/// (Prove: interruttori per misurare ciascuna regola delle carte dei mazzi sconosciuti.)
+fn off(name: &str) -> bool {
+    cfg!(test) && std::env::var_os(name).is_some()
 }
 
 impl Found {
+    /// Staccata dal tavolo su due lati opposti (una carta in una mano a ventaglio).
+    fn apart_opposite(&self) -> bool {
+        off("SENZA_LATI") || (self.apart[0] && self.apart[1]) || (self.apart[2] && self.apart[3])
+    }
+
+    /// Staccata dal tavolo su almeno tre lati (una carta da sola).
+    fn apart_alone(&self) -> bool {
+        off("SENZA_LATI") || self.apart.iter().filter(|&&a| a).count() >= 3
+    }
+
     pub fn partial(&self) -> bool {
         self.view.partial
+    }
+
+    /// Accettata con `accepted(ACCEPT)`: sotto la soglia vuol dire con le regole dei mazzi
+    /// sconosciuti.
+    fn mark_alone(self) -> Found {
+        Found { alone: self.score < ACCEPT, ..self }
     }
 
     /// Somiglia abbastanza a una carta (almeno `min`) e ne ha l'aspetto: la cornice chiara tutta
@@ -627,7 +835,36 @@ impl Found {
     /// somiglia molto: una carta sfocata, un po' storta o tagliata male) e un po' di colore.
     /// Scritte, cifre, finestrelle e loghi possono somigliare per caso a una carta, non averne la
     /// cornice e i colori.
+    /// Una carta di un mazzo sconosciuto (vedi `as_full`): cornice bianca quasi tutta attorno,
+    /// disegno colorato e niente tavolo dentro, anche se non somiglia a nessuna carta nota.
+    fn unknown_deck_card(&self) -> bool {
+        if off("SENZA_SCONOSCIUTA") || no_unknown() {
+            return false;
+        }
+        let (border, ink) = traits(&self.view.img, self.view.vis);
+        border >= 0.9 && ink >= 0.05 && self.inside < 0.12 && self.view.vis == WHOLE && self.apart_alone() && (off("SENZA_COLORE") || drawn_color(&self.view.img) >= MIN_COLORED) && many_colors(&self.view.img) && (inner_paper(&self.view.img) >= 0.2 || hues(&self.view.img) >= 3)
+    }
+
+    /// Come `unknown_deck_card`, dentro una zona che contiene già carte della misura giusta (la mano
+    /// a ventaglio, le carte sovrapposte in tavola): la cornice deve essere bianca tutta attorno e
+    /// il fondo bianco, ma il colore del tavolo dentro può essere nel disegno (bastoni verdi su un
+    /// panno verde).
+    fn unknown_in_group(&self) -> bool {
+        if no_unknown() {
+            return false;
+        }
+        let (border, ink) = traits(&self.view.img, self.view.vis);
+        border >= 0.95 && ink >= 0.05 && self.inside < 0.3 && self.view.vis == WHOLE && self.apart_opposite() && (off("SENZA_COLORE") || drawn_color(&self.view.img) >= MIN_COLORED) && many_colors(&self.view.img) && (inner_paper(&self.view.img) >= 0.25 || hues(&self.view.img) >= 3)
+    }
+
     fn accepted(&self, min: f32) -> bool {
+        if self.score < min && self.unknown_deck_card() {
+            return true;
+        }
+        if self.score < min && std::env::var_os("SCARTI").is_some() {
+            let (border, ink) = traits(&self.view.img, self.view.vis);
+            eprintln!("    rifiutata a {:.0},{:.0} {:.0}x{:.0} vis {:?}: punteggio {:.2} cornice {border:.2} disegno {ink:.2} tavolo {:.2} fondo {:.2}", self.rect.cx, self.rect.cy, self.rect.long(), self.rect.short(), self.view.vis, self.score, self.inside, inner_paper(&self.view.img));
+        }
         let (border, ink) = traits(&self.view.img, self.view.vis);
         // Con la cornice tutta attorno basta la somiglianza. Con la cornice incerta (carta sfocata,
         // toccata da un'altra, tagliata male; ma anche il riquadro di una lettera o di una scritta)
@@ -689,7 +926,18 @@ impl Try {
         view.px = [self.rect.long(), self.rect.short()];
         view.partial |= self.cols != WHOLE;
         view.at = self.rect.bounds(img);
-        Found { rect: self.rect, view, score, inside }
+        let mut apart = sides_apart(img, &self.rect);
+        // Un lato che è un taglio dentro una carta più grande, o che dentro non ha la cornice della
+        // carta (il rettangolo comprende il mazzo), non conta come staccato e la carta non è intera:
+        // si segna come non staccata da nessun lato.
+        if !off("SENZA_PEZZI") && apart.iter().filter(|&&a| a).count() == 3 {
+            if let Some(cut) = (0..4).find(|&s| !apart[s]) {
+                if continues_beyond(img, &self.rect, cut) || !paper_inside(img, &self.rect, cut) {
+                    apart = [false; 4];
+                }
+            }
+        }
+        Found { rect: self.rect, view, score, inside, apart, alone: false }
     }
 }
 
@@ -700,13 +948,165 @@ fn as_full(img: &Img, r: &RotRect) -> Option<Found> {
     // Il verso si sceglie col confronto veloce; quello completo si fa solo per il verso scelto.
     let up = reference::quick_tops(&warp(img, r), &[WHOLE])[0];
     let down = reference::quick_tops(&warp(img, &r.flipped()), &[WHOLE])[0];
+    // Un mazzo mai visto non somiglia a nessuna carta di riferimento, ma resta una carta: un
+    // rettangolo con le proporzioni di una carta, la cornice bianca tutta attorno e dentro un
+    // disegno colorato (non il tavolo). Si legge comunque; quale carta sia lo dice il confronto, con
+    // poca sicurezza.
+    if up.max(down) < 0.25 && card_shaped(r) {
+        let f = Try::new(img, *r, WHOLE).finish(img);
+        if std::env::var_os("SCARTI").is_some() {
+            let (border, ink) = traits(&f.view.img, f.view.vis);
+            eprintln!("    sconosciuta? a {:.0},{:.0} {:.0}x{:.0}: cornice {border:.2} disegno {ink:.2} tavolo dentro {:.2} fondo {:.2} lati {:?} colore {:.2} -> {}", r.cx, r.cy, r.long(), r.short(), f.inside, inner_paper(&f.view.img), f.apart, drawn_color(&f.view.img), f.unknown_deck_card());
+        }
+        if f.unknown_deck_card() {
+            return Some(Found { alone: true, ..f });
+        }
+    }
     if up.max(down) < 0.25 {
+        if std::env::var_os("SCARTI").is_some() {
+            eprintln!("    scartata subito a {:.0},{:.0} {:.0}x{:.0}: veloce {:.2}", r.cx, r.cy, r.long(), r.short(), up.max(down));
+        }
         return None;
     }
     let rect = if down > up + 0.03 { r.flipped() } else { *r };
     let f = Try::new(img, rect, WHOLE).finish(img);
-    f.accepted(ACCEPT).then_some(f)
+    if std::env::var_os("SCARTI").is_some() && !f.accepted(ACCEPT) {
+        let (border, ink) = traits(&f.view.img, f.view.vis);
+        eprintln!("    scartata a {:.0},{:.0} {:.0}x{:.0}: veloce {:.2} punteggio {:.2} cornice {border:.2} disegno {ink:.2} tavolo dentro {:.2}", r.cx, r.cy, r.long(), r.short(), up.max(down), f.score, f.inside);
+    }
+    f.accepted(ACCEPT).then(|| f.mark_alone())
 }
+
+/// Fra le posizioni possibili di una carta di un mazzo sconosciuto (che non somiglia a nessuna
+/// carta di riferimento), la prima che ha cornice, disegno e fondo di una carta.
+fn unknown_pick(img: &Img, rects: &[RotRect]) -> Option<Found> {
+    if !UNKNOWN_IN_GROUP || off("SENZA_NELGRUPPO") || no_unknown() {
+        return None;
+    }
+    let found = par_chunks(rects, |r| {
+        let f = Try::new(img, *r, WHOLE).finish(img);
+        if std::env::var_os("SCARTI").is_some() && f.unknown_in_group() {
+            eprintln!("    nel gruppo a {:.0},{:.0} lati {:?}", f.rect.cx, f.rect.cy, f.apart);
+        }
+        f.unknown_in_group().then_some(f)
+    });
+    found.into_iter().flatten().max_by(|a, b| a.score.total_cmp(&b.score))
+}
+
+/// Si cercano anche le carte dai contorni (vedi `edge_cards`).
+const EDGES: bool = true;
+
+/// Somiglianza oltre la quale una carta trovata è di un mazzo noto.
+const KNOWN_DECK: f32 = 0.6;
+
+/// Le carte dritte trovate dai contorni: rettangoli della misura delle carte già trovate (lato
+/// lungo e corto mediani) con tutti e quattro i lati lungo un bordo netto dell'immagine, lontani
+/// dalle carte già trovate, e che dentro sono una carta (cornice bianca; fondo bianco o i molti
+/// colori di una figura: non il dorso di una carta).
+fn edge_cards(img: &Img, a: &Analysis) -> Vec<Found> {
+    let mut ls: Vec<f32> = a.cards.iter().filter(|c| !c.partial() && !c.rect.landscape()).map(|c| c.rect.long()).collect();
+    let mut ws: Vec<f32> = a.cards.iter().filter(|c| !c.partial() && !c.rect.landscape()).map(|c| c.rect.short()).collect();
+    if ls.is_empty() {
+        return Vec::new();
+    }
+    ls.sort_by(|x, y| x.total_cmp(y));
+    ws.sort_by(|x, y| x.total_cmp(y));
+    let (l, w) = (ls[ls.len() / 2], ws[ws.len() / 2]);
+    if l < 40.0 || w < 24.0 {
+        return Vec::new();
+    }
+    let (iw, ih) = (img.w, img.h);
+    let lum: Vec<i32> = img.px.iter().map(|p| (p[0] as i32 * 3 + p[1] as i32 * 6 + p[2] as i32) / 10).collect();
+    // Bordi verticali e orizzontali netti, e le loro somme cumulate lungo le colonne e le righe.
+    const T: i32 = 28;
+    let mut vcum = vec![0u32; iw * (ih + 1)];
+    let mut hcum = vec![0u32; ih * (iw + 1)];
+    for x in 1..iw.saturating_sub(1) {
+        for y in 0..ih {
+            let e = ((lum[y * iw + x + 1] - lum[y * iw + x - 1]).abs() >= T) as u32;
+            vcum[x * (ih + 1) + y + 1] = vcum[x * (ih + 1) + y] + e;
+        }
+    }
+    for y in 1..ih.saturating_sub(1) {
+        for x in 0..iw {
+            let e = ((lum[(y + 1) * iw + x] - lum[(y - 1) * iw + x]).abs() >= T) as u32;
+            hcum[y * (iw + 1) + x + 1] = hcum[y * (iw + 1) + x] + e;
+        }
+    }
+    // Quanto di un lato (colonna x da y0 a y1, o riga y da x0 a x1) è bordo, cercando di un pixel
+    // attorno.
+    let vside = |x: i32, y0: usize, y1: usize| -> f32 {
+        (x - 1..=x + 1)
+            .filter(|&xx| xx >= 1 && (xx as usize) < iw - 1)
+            .map(|xx| {
+                let c = xx as usize * (ih + 1);
+                (vcum[c + y1] - vcum[c + y0]) as f32 / (y1 - y0).max(1) as f32
+            })
+            .fold(0.0, f32::max)
+    };
+    let hside = |y: i32, x0: usize, x1: usize| -> f32 {
+        (y - 1..=y + 1)
+            .filter(|&yy| yy >= 1 && (yy as usize) < ih - 1)
+            .map(|yy| {
+                let c = yy as usize * (iw + 1);
+                (hcum[c + x1] - hcum[c + x0]) as f32 / (x1 - x0).max(1) as f32
+            })
+            .fold(0.0, f32::max)
+    };
+    let (hw, hh) = (w / 2.0, l / 2.0);
+    let step = 2usize;
+    let mut cands: Vec<(f32, f32, f32)> = Vec::new();
+    let (xs, xe) = (hw.ceil() as usize + 2, (iw as f32 - hw) as usize - 2);
+    let (ys, ye) = (hh.ceil() as usize + 2, (ih as f32 - hh) as usize - 2);
+    if xe <= xs || ye <= ys {
+        return Vec::new();
+    }
+    for cy in (ys..ye).step_by(step) {
+        for cx in (xs..xe).step_by(step) {
+            let (x0, x1) = ((cx as f32 - hw) as i32, (cx as f32 + hw) as i32);
+            let (y0, y1) = ((cy as f32 - hh) as i32, (cy as f32 + hh) as i32);
+            // (Gli angoli delle carte sono arrotondati: si guarda il lato senza le punte.)
+            let (iy0, iy1) = ((y0 as f32 + 0.1 * l) as usize, (y1 as f32 - 0.1 * l) as usize);
+            let (ix0, ix1) = ((x0 as f32 + 0.15 * w) as usize, (x1 as f32 - 0.15 * w) as usize);
+            let left = vside(x0, iy0, iy1);
+            if left < 0.7 {
+                continue;
+            }
+            let right = vside(x1, iy0, iy1);
+            if right < 0.7 {
+                continue;
+            }
+            let top = hside(y0, ix0, ix1);
+            let bottom = hside(y1, ix0, ix1);
+            let score = left.min(right).min(top).min(bottom);
+            if score >= 0.7 {
+                cands.push((score, cx as f32, cy as f32));
+            }
+        }
+    }
+    cands.sort_by(|p, q| q.0.total_cmp(&p.0));
+    let mut out: Vec<Found> = Vec::new();
+    for (_, cx, cy) in cands {
+        let near = |r: &RotRect| (r.cx - cx).abs() < 0.6 * w && (r.cy - cy).abs() < 0.6 * l;
+        if a.cards.iter().any(|c| near(&c.rect)) || out.iter().any(|f| near(&f.rect)) {
+            continue;
+        }
+        let rect = RotRect { cx, cy, u: (1.0, 0.0), v: (0.0, 1.0), hw, hh };
+        let f = Try::new(img, rect, WHOLE).finish(img);
+        let (border, ink) = traits(&f.view.img, f.view.vis);
+        let face = inner_paper(&f.view.img) >= 0.2 || hues(&f.view.img) >= 3;
+        if border >= 0.85 && ink >= 0.05 && face && f.apart_alone() && (off("SENZA_COLORE") || drawn_color(&f.view.img) >= MIN_COLORED) && many_colors(&f.view.img) {
+            out.push(f);
+        }
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    out
+}
+
+/// Si cercano anche le carte dei mazzi sconosciuti dentro le zone con più carte attaccate.
+const UNKNOWN_IN_GROUP: bool = true;
 
 /// Fra molte posizioni possibili di una carta, la più promettente al confronto veloce (None se
 /// nessuna somiglia a qualcosa).
@@ -775,6 +1175,7 @@ fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
         if len < 1.2 * card_w || !(0.8..=1.25).contains(&(height / card_l)) {
             continue;
         }
+        let mut unknown = 0;
         for side in [-1.0f32, 1.0] {
             let off = side * (len - card_w) / 2.0;
             let (cx, cy) = (r.cx + row.0 * off, r.cy + row.1 * off);
@@ -791,9 +1192,17 @@ fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
             if let Some(rect) = most_promising(img, &tries) {
                 let f = Try::new(img, rect, WHOLE).finish(img);
                 if f.accepted(ACCEPT) {
-                    out.push(f);
+                    out.push(f.mark_alone());
                 }
+            } else if let Some(f) = unknown_pick(img, &tries) {
+                out.push(f);
+                unknown += 1;
             }
+        }
+        // Una carta di un mazzo sconosciuto a un'estremità sola: una finestrella alta come una
+        // carta, non una fila di carte (che ne ha una a ciascuna estremità).
+        if unknown > 0 && out.len() < 2 {
+            out.clear();
         }
         if !out.is_empty() {
             break;
@@ -813,6 +1222,7 @@ fn stacked(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
         return Vec::new();
     }
     let mut out = Vec::new();
+    let mut unknown = 0;
     for end in [-1.0f32, 1.0] {
         let mut tries = Vec::new();
         let a = end * (len - card_l) / 2.0;
@@ -827,9 +1237,15 @@ fn stacked(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
         if let Some(rect) = most_promising(img, &tries) {
             let f = Try::new(img, rect, WHOLE).finish(img);
             if f.accepted(ACCEPT) {
-                out.push(f);
+                out.push(f.mark_alone());
             }
+        } else if let Some(f) = unknown_pick(img, &tries) {
+            out.push(f);
+            unknown += 1;
         }
+    }
+    if unknown > 0 && out.len() < 2 {
+        out.clear();
     }
     out
 }
@@ -993,7 +1409,10 @@ fn scan_region(img: &Img, paper: &[bool], r: &RotRect, card_l: f32, card_w: f32)
         // Il confronto completo solo per la posizione migliore.
         let f = Try::with_cols(img, best, WHOLE, cols).finish(img);
         // Cercando dappertutto qualcosa somiglia per caso: si chiede di più.
-        if f.accepted(SCAN_ACCEPT) {
+        if std::env::var_os("SCARTI").is_some() && !f.accepted(SCAN_ACCEPT) && UNKNOWN_IN_GROUP && f.unknown_in_group() {
+            eprintln!("    nella zona a {:.0},{:.0} lati {:?}", f.rect.cx, f.rect.cy, f.apart);
+        }
+        if f.accepted(SCAN_ACCEPT) || (UNKNOWN_IN_GROUP && f.unknown_in_group()) {
             out.push(f);
         }
     }
@@ -1338,6 +1757,32 @@ pub fn last_card_l() -> f32 {
 
 /// Trova e riconosce le carte scoperte.
 pub fn analyze(img: &Img) -> Analysis {
+    let a = analyze_once(img);
+    // Una carta presa con le regole dei mazzi sconosciuti dove le altre carte sono chiaramente di un
+    // mazzo noto è quasi sempre un rettangolo sbagliato (un pezzo di tavolo con la briscola), che
+    // in più toglie il posto alle carte vere: si rilegge lo schermo senza quelle regole.
+    if UNKNOWN_ON_KNOWN.with(|u| u.replace(false)) && !off("SENZA_RILETTURA") {
+        NO_UNKNOWN.with(|n| n.set(true));
+        let b = analyze_once(img);
+        NO_UNKNOWN.with(|n| n.set(false));
+        UNKNOWN_ON_KNOWN.with(|u| u.set(false));
+        return b;
+    }
+    a
+}
+
+thread_local! {
+    /// L'ultima lettura ha usato le regole dei mazzi sconosciuti su un mazzo noto (vedi `analyze`).
+    static UNKNOWN_ON_KNOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Lettura senza le regole dei mazzi sconosciuti.
+    static NO_UNKNOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn no_unknown() -> bool {
+    NO_UNKNOWN.with(|n| n.get())
+}
+
+fn analyze_once(img: &Img) -> Analysis {
     // Schermo senza colori: quasi nessun punto colorato.
     let (mut n, mut tinted) = (0usize, 0usize);
     for p in img.px.iter().step_by(7) {
@@ -1418,6 +1863,52 @@ pub fn analyze(img: &Img) -> Analysis {
         }
     }
     let (k, mut a) = best.expect("almeno una prova");
+    // Le carte che le prove coi bianchi non trovano (figure con la cornice sottile, carte su un
+    // tavolo chiaro, mazzi mai visti): si cercano dai contorni, rettangoli della misura delle carte
+    // già trovate con tutti e quattro i lati netti.
+    // (Solo su un mazzo che non si riconosce bene: dove le carte trovate somigliano chiaramente a
+    // un mazzo noto le prove coi bianchi le trovano già, e i contorni aggiungerebbero solo
+    // rettangoli dubbi.)
+    let known = a.cards.iter().filter(|c| !c.partial() && c.score >= KNOWN_DECK).count();
+    let whole = a.cards.iter().filter(|c| !c.partial()).count();
+    let unknown_deck = whole == 0 || known * 2 < whole || off("SENZA_NOTO");
+    {
+        let unknown_rule = |c: &Found| c.alone || (!c.partial() && c.score < ACCEPT);
+        let sure: Vec<&Found> = a.cards.iter().filter(|c| !unknown_rule(c) && c.score >= ACCEPT).collect();
+        let sure_known = sure.iter().filter(|c| c.score >= KNOWN_DECK).count();
+        let used = a.cards.iter().any(unknown_rule);
+        if std::env::var_os("VEDI_RILETTURA").is_some() {
+            eprintln!("    rilettura? usate {used} sicure {} note {sure_known}: {}", sure.len(), a.cards.iter().map(|c| format!("{:.0},{:.0}={:.2}{}", c.rect.cx, c.rect.cy, c.score, if c.alone { "S" } else { "" })).collect::<Vec<_>>().join(" "));
+        }
+        UNKNOWN_ON_KNOWN.with(|u| u.set(used && !sure.is_empty() && sure_known * 2 >= sure.len()));
+    }
+    // Le regole dei mazzi sconosciuti accettano carte che somigliano poco ai mazzi noti: dove le
+    // carte trovate sono chiaramente di un mazzo noto, una carta così è un pezzo di carta o un
+    // riquadro del sito, e si toglie.
+    if !unknown_deck && !off("SENZA_NOTO_SCONOSCIUTE") {
+        a.cards.retain(|c| c.partial() || c.score >= ACCEPT);
+    }
+    // Una carta di un mazzo sconosciuto presa da sola deve avere la misura delle altre carte
+    // trovate (tutte dello stesso mazzo): più piccola o di altre proporzioni è un pezzo di una carta
+    // (le carte disegnate larghe prese a metà, la briscola sotto il mazzo).
+    if !off("SENZA_MISURA") {
+        let mut ls: Vec<f32> = a.cards.iter().filter(|c| !c.alone && !c.partial()).map(|c| c.rect.long()).collect();
+        let mut ws: Vec<f32> = a.cards.iter().filter(|c| !c.alone && !c.partial()).map(|c| c.rect.short()).collect();
+        if !ls.is_empty() {
+            ls.sort_by(|x, y| x.total_cmp(y));
+            ws.sort_by(|x, y| x.total_cmp(y));
+            let (l, w) = (ls[ls.len() / 2], ws[ws.len() / 2]);
+            let near = |v: f32, m: f32| (v - m).abs() <= 0.15 * m;
+            a.cards.retain(|c| !c.alone || (near(c.rect.long(), l) && near(c.rect.short(), w)));
+        }
+    }
+    if EDGES && !a.cards.is_empty() && unknown_deck && !off("SENZA_BORDI") && !no_unknown() {
+        let extra = edge_cards(img, &a);
+        if std::env::var_os("TEMPI").is_some() && !extra.is_empty() {
+            eprintln!("    dai contorni: {}", extra.iter().map(|f| format!("{:.0},{:.0}", f.rect.cx, f.rect.cy)).collect::<Vec<_>>().join(" "));
+        }
+        a.cards.extend(extra);
+    }
     // Col bianco severo le carte appena giocate, che il sito disegna ancora sbiadite, non si
     // vedono: si cercano col bianco solito, ma solo nella striscia del tavolo sopra la mano (lì
     // non c'è la sagoma bianca sotto la mano che col bianco solito si attacca alle carte).
@@ -1837,7 +2328,7 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysi
             let t = tries.into_iter().max_by(|a, b| a.m.top().total_cmp(&b.m.top())).expect("due versi");
             let f = t.finish(img);
             if f.accepted(ACCEPT) {
-                *c = f;
+                *c = f.mark_alone();
             }
         }
     }
@@ -2206,6 +2697,13 @@ mod prove_carte {
     #[ignore]
     fn prove_una_per_una() {
         let img = super::super::capture::load_png(std::path::Path::new(&std::env::var("IMG").unwrap())).unwrap();
+        if std::env::var_os("SOLO").is_some() {
+            let mem = std::sync::Mutex::new(super::super::memory::Memory::in_memory());
+            let r = super::super::read_briscola(&img, &mem).unwrap();
+            let h: Vec<String> = r.hand.iter().map(|v| { let x = v.best(briscola_core::cards::CardSet::FULL).unwrap(); format!("{}({:.1})", briscola_core::cards::short(x.0), x.1) }).collect();
+            println!("solo lettura: mano {} tavola {} {}", h.join(" "), r.opp_slot.is_some(), r.my_slot.is_some());
+            return;
+        }
         let paper = Paper::of(&img);
         let darker = Paper::darker(&img);
         for k in 0..7usize {

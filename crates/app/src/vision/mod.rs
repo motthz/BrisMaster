@@ -9,6 +9,7 @@ pub mod live;
 pub mod memory;
 pub mod reference;
 pub mod pips;
+pub mod nn;
 pub mod layout;
 pub mod screen;
 #[cfg(test)]
@@ -127,6 +128,21 @@ const EXACT_BONUS: f32 = 1.0;
 const PIP_PENALTY: f32 = 3.0;
 
 /// Punteggi delle 40 carte dalla somiglianza con le carte di riferimento.
+/// Da quale somiglianza in giù conta la rete, e quanto (nelle prove si cambiano con NN_DA e NN_K).
+fn nn_params() -> (f32, f32) {
+    if cfg!(test) {
+        let get = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        return (get("NN_DA", NN_FROM), get("NN_K", NN_WEIGHT));
+    }
+    (NN_FROM, NN_WEIGHT)
+}
+const NN_FROM: f32 = 0.65;
+/// La memoria decide la carta solo se la carta somiglia poco ai mazzi noti (un mazzo che l'app non
+/// conosce): su un mazzo noto la lettura è già sicura, e un'immagine ricordata sotto il nome
+/// sbagliato non deve ripetere l'errore.
+const DECISIVE_BELOW: f32 = 0.75;
+const NN_WEIGHT: f32 = 1.0;
+
 fn reference_scores(sim: &[f32; 40]) -> [f32; 40] {
     let mut s = sim.map(|v| v * SCALE);
     let mut order: Vec<usize> = (0..40).collect();
@@ -398,6 +414,24 @@ fn focused_scene_inner(img: &Img) -> Scene {
 /// carte già viste su questo sito (che quando c'è decide).
 pub fn recognize(view: &mut CardView, mem: &Memory) {
     let mut s = reference_scores(&view.sim);
+    // Un mazzo che l'app non conosce somiglia poco a tutte le carte di riferimento: allora conta
+    // anche la rete (vedi `nn`), che riconosce seme e valore anche di un mazzo mai visto. Più la
+    // carta è sconosciuta, più conta la rete; sui mazzi noti non cambia niente.
+    let top = view.sim.iter().copied().fold(f32::MIN, f32::max);
+    let (from, k) = nn_params();
+    let w = ((from - top) / 0.25).clamp(0.0, 1.0);
+    if cfg!(test) && std::env::var_os("NN_LOG").is_some() {
+        let lp = nn::log_probs(&view.img).unwrap_or([0.0; 40]);
+        let am = |v: &[f32; 40]| (0..40).max_by(|&a, &b| v[a].total_cmp(&v[b])).unwrap();
+        eprintln!("RETE top {top:.2} peso {w:.2} parziale {} rif {} rete {}", view.partial, am(&view.sim), am(&lp));
+    }
+    if w > 0.0 && !view.partial {
+        if let Some(lp) = nn::log_probs(&view.img) {
+            for c in 0..40 {
+                s[c] += w * k * lp[c].max(-12.0);
+            }
+        }
+    }
     // I simboli contati sulla carta (vista intera) escludono le carte con un altro numero di
     // simboli, in qualunque mazzo: un quattro di coppe un po' storto non diventa un due.
     // Il conteggio decide solo fra le carte che la lettura dà già per possibili: se nessuna delle
@@ -425,11 +459,24 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
     }
     // (Nemmeno la memoria delle carte viste può dare una carta esclusa: un'immagine ricordata
     // sotto il nome sbagliato non deve ripetere l'errore.)
-    for (c, sim) in mem.similarity(&view.img, view.vis).iter().enumerate() {
+    let sims = mem.similarity(&view.img, view.vis);
+    for (c, sim) in sims.iter().enumerate() {
         if let Some(v) = *sim {
             if v >= memory::SAME && !excluded[c] {
                 s[c] += 6.0 + (v - memory::SAME) * 20.0;
             }
+        }
+    }
+    // La stessa immagine, quasi pixel per pixel, già vista su questo sito e nessun'altra carta
+    // ricordata che le somigli altrettanto: è quella carta, qualunque cosa dicano il confronto coi
+    // mazzi di riferimento, la rete o il conteggio dei simboli (che su un mazzo nuovo sbagliano).
+    let mut order: Vec<(usize, f32)> = sims.iter().enumerate().filter_map(|(c, v)| v.map(|v| (c, v))).collect();
+    order.sort_by(|a, b| b.1.total_cmp(&a.1));
+    if let Some(&(c, v)) = order.first() {
+        let second = order.get(1).map_or(f32::MIN, |o| o.1);
+        if top < DECISIVE_BELOW && v >= memory::SURE && v - second >= memory::SURE_GAP && !(cfg!(test) && std::env::var_os("SENZA_DECISIVA").is_some()) {
+            let top = s.iter().copied().fold(f32::MIN, f32::max);
+            s[c] = s[c].max(top + 6.0);
         }
     }
     view.scores = s;
@@ -1845,8 +1892,65 @@ mod other_sites {
     }
 
     /// Per ogni ruolo: (giusta, abbastanza sicura da non chiedere conferma).
+    /// La memoria condivisa fra i tavoli (con MEMORIA: come sullo stesso sito), e se le carte
+    /// lette si insegnano (l'utente conferma o corregge ogni carta della prima partita).
+    static SHARED: Mutex<Option<Memory>> = Mutex::new(None);
+    static TEACH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
     fn check(img: &Img, want: &[(&str, Card)]) -> Vec<(String, bool, bool)> {
-        let s = read_briscola(img, &Mutex::new(Memory::in_memory()));
+        let shared = std::env::var_os("MEMORIA").is_some();
+        let mem = if shared { SHARED.lock().unwrap().take().unwrap_or_else(Memory::in_memory) } else { Memory::in_memory() };
+        let mem = Mutex::new(mem);
+        let s = read_briscola(img, &mem);
+        if shared {
+            let mut m = mem.into_inner().unwrap();
+            if std::env::var_os("MEMLOG").is_some() && !TEACH.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(sc) = &s {
+                    for (role, c) in want {
+                        let v = match *role {
+                            "briscola" => sc.trump.as_ref(),
+                            "avversario" => sc.opp_slot.as_ref(),
+                            "tua" => sc.my_slot.as_ref(),
+                            r => sc.hand.get(r[4..].parse::<usize>().unwrap_or(9)),
+                        };
+                        if let Some(v) = v {
+                            let b = v.best(CardSet::FULL).unwrap().0;
+                            if b != *c {
+                                let sim = m.similarity(&v.img, v.vis);
+                                if let Ok(d) = std::env::var("MEMDUMP") {
+                                    let n = std::fs::read_dir(&d).map(|r| r.count()).unwrap_or(0);
+                                    let _ = v.img.save_png(std::path::Path::new(&format!("{d}/v{c:02}_{n:03}_{:.2}.png", sim[*c as usize].unwrap_or(-1.0))));
+                                }
+                                eprintln!("MEM vera {c} sim {:?} punti {:.1}; letta {b} sim {:?} punti {:.1}; parziale {}", sim[*c as usize], v.scores[*c as usize], sim[b as usize], v.scores[b as usize], v.partial);
+                            }
+                        }
+                    }
+                }
+            }
+            if TEACH.load(std::sync::atomic::Ordering::Relaxed) {
+                // (L'utente conferma la carta che vede: se manca una carta della mano, le altre
+                // non si possono abbinare per posizione e non si insegnano.)
+                let hand = want.iter().filter(|(r, _)| r.starts_with("mano")).count();
+                if let Some(sc) = &s {
+                    for (role, c) in want.iter().filter(|(r, _)| !r.starts_with("mano") || sc.hand.len() == hand) {
+                        let v = match *role {
+                            "briscola" => sc.trump.as_ref(),
+                            "avversario" => sc.opp_slot.as_ref(),
+                            "tua" => sc.my_slot.as_ref(),
+                            r => sc.hand.get(r[4..].parse::<usize>().unwrap_or(9)),
+                        };
+                        if let Some(v) = v {
+                            if let Ok(d) = std::env::var("MEMDUMP") {
+                                let n = std::fs::read_dir(&d).map(|r| r.count()).unwrap_or(0);
+                                let _ = v.img.save_png(std::path::Path::new(&format!("{d}/t{c:02}_{n:03}.png")));
+                            }
+                            m.remember(&v.img, v.vis, *c);
+                        }
+                    }
+                }
+            }
+            *SHARED.lock().unwrap() = Some(m);
+        }
         let get = |role: &str| -> Option<CardView> {
             let s = s.as_ref()?;
             match role {
@@ -1861,7 +1965,13 @@ mod other_sites {
             .map(|(role, c)| match get(role).and_then(|v| v.best(CardSet::FULL)) {
                 Some((b, m)) => {
                     let note = if b != *c {
-                        " (sbagliata)".to_string()
+                        let v = get(role).unwrap();
+                        if let Ok(d) = std::env::var("SBAGLIATE") {
+                            let n = std::fs::read_dir(&d).map(|r| r.count()).unwrap_or(0);
+                            let _ = v.img.save_png(std::path::Path::new(&format!("{d}/{n:03}_vera{c:02}_letta{b:02}.png")));
+                        }
+                        let nn = super::nn::log_probs(&v.img).map(|lp| (0..40).max_by(|&a, &b| lp[a].total_cmp(&lp[b])).unwrap() as Card);
+                        format!(" (sbagliata; rete {} {}, parziale {})", nn.map(cards::name).unwrap_or_default(), if nn == Some(*c) { "GIUSTA" } else { "no" }, v.partial)
                     } else if m < 1.4 {
                         format!(" (da confermare, {m:.2})")
                     } else {
@@ -1876,6 +1986,9 @@ mod other_sites {
         let hand = want.iter().filter(|(r, _)| r.starts_with("mano")).count();
         let seen = s.as_ref().map_or(0, |s| s.hand.len());
         if seen != hand {
+            if std::env::var_os("SCARTI").is_some() {
+                eprintln!("MANO {:?}", s.as_ref().map(|s| s.hand.iter().map(|v| v.at).collect::<Vec<_>>()));
+            }
             out.push((format!("mano di {seen} carte invece di {hand}"), false, false));
         }
         out
@@ -1898,7 +2011,14 @@ mod other_sites {
                 trump: Some(&t.1),
                 deck: true,
             };
-            let img = table(&deal, look);
+            let mut img = table(&deal, look);
+            if std::env::var_os("RICARICA").is_some() {
+                let p = std::env::temp_dir().join("ricarica.png");
+                img.save_png(&p).unwrap();
+                img = capture::load_png(&p).unwrap();
+            }
+            // (Ogni tavolo è un sito diverso: niente di quello imparato sul tavolo prima.)
+            detect::forget_reading_state();
             if verbose {
                 let dir = std::env::var("SALVA").ok();
                 if let Some(d) = dir {
@@ -1926,6 +2046,160 @@ mod other_sites {
             n += res.len();
         }
         (ok, auto, n)
+    }
+
+    /// Banco dei mazzi sconosciuti: per ogni cartella di MAZZI (40 immagini, "00.png".."39.png"
+    /// col numero della carta) le carte su tutti i tavoli, in due ordini diversi.
+    /// `MAZZI=cartella cargo test --release -p brismaster mazzi_sconosciuti -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn mazzi_sconosciuti() {
+        let root = std::path::PathBuf::from(std::env::var("MAZZI").expect("MAZZI=cartella"));
+        let mut dirs: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        dirs.sort();
+        let verbose = std::env::var("VERBOSO").is_ok();
+        let (mut tok, mut tauto, mut tn) = (0, 0, 0);
+        for dir in dirs {
+            let cards: Vec<(Card, Img)> = (0..40u8)
+                .filter_map(|c| {
+                    let p = dir.join(format!("{c:02}.png"));
+                    p.exists().then(|| (c, load_jpg(&p)))
+                })
+                .collect();
+            if cards.len() < 40 {
+                continue;
+            }
+            let label = dir.file_name().unwrap().to_string_lossy().to_string();
+            let (mut ok, mut auto, mut n) = (0, 0, 0);
+            let learning = std::env::var_os("MEMORIA").is_some();
+            *SHARED.lock().unwrap() = None;
+            for (pass, (mul, add)) in [(7u8, 0u8), (13, 5)].into_iter().enumerate() {
+                TEACH.store(learning && pass == 0, std::sync::atomic::Ordering::Relaxed);
+                let deck: Vec<(Card, Img)> = (0..40u8).map(|i| cards[((i * mul + add) % 40) as usize].clone()).collect();
+                let r = run(&deck, &format!("{label}{mul}"), false, verbose);
+                if learning {
+                    println!("   {label} giro {} ({}): giuste {}/{}, senza conferma {}/{}", pass + 1, if pass == 0 { "si impara" } else { "dopo aver imparato" }, r.0, r.2, r.1, r.2);
+                    if pass == 0 {
+                        continue;
+                    }
+                }
+                ok += r.0;
+                auto += r.1;
+                n += r.2;
+            }
+            println!("== {label}: giuste {ok}/{n}, senza conferma {auto}/{n}");
+            tok += ok;
+            tauto += auto;
+            tn += n;
+        }
+        println!("== TOTALE: giuste {tok}/{tn} ({:.1}%), senza conferma {tauto}/{tn} ({:.1}%)", 100.0 * tok as f32 / tn.max(1) as f32, 100.0 * tauto as f32 / tn.max(1) as f32);
+    }
+
+    /// Salva le carte dei mazzi di riferimento (ESPORTA=cartella/stile/NN.png).
+    #[test]
+    #[ignore]
+    fn esporta_riferimenti() {
+        let root = std::path::PathBuf::from(std::env::var("ESPORTA").expect("ESPORTA=cartella"));
+        for style in 0..3 {
+            let d = root.join(format!("rif{style}"));
+            std::fs::create_dir_all(&d).unwrap();
+            for c in 0..40u8 {
+                reference::card_image(style, c).save_png(&d.join(format!("{c:02}.png"))).unwrap();
+            }
+        }
+    }
+
+    /// Le carte come le vede l'app sui tavoli (raddrizzate, 100x160), dai mazzi di riferimento su
+    /// tavoli a caso: per allenare la rete. VISTE=cartella, VISTE_N=tavoli per mazzo.
+    #[test]
+    #[ignore]
+    fn esporta_viste() {
+        let root = std::path::PathBuf::from(std::env::var("VISTE").expect("VISTE=cartella"));
+        let per: usize = std::env::var("VISTE_N").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f32 / (1u64 << 53) as f32
+        };
+        let mut saved = 0;
+        for style in 0..3 {
+            let deck: Vec<Img> = (0..40u8).map(|c| reference::card_image(style, c)).collect();
+            for k in 0..per {
+                let bg = match (rnd() * 6.0) as usize {
+                    0 => Bg::Wood,
+                    1 => Bg::Felt([20, 105, 70]),
+                    2 => Bg::Felt([30, 60, 140]),
+                    3 => Bg::Felt([120, 25, 30]),
+                    4 => Bg::Felt([(rnd() * 200.0) as u8, (rnd() * 200.0) as u8, (rnd() * 200.0) as u8]),
+                    _ => Bg::Felt([60, 60, 60]),
+                };
+                let look = Look {
+                    bg,
+                    card_h: 100.0 + rnd() * 110.0,
+                    aspect: (rnd() < 0.4).then(|| 0.5 + rnd() * 0.22),
+                    hue: (rnd() - 0.5) * 30.0,
+                    sat: 0.6 + rnd() * 0.8,
+                    gamma: 0.8 + rnd() * 0.45,
+                    blur: rnd() < 0.25,
+                    fan: if rnd() < 0.4 { rnd() * 8.0 } else { 0.0 },
+                    pile: 0.7 + rnd() * 0.4,
+                    cover: 0.3 + rnd() * 0.3,
+                    ..Look::default()
+                };
+                let mut pick: Vec<u8> = Vec::new();
+                while pick.len() < 6 {
+                    let c = (rnd() * 40.0) as u8 % 40;
+                    if !pick.contains(&c) {
+                        pick.push(c);
+                    }
+                }
+                let deal = Deal {
+                    hand: vec![&deck[pick[0] as usize], &deck[pick[1] as usize], &deck[pick[2] as usize]],
+                    opp: Some(&deck[pick[3] as usize]),
+                    mine: Some(&deck[pick[4] as usize]),
+                    trump: Some(&deck[pick[5] as usize]),
+                    deck: true,
+                };
+                let img = table(&deal, &look);
+                detect::forget_reading_state();
+                let Some(s) = read_briscola(&img, &Mutex::new(Memory::in_memory())) else { continue };
+                let mut views: Vec<(u8, &CardView)> = Vec::new();
+                if s.hand.len() == 3 {
+                    for i in 0..3 {
+                        views.push((pick[i], &s.hand[i]));
+                    }
+                }
+                if let Some(v) = &s.opp_slot {
+                    views.push((pick[3], v));
+                }
+                if let Some(v) = &s.my_slot {
+                    views.push((pick[4], v));
+                }
+                for (i, (c, v)) in views.into_iter().enumerate() {
+                    // (Solo le carte lette giuste: un'etichetta sbagliata insegnerebbe male.)
+                    if v.partial || v.best(CardSet::FULL).map(|b| b.0) != Some(c) {
+                        continue;
+                    }
+                    v.img.save_png(&root.join(format!("{c:02}_{style}_{k}_{i}.png"))).unwrap();
+                    saved += 1;
+                }
+            }
+        }
+        println!("viste salvate: {saved}");
+    }
+
+    /// La rete su una carta 100x160 (RETE=immagine): le tre carte più probabili.
+    #[test]
+    #[ignore]
+    fn prova_rete() {
+        let img = load_jpg(std::path::Path::new(&std::env::var("RETE").unwrap()));
+        let p = super::nn::log_probs(&img).expect("rete");
+        let mut o: Vec<usize> = (0..40).collect();
+        o.sort_by(|&a, &b| p[b].total_cmp(&p[a]));
+        println!("rete: {:?}", o[..3].iter().map(|&c| (c, (p[c] * 1000.0).round() / 1000.0)).collect::<Vec<_>>());
     }
 
     fn known_deck(style: usize) -> Vec<(Card, Img)> {
@@ -1978,7 +2252,7 @@ mod other_sites {
         // sicurezza: le finestrelle bianche spostano di poco il bianco dello schermo, e una può
         // chiedere conferma.
         for (label, deck, confirm) in [("sconosciuto", unknown_deck(), 1), ("noto", known_deck(1), 0)] {
-            let (ok, auto, n) = run(&deck, label, true, false);
+            let (ok, auto, n) = run(&deck, label, true, std::env::var_os("VERBOSO").is_some());
             assert!(ok == n && auto + confirm >= n, "{label} con scritte: giuste {ok}/{n}, senza conferma {auto}/{n}");
         }
     }

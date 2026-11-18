@@ -333,6 +333,17 @@ const AUTO_ACCEPT: u32 = 6;
 
 /// Letture con lo schermo cambiato e la partita ferma prima di ricostruirla dallo storico.
 const STALL: u32 = 8;
+/// Scatti (circa un terzo di secondo l'uno) di partita diversa dallo schermo prima di ripartire da
+/// quello che si vede anche senza letture sicure.
+const ADOPT: u32 = 30;
+fn adopt_after() -> u32 {
+    if cfg!(test) {
+        if let Some(v) = std::env::var("ADOPT").ok().and_then(|v| v.parse().ok()) {
+            return v;
+        }
+    }
+    ADOPT
+}
 /// Letture con la partita ferma e lo schermo più avanti dopo le quali si guarda indietro.
 const BEHIND: u32 = 4;
 /// Letture con la partita ferma dopo le quali si riparte da soli da quello che si vede.
@@ -427,6 +438,9 @@ struct Vision {
     /// La correzione della mano in attesa (carte da togliere, carte da mettere) e da quante letture
     /// è uguale.
     swap: (Vec<Card>, Vec<Card>, u32),
+    /// Da quanto (scatti) la partita non corrisponde allo schermo: oltre `ADOPT` si riparte da
+    /// quello che si vede, anche dalle carte lette senza sicurezza.
+    adopt: u32,
     /// Dopo una ripartenza a tavolo vuoto chi apre è una supposizione (io), e da quale lettura.
     guessed_leader: Option<u64>,
     restart_after: Option<std::time::Instant>,
@@ -1337,7 +1351,93 @@ impl Assistant {
                 }
             }
         }
+        // Ultima risorsa: la partita non corrisponde allo schermo da qualche secondo e nessun
+        // recupero ci è riuscito. Invece di restare fermi senza consiglio si riparte da quello che
+        // si vede, prendendo per buone anche le carte lette senza sicurezza (fra quelle che possono
+        // esserci). Se una di queste era letta male l'errore entra nella partita, ma il consiglio
+        // non si blocca.
+        if self.vision.inconsistent && matches!(self.pos.step(), Step::Draw(_) | Step::MyMove | Step::OppMove) {
+            self.vision.adopt += tick;
+            if self.vision.adopt >= adopt_after() && self.adopt_screen(scene) {
+                self.vision.adopt = 0;
+                self.vision.stuck = 0;
+                self.vision.stall = 0;
+                self.vision.inconsistent = false;
+                self.vision.status = "La partita non corrispondeva allo schermo: ripresa da quello che si vede.".into();
+            }
+        } else {
+            self.vision.adopt = 0;
+        }
         self.vision.seen = Some(sig);
+    }
+
+    /// Lo schermo con ogni carta letta come la più probabile fra quelle che possono essere lì
+    /// (in mano: le mie o quelle non ancora uscite; in tavola anche quella già in tavola), e quella
+    /// con largo distacco: per ripartire da quello che si vede anche senza letture sicure.
+    fn forced_scene(&self, scene: &Scene) -> Scene {
+        let p = &self.pos;
+        let mut in_hand = p.unseen();
+        for c in p.hand.iter() {
+            in_hand.insert(c);
+        }
+        let mut on_table = in_hand;
+        if let Some(t) = p.table {
+            on_table.insert(t);
+        }
+        let force = |v: &CardView, among: CardSet| {
+            let mut v = v.clone();
+            if let Some((c, _)) = v.best(among) {
+                let top = v.scores.iter().copied().fold(f32::MIN, f32::max);
+                v.scores[c as usize] = top + 2.0 * AUTO_MARGIN;
+            }
+            v
+        };
+        Scene {
+            trump: scene.trump.clone(),
+            opp_slot: scene.opp_slot.as_ref().map(|v| force(v, on_table)),
+            my_slot: scene.my_slot.as_ref().map(|v| force(v, on_table)),
+            hand: scene.hand.iter().map(|v| force(v, in_hand)).collect(),
+        }
+    }
+
+    /// Riparte da quello che si vede (vedi `forced_scene`): una mano con le stesse carte di numero
+    /// si corregge al suo posto, se no si riparte con le prese mancanti come non viste.
+    fn adopt_screen(&mut self, scene: &Scene) -> bool {
+        let forced = self.forced_scene(scene);
+        self.swap_misread(&forced) || self.resync_from(&forced, true) || self.played_misread(&forced)
+    }
+
+    /// Tocca a me, in mano si vedono tutte le mie carte tranne una, e in tavola c'è una carta che
+    /// la partita non mi dava: quella che manca era letta male, ed era proprio questa (la gioco
+    /// adesso). Si corregge la mano; la giocata entra da sola alla lettura dopo.
+    fn played_misread(&mut self, forced: &Scene) -> bool {
+        let p = self.pos;
+        if p.step() != Step::MyMove {
+            return false;
+        }
+        let best = |v: &CardView| v.best(CardSet::FULL).map(|b| b.0);
+        let hand: Vec<Card> = forced.hand.iter().filter_map(best).collect();
+        if hand.len() != forced.hand.len() || hand.iter().any(|&c| !p.hand.contains(c)) {
+            return false;
+        }
+        let missing: Vec<Card> = p.hand.iter().filter(|c| !hand.contains(c)).collect();
+        let table: Vec<Card> = [&forced.opp_slot, &forced.my_slot].into_iter().flatten().filter_map(best).collect();
+        // (In tavola la mia nuova carta, e se rispondo anche quella dell'avversario già nota.)
+        let new: Vec<Card> = table.iter().copied().filter(|&c| Some(c) != p.table && !p.hand.contains(c)).collect();
+        let ([wrong], [right]) = (missing.as_slice(), new.as_slice()) else { return false };
+        if !p.unseen().contains(*right) {
+            return false;
+        }
+        let (wrong, right) = (*wrong, *right);
+        let mut q = p;
+        q.hand.remove(wrong);
+        q.hand.insert(right);
+        self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
+        self.pos = q;
+        self.vision.sightings.forget_hand(wrong);
+        self.changed();
+        self.vision.last = None;
+        true
     }
 
     /// Nello stesso punto dove si era letta l'ultima carta inserita per l'avversario ora si legge,
@@ -4553,6 +4653,30 @@ mod tests {
         a.set_first(ME);
         for c in [10, 20, 30] { a.enter(c); }
         a
+    }
+
+    /// La partita ha in mano una carta sbagliata e lo schermo mostra per secondi un'altra carta,
+    /// letta senza sicurezza: la partita riparte da quello che si vede, il consiglio non resta
+    /// fermo.
+    #[test]
+    fn adopts_the_screen_after_a_long_mismatch() {
+        let mut a = manual_turn();
+        assert_eq!(a.pos.step(), Step::MyMove);
+        // Il 10 era letto male: era il 25, e lo gioco. In tavola si legge con poco distacco.
+        let mut odd = seen(25, 0.8);
+        for (c, s) in odd.scores.iter_mut().enumerate() {
+            if c != 25 {
+                *s = -2.0;
+            }
+        }
+        let scene = Scene { trump: Some(seen(0, 4.0)), hand: vec![seen(20, 4.0), seen(30, 4.0)], my_slot: Some(odd), ..Default::default() };
+        for i in 0..80u64 {
+            a.vision.now_ms = Some(i * 400);
+            a.sync(&scene);
+        }
+        assert!(!a.pos.hand.contains(10), "mano {:?}", a.pos.hand.to_vec());
+        assert!(a.pos.table == Some(25) || a.pos.played.contains(25), "tavola {:?}", a.pos.table);
+        assert!(!a.vision.inconsistent);
     }
 
     #[test]

@@ -305,6 +305,12 @@ Note: one point of score is worth about 1/8 of similarity. A lead of 1.4 (`AUTO_
 
   Cards accepted on their own after waiting (`auto_accept`) are not stored, because no one has
   confirmed them.
+- **Editing the archive by hand** (*Carte del tavolo* window, opened by clicking a percentage in
+  the Briscola assistant):
+  - **Salva etichetta** changes the card of a remembered image (`relabel_sample`);
+  - **Elimina** → **Conferma eliminazione** removes from the archive an image saved as a card
+    that is not a card, such as a piece of table or a caption (`delete_sample`). The base memory
+    (section 7.1) is not in the archive and stays.
 - Effect: on a new site the first game teaches the app its cards. On the 8 test decks the app
   has never seen, correct cards go from **64.2%** in the first game to **71.7%** after one game
   of learning (`mazzi_sconosciuti` test with `MEMORIA=1`, version 0.6.9).

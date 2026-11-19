@@ -5386,6 +5386,8 @@ mod tests {
         let mut hand: Vec<Card> = g.hands[0].iter().collect();
         let true_draws = std::cell::RefCell::new(hand.clone());
         let true_plays: std::cell::RefCell<[Vec<Card>; 2]> = std::cell::RefCell::new([Vec::new(), Vec::new()]);
+        let reduction = std::env::var("BRIS_STRESS_RIDUZIONE").ok()
+            .and_then(|value| value.parse::<usize>().ok()).unwrap_or(1).clamp(1, 8);
         let mut frame = 0;
         let mut look_at = |a: &mut Assistant, hand: &[Card], opp: Option<Card>, mine: Option<Card>, g: &Game, what: &str| -> Result<(), String> {
             let trump = (g.deck_len > 0).then(|| &imgs[g.trump_card as usize]);
@@ -5404,6 +5406,7 @@ mod tests {
                     *p = [y; 3];
                 }
             }
+            let img = crate::vision::shrink_by(img, reduction);
             frame += 1;
             if let Ok(d) = std::env::var("SALVA") {
                 img.save_png(std::path::Path::new(&format!("{d}/partita_{seed}_{frame:03}.png"))).unwrap();
@@ -5577,6 +5580,8 @@ mod tests {
                 delays.push(error);
             }
         }
+        let (played, identified) = a.played_coverage();
+        println!("seed={seed}; copertura {identified}/{played}; giocate reali={}", g.played.len());
         if !delays.is_empty() {
             println!("seed={seed}; checkpoint in ritardo={}; primo={}", delays.len(), delays[0]);
         }

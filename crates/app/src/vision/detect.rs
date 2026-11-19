@@ -296,7 +296,7 @@ fn blobs_in(img: &Img, paper: &[bool], r: usize, (x0, y0, x1, y1): (usize, usize
     }
     let (w, h) = (x1 - x0, y1 - y0);
     let sub: Vec<bool> = (y0..y1).flat_map(|y| paper[y * img.w + x0..y * img.w + x1].iter().copied()).collect();
-    let er = erode(&sub, w, h, r);
+    let er = if r == 0 { sub } else { erode(&sub, w, h, r) };
     // Basta poco: di un asso di denari piccolo resta solo la cornice bianca.
     let min_area = ((img.w * img.h) as f32 * 0.0002) as usize;
     let mut seen = vec![false; w * h];
@@ -1790,13 +1790,17 @@ pub fn last_card_l() -> f32 {
 
 /// Trova e riconosce le carte scoperte.
 pub fn analyze(img: &Img) -> Analysis {
-    let a = analyze_once(img);
+    analyze_mode(img, false)
+}
+
+fn analyze_mode(img: &Img, small: bool) -> Analysis {
+    let a = analyze_once(img, small);
     // Una carta presa con le regole dei mazzi sconosciuti dove le altre carte sono chiaramente di un
     // mazzo noto è quasi sempre un rettangolo sbagliato (un pezzo di tavolo con la briscola), che
     // in più toglie il posto alle carte vere: si rilegge lo schermo senza quelle regole.
     if UNKNOWN_ON_KNOWN.with(|u| u.replace(false)) && !off("SENZA_RILETTURA") {
         NO_UNKNOWN.with(|n| n.set(true));
-        let b = analyze_once(img);
+        let b = analyze_once(img, small);
         NO_UNKNOWN.with(|n| n.set(false));
         UNKNOWN_ON_KNOWN.with(|u| u.set(false));
         return b;
@@ -1815,7 +1819,7 @@ fn no_unknown() -> bool {
     NO_UNKNOWN.with(|n| n.get())
 }
 
-fn analyze_once(img: &Img) -> Analysis {
+fn analyze_once(img: &Img, small: bool) -> Analysis {
     // Schermo senza colori: quasi nessun punto colorato.
     let (mut n, mut tinted) = (0usize, 0usize);
     for p in img.px.iter().step_by(7) {
@@ -1833,11 +1837,11 @@ fn analyze_once(img: &Img) -> Analysis {
     let white_background = img.px.iter().step_by(7).filter(|&&p| paper.is(p)).count() * 100 > n.max(1) * 55;
     let run = |k: usize| -> Option<Analysis> {
         match k {
-            0 => Some(analyze_inner(img, &paper)),
-            1..=3 => darker.get_or_init(|| Paper::darker(img)).get(k - 1).map(|p| analyze_inner(img, p)),
-            4 => Some(analyze_inner(img, &Paper::strict(img, 249))),
-            5 => Some(analyze_inner(img, &Paper::strict(img, 243))),
-            _ => Some(analyze_shaped(img, &Paper::of(img), card_shaped_wide)),
+            0 => Some(analyze_shaped(img, &paper, card_shaped, small)),
+            1..=3 => darker.get_or_init(|| Paper::darker(img)).get(k - 1).map(|p| analyze_shaped(img, p, card_shaped, small)),
+            4 => Some(analyze_shaped(img, &Paper { min: 249, ..paper.clone() }, card_shaped, small)),
+            5 => Some(analyze_shaped(img, &Paper { min: 243, ..paper.clone() }, card_shaped, small)),
+            _ => Some(analyze_shaped(img, &paper, card_shaped_wide, small)),
         }
     };
     // Sul tavolo bianco si riprova prima il contorno completo (anche l'ombra),
@@ -1958,7 +1962,7 @@ fn analyze_once(img: &Img) -> Analysis {
             if x1 > x0 + 10 && y1 as f32 > l {
                 let band = img.crop(x0, 0, x1, y1);
                 let steady = STEADY.with(|s| s.get());
-                let extra = analyze_inner(&band, &paper);
+                let extra = analyze_shaped(&band, &paper, card_shaped, small);
                 STEADY.with(|s| s.set(steady));
                 let w = a.cards.iter().map(|c| c.rect.short()).fold(0.0f32, f32::max);
                 for mut f in extra.cards {
@@ -2006,7 +2010,7 @@ fn analyze_once(img: &Img) -> Analysis {
         for p in &papers {
             // (La prova in più non deve invecchiare la misura delle carte imparata.)
             let steady = STEADY.with(|s| s.get());
-            let extra = analyze_inner(img, p);
+            let extra = analyze_shaped(img, p, card_shaped, small);
             STEADY.with(|s| s.set(steady));
             let before = a.cards.len();
             for f in extra.cards {
@@ -2107,22 +2111,29 @@ fn mark(tm: &mut (std::time::Instant, String), what: &str) {
 }
 
 fn analyze_inner(img: &Img, p: &Paper) -> Analysis {
-    analyze_shaped(img, p, card_shaped)
+    analyze_shaped(img, p, card_shaped, false)
 }
 
-fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool) -> Analysis {
+fn small_viewport(img: &Img) -> bool {
+    img.w <= 400 && img.h <= 300
+}
+
+fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool, small: bool) -> Analysis {
     let mut tm = (std::time::Instant::now(), String::new());
     let paper: Vec<bool> = img.px.iter().map(|&px| p.is(px)).collect();
-    let base = blobs_r(img, &paper, 1);
+    // Un pixel di erosione può spezzare interamente il bordo di una carta
+    // di 30 pixel. Sui viewport piccoli lavora sulla maschera originale.
+    let base = blobs_r(img, &paper, usize::from(!small));
+    let min_long = if small { 24.0 } else { 40.0 };
     mark(&mut tm, "zone");
     let mut cards: Vec<Found> = Vec::new();
     let mut rest: Vec<Blob> = Vec::new();
     let light: Vec<Blob> = base.iter().copied().filter(|b| {
-        if b.light() { return true; }
+        if b.white > 0.08 && b.bg > 0.3 && b.rect.long() >= min_long { return true; }
         // Su un tavolo bianco l'anello esterno è bianco quanto la carta: resta
         // però l'ombra immediatamente fuori dal bordo. Si usa solo per sagome
         // di carta, mai per una grande zona bianca del desktop.
-        if b.white <= 0.25 || b.rect.long() < 40.0 || b.rect.long() > 0.7 * img.h as f32 || !shaped(&b.rect) {
+        if b.white <= 0.25 || b.rect.long() < min_long || b.rect.long() > 0.7 * img.h as f32 || !shaped(&b.rect) {
             return false;
         }
         let (mut n, mut dark) = (0, 0);
@@ -2410,10 +2421,162 @@ fn best<'a>(cards: impl Iterator<Item = &'a Found>) -> Option<&'a Found> {
     cards.max_by(|x, y| x.score.total_cmp(&y.score))
 }
 
+/// In Briscola una faccia non può apparire in tre posizioni indipendenti.
+/// Tre copie della stessa grafica, senza un buon riferimento di carta,
+/// indicano un elemento ripetuto dell'interfaccia.
+fn drop_repeated_graphics(cards: &mut Vec<Found>) {
+    let doubtful = |card: &Found| !card.partial() && card.score < ACCEPT;
+    let repeated = |a: &Found, b: &Found| {
+        doubtful(b)
+            && a.rect.dist(&b.rect) > a.rect.short()
+            && (a.rect.long() / b.rect.long() - 1.0).abs() < 0.08
+            && super::memory::similarity(&a.view.img, &b.view.img, WHOLE) >= 0.99
+    };
+    let reject: Vec<_> = cards.iter().map(|card| {
+        doubtful(card) && cards.iter().filter(|other| repeated(card, other)).take(2).count() == 2
+    }).collect();
+    let mut flags = reject.into_iter();
+    cards.retain(|_| !flags.next().unwrap_or(false));
+}
+
 /// Divide le carte scoperte trovate sullo schermo fra briscola, tavolo e mano.
 pub fn scene(img: &Img) -> Scene {
+    let small = small_viewport(img);
+    let mut scene = detect_briscola(img, small);
+    if small && (scene.opp_slot.is_none() || scene.my_slot.is_none()) {
+        recover_light_table_plays(img, &mut scene);
+    }
+    // Una briscola parzialmente coperta può risultare più leggibile nella
+    // maschera originale. Il recupero non sostituisce una carta già vista.
+    if small && img.w >= 320 && scene.trump.is_none() && scene.hand.len() >= 2 {
+        let paper = Paper::of(img);
+        let steady = STEADY.with(|state| state.get());
+        let original = analyze_inner(img, &paper);
+        STEADY.with(|state| state.set(steady));
+        scene.trump = assign_briscola(img, original).trump.filter(|card| {
+            card.partial && card.best(cards::CardSet::FULL).is_some_and(|(id, margin)| {
+                margin >= 1.4 && card.sim[id as usize] >= 0.65
+                    && !scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot)
+                        .any(|view| view.best(cards::CardSet::FULL).is_some_and(|(c, _)| c == id))
+            })
+        });
+    }
+    scene
+}
+
+#[derive(Clone, Copy)]
+struct LightHand {
+    viewport: (usize, usize, (f32, f32)),
+    center_x: f32,
+    top: f32,
+    bottom: f32,
+    long: f32,
+    short: f32,
+    age: u8,
+}
+
+thread_local! {
+    static LIGHT_HAND: std::cell::Cell<Option<LightHand>> = const { std::cell::Cell::new(None) };
+}
+
+pub(super) fn forget_light_hand() {
+    LIGHT_HAND.with(|anchor| anchor.set(None));
+}
+
+/// Sui tavoli molto chiari il bilanciamento del bianco può unire lo sfondo
+/// alle carte. Cerca i bianchi quasi neutri in una zona guidata dalla mano.
+fn recover_light_table_plays(img: &Img, scene: &mut Scene) {
+    let viewport = (img.w, img.h, OFFSET.with(|offset| offset.get()));
+    let anchor = LIGHT_HAND.with(|saved| {
+        let visible = scene.hand.iter().filter(|card| !card.partial
+            && (24.0..=65.0).contains(&card.px[0]) && card.px[1] > 0.0)
+            .max_by(|a, b| a.px[0].total_cmp(&b.px[0]));
+        let anchor = if let Some(card) = visible {
+            let [long, short] = card.px;
+            let center_x = scene.hand.iter().map(|card| super::center(card)[0]).sum::<f32>()
+                / scene.hand.len() as f32 * img.w as f32;
+            Some(LightHand {
+                viewport, center_x, long, short, age: 0,
+                top: card.at[1] * img.h as f32,
+                bottom: card.at[3] * img.h as f32,
+            })
+        } else {
+            saved.get().filter(|anchor| anchor.viewport == viewport && anchor.age < 5)
+                .map(|anchor| LightHand { age: anchor.age + 1, ..anchor })
+        };
+        saved.set(anchor);
+        anchor
+    });
+    let Some(LightHand { center_x, top: hand_top, bottom: hand_bottom, long, short, .. }) = anchor else { return };
+    let middle = img.h as f32 * 0.5;
+    let seek_hand = scene.hand.is_empty();
+    let left = (center_x - 1.8 * long).max(0.0) as usize;
+    let right = ((center_x + 1.8 * long) as usize).min(img.w);
+    let top = (middle - 1.4 * long).max(0.0) as usize;
+    let bottom = if seek_hand { (hand_bottom + 0.12 * long).min(img.h as f32) }
+        else { (hand_top - 0.12 * long).max(0.0) } as usize;
+    if right <= left + short as usize || bottom <= top + long as usize {
+        return;
+    }
+    // Niente ricerca su panni scuri o colorati, per cui il bianco normale è già efficace.
+    let light_sides = [left, right - 1].iter().all(|&x| {
+        let color = img.at(x, (middle as usize).clamp(top, bottom - 1));
+        *color.iter().min().unwrap() >= 185
+    });
+    if !light_sides {
+        return;
+    }
+    let region = img.crop(left, top, right, bottom);
+    let mask: Vec<_> = region.px.iter().map(|rgb| rgb.iter().all(|&channel| channel >= 250)).collect();
+    let mut candidates = blobs_r(&region, &mask, 0).into_iter()
+        .filter(|blob| !blob.rect.landscape() && blob.white > 0.12
+            && (0.83..=1.16).contains(&(blob.rect.long() / long))
+            && (0.80..=1.18).contains(&(blob.rect.short() / short)))
+        .filter_map(|blob| {
+            let rect = RotRect { cx: blob.rect.cx + left as f32, cy: blob.rect.cy + top as f32, ..blob.rect };
+            let original = as_full(img, &rect);
+            let strong = |card: &Found| card.score >= 0.78
+                && card.view.best(cards::CardSet::FULL).is_some_and(|(_, margin)| margin >= 1.4);
+            if original.as_ref().is_some_and(strong) {
+                return original;
+            }
+            // Il disegno può tagliare la cornice in più componenti. Se la
+            // prima lettura è debole, riallarga il riquadro alla misura
+            // della mano e prova i due allineamenti orizzontali.
+            let missing = short - rect.short();
+            if !(0.5..=0.18 * short).contains(&missing) {
+                return None;
+            }
+            let widened = if rect.hw < rect.hh { RotRect { hw: short * 0.5, ..rect } }
+                else { RotRect { hh: short * 0.5, ..rect } };
+            [-0.5, 0.0, 0.5].into_iter()
+                .filter_map(|shift| as_full(img, &RotRect { cx: widened.cx + shift * missing, ..widened }))
+                .filter(strong).max_by(|a, b| a.score.total_cmp(&b.score))
+        }).collect::<Vec<_>>();
+    candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+    for card in candidates {
+        let Some((id, margin)) = card.view.best(cards::CardSet::FULL) else { continue };
+        if margin < 1.4 || scene.hand.iter().chain(&scene.trump)
+            .chain(&scene.opp_slot).chain(&scene.my_slot)
+            .any(|known| known.best(cards::CardSet::FULL).is_some_and(|(other, _)| other == id)
+                || (super::center(known)[1] * img.h as f32 - card.rect.cy).abs() < 0.45 * long
+                    && (super::center(known)[0] * img.w as f32 - card.rect.cx).abs() < 0.6 * short)
+        {
+            continue;
+        }
+        if seek_hand && card.rect.cy >= hand_top + 0.25 * long {
+            if scene.hand.len() < 3 { scene.hand.push(card.view); }
+        } else if card.rect.cy < hand_top - 0.2 * long {
+            let slot = if card.rect.cy < middle { &mut scene.opp_slot } else { &mut scene.my_slot };
+            if slot.is_none() { *slot = Some(card.view); }
+        }
+    }
+    if seek_hand { scene.hand.sort_by(|a, b| a.at[0].total_cmp(&b.at[0])); }
+}
+
+fn detect_briscola(img: &Img, small: bool) -> Scene {
     let ta = std::time::Instant::now();
-    let mut a = analyze(img);
+    let mut a = analyze_mode(img, small);
     if std::env::var_os("TEMPI").is_some() {
         eprintln!("  analisi: {:?}", ta.elapsed());
     }
@@ -2428,12 +2591,14 @@ pub fn scene(img: &Img) -> Scene {
     let original_gray = reference::gray_screen();
     if (a.cards.is_empty() || desaturated) && !reference::gray_screen() {
         reference::set_gray_screen(true);
-        let mut fallback = analyze_inner(img, &Paper::of(img));
+        let mut fallback = analyze_shaped(img, &Paper::of(img), card_shaped, small);
         // Senza il colore, testi e loghi hanno più possibilità di somigliare a
         // una carta: per questa ripiega serve una corrispondenza molto forte.
         fallback.cards.retain(|c| c.score >= 0.85);
         if !fallback.cards.is_empty() { a = fallback; }
     }
+    drop_repeated_graphics(&mut a.cards);
+    if a.cards.is_empty() { a.card_l = 0.0; }
     let blobs = a.cards.iter().all(|c| c.rect.landscape()).then(|| a.blobs.clone());
     let mut scene = assign_briscola(img, a);
     // Il bianco normale può unire la carta color avorio al dorso sotto cui
@@ -2441,7 +2606,7 @@ pub fn scene(img: &Img) -> Scene {
     if scene.trump.is_none() && scene.hand.len() >= 2
         && scene.hand.iter().all(|card| warm_paper(img, card.at))
         && !(cfg!(test) && std::env::var_os("BRIS_SENZA_CONCORDANZA").is_some()) {
-        let strict = analyze_inner(img, &Paper::strict(img, 249));
+        let strict = analyze_shaped(img, &Paper::strict(img, 249), card_shaped, small);
         let retry = assign_briscola(img, strict);
         scene.trump = retry.trump.filter(|card| {
             card.best(cards::CardSet::FULL).is_some_and(|(id, margin)| {
@@ -2465,7 +2630,8 @@ pub fn scene(img: &Img) -> Scene {
         }
     }
     if let Some(first) = recovered.first() {
-        let a = Analysis { card_l: first.rect.long(), cards: recovered, table: None, blobs, split: false };
+        let mut a = Analysis { card_l: first.rect.long(), cards: recovered, table: None, blobs, split: false };
+        drop_repeated_graphics(&mut a.cards);
         let mut fallback = assign_briscola(img, a);
         for view in fallback.hand.iter_mut().chain(&mut fallback.my_slot).chain(&mut fallback.opp_slot)
             .chain(&mut fallback.trump) {
@@ -2811,7 +2977,7 @@ mod prove_carte {
                 1..=3 => match darker.get(k - 1) { Some(p) => analyze_inner(&img, p), None => continue },
                 4 => analyze_inner(&img, &Paper::strict(&img, 249)),
                 5 => analyze_inner(&img, &Paper::strict(&img, 243)),
-                _ => analyze_shaped(&img, &Paper::of(&img), card_shaped_wide),
+                _ => analyze_shaped(&img, &Paper::of(&img), card_shaped_wide, false),
             };
             let cards: Vec<String> = a.cards.iter().map(|c| {
                 let b = c.view.best(briscola_core::cards::CardSet::FULL).unwrap();

@@ -15,6 +15,8 @@ pub mod layout;
 pub mod screen;
 #[cfg(test)]
 pub(crate) mod synth;
+#[cfg(test)]
+mod low_resolution_tests;
 pub mod track;
 
 /// Immagine RGB.
@@ -281,6 +283,7 @@ const FULL_EVERY: u32 = 24;
 
 /// Dimentica la zona delle carte (una lettura indipendente, come una partita nuova del banco).
 pub fn forget_focus() {
+    detect::forget_light_hand();
     FOCUS.with(|f| *f.borrow_mut() = Focus::default());
 }
 

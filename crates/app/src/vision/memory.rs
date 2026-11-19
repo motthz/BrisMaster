@@ -424,6 +424,18 @@ impl Memory {
         self.commit_correction(staged)
     }
 
+    /// Toglie dall'archivio un'immagine ricordata (per esempio un pezzo di tavolo o una scritta
+    /// salvati come carta). Le immagini di base comprese nell'app non sono nell'archivio e restano.
+    pub(crate) fn delete_sample(&mut self, card: Card, image: &Img, vis: [f32; 2]) -> Result<(), String> {
+        let mut staged = self.isolated();
+        let pixels: Vec<_> = image.px.iter().flatten().copied().collect();
+        let Some(index) = staged.templates.iter().position(|sample| sample.card == card && sample.px == pixels && sample.vis == vis) else {
+            return Err("Il campione è cambiato. Aggiorna l’elenco.".into());
+        };
+        staged.templates.remove(index);
+        self.commit_correction(staged)
+    }
+
     fn commit_correction(&mut self, staged: Self) -> Result<(), String> {
         if let Some(path) = &self.path {
             save_atomic(path, &staged).map_err(|err| err.to_string())?;
@@ -497,6 +509,29 @@ impl Memory {
 #[cfg(test)]
 mod persistence_tests {
     use super::*;
+
+    #[test]
+    fn a_sample_deleted_from_the_archive_is_gone_and_saved() {
+        let dir = std::env::temp_dir().join(format!("brismaster-delete-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("carte_viste.json");
+        let mut memory = Memory::in_memory();
+        memory.path = Some(path.clone());
+        let card = crate::vision::reference::card_image(0, 12);
+        memory.remember(&card, WHOLE, 12);
+        memory.remember(&crate::vision::reference::card_image(0, 25), WHOLE, 25);
+        let samples = memory.samples();
+        assert_eq!(samples.len(), 2);
+        let (c, img, vis) = samples.iter().find(|s| s.0 == 12).unwrap().clone();
+        memory.delete_sample(c, &img, vis).unwrap();
+        assert!(memory.samples().iter().all(|s| s.0 != 12));
+        assert_eq!(memory.samples().len(), 1);
+        // Già tolto: l'elenco va aggiornato.
+        assert!(memory.delete_sample(c, &img, vis).is_err());
+        let saved: Memory = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.templates.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn does_not_learn_the_same_automatic_crop_twice() {

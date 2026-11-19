@@ -504,6 +504,8 @@ struct CardReview {
     picks: std::collections::BTreeMap<(u8, &'static str), Card>,
     history_images: std::collections::BTreeMap<(u8, &'static str), egui::TextureHandle>,
     message: String,
+    /// L'immagine dell'archivio di cui si è chiesto di eliminare (si elimina al secondo clic).
+    confirm_delete: Option<usize>,
 }
 
 struct Confirm {
@@ -3263,6 +3265,7 @@ impl Assistant {
         let mut refresh = false;
         let mut export = false;
         let mut save = None;
+        let mut delete = None;
         let mut history_edit = None;
         egui::Window::new("Carte del tavolo").open(&mut open).default_width(460.0).show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -3280,6 +3283,17 @@ impl Assistant {
                         ui.label(&card.source);
                         review_picker(ui, ("crop", i), &mut card.label);
                         if ui.button("Salva etichetta").clicked() { save = Some(i); }
+                        if card.archived {
+                            // Un'immagine salvata come carta che non è una carta (un pezzo di tavolo,
+                            // una scritta): si toglie dall'archivio, chiedendo conferma.
+                            if self.card_review.confirm_delete == Some(i) {
+                                let sure = egui::Button::new(egui::RichText::new("Conferma eliminazione").color(egui::Color32::WHITE)).fill(egui::Color32::from_rgb(170, 40, 40));
+                                if ui.add(sure).clicked() { delete = Some(i); }
+                                if ui.button("Annulla").clicked() { self.card_review.confirm_delete = None; }
+                            } else if ui.button("Elimina").on_hover_text("Toglie questa immagine dall'archivio: per le immagini salvate come carta che non sono una carta").clicked() {
+                                self.card_review.confirm_delete = Some(i);
+                            }
+                        }
                     });
                 }
                 ui.separator();
@@ -3318,7 +3332,22 @@ impl Assistant {
             });
         });
         self.card_review.open = open;
-        if refresh { self.refresh_review(ctx); }
+        if let Some(i) = delete {
+            self.card_review.confirm_delete = None;
+            let card = &self.card_review.cards[i];
+            let result = self.vision.memory.lock().unwrap_or_else(|e| e.into_inner()).delete_sample(card.original, &card.img, card.vis);
+            self.card_review.message = match result {
+                Ok(()) => {
+                    self.card_review.cards.remove(i);
+                    "Immagine eliminata dall'archivio locale.".into()
+                }
+                Err(error) => error,
+            };
+        }
+        if refresh {
+            self.card_review.confirm_delete = None;
+            self.refresh_review(ctx);
+        }
         if export {
             self.card_review.message = match self.export_review() {
                 Ok(path) => {

@@ -170,9 +170,9 @@ impl Paper {
     fn from_white(bright: &[[u8; 3]], max_gain: f32) -> Paper {
         let mut lut = [[0u8; 256]; 3];
         for (c, l) in lut.iter_mut().enumerate() {
-            let mut ch: Vec<u8> = bright.iter().map(|p| p[c]).collect();
-            ch.sort_unstable();
-            let white = ch.get(ch.len() / 2).copied().unwrap_or(255).max(1) as f32;
+            let mut histogram = [0usize; 256];
+            for p in bright { histogram[p[c] as usize] += 1; }
+            let white = super::pips::percentile(histogram, bright.len() / 2).max(1) as f32;
             let gain = (255.0 / white).clamp(1.0, max_gain);
             for (v, o) in l.iter_mut().enumerate() {
                 *o = (v as f32 * gain).min(255.0) as u8;
@@ -430,13 +430,15 @@ pub fn same_table(a: [u8; 3], b: [u8; 3]) -> bool {
 /// Raddrizza la carta: il rettangolo diventa un'immagine CARD_W x CARD_H con il lato -v in alto.
 pub fn warp(img: &Img, r: &RotRect) -> Img {
     let mut out = Img::new(CARD_W, CARD_H);
+    let cols: [(f32, f32); CARD_W] = std::array::from_fn(|i| {
+        let a = ((i as f32 + 0.5) / CARD_W as f32 * 2.0 - 1.0) * r.hw;
+        (r.cx + r.u.0 * a, r.cy + r.u.1 * a)
+    });
     for j in 0..CARD_H {
-        for i in 0..CARD_W {
-            let a = ((i as f32 + 0.5) / CARD_W as f32 * 2.0 - 1.0) * r.hw;
-            let b = ((j as f32 + 0.5) / CARD_H as f32 * 2.0 - 1.0) * r.hh;
-            let x = r.cx + r.u.0 * a + r.v.0 * b;
-            let y = r.cy + r.u.1 * a + r.v.1 * b;
-            out.px[j * CARD_W + i] = img.sample(x, y);
+        let b = ((j as f32 + 0.5) / CARD_H as f32 * 2.0 - 1.0) * r.hh;
+        let (dx, dy) = (r.v.0 * b, r.v.1 * b);
+        for (i, &(x, y)) in cols.iter().enumerate() {
+            out.px[j * CARD_W + i] = img.sample(x + dx, y + dy);
         }
     }
     balance(&mut out);
@@ -456,9 +458,9 @@ fn balance(card: &mut Img) {
     let top = &light[light.len() * 85 / 100..];
     let mut white = [0f32; 3];
     for c in 0..3 {
-        let mut ch: Vec<u8> = top.iter().map(|p| p[c]).collect();
-        ch.sort_unstable();
-        white[c] = ch[ch.len() / 2] as f32;
+        let mut histogram = [0usize; 256];
+        for p in top { histogram[p[c] as usize] += 1; }
+        white[c] = super::pips::percentile(histogram, top.len() / 2) as f32;
     }
     if white.iter().any(|&w| w < 60.0) {
         return;
@@ -924,6 +926,7 @@ impl Try {
         let mut view = CardView::new(self.card, self.vis, sim);
         view.styles = styles;
         view.px = [self.rect.long(), self.rect.short()];
+        view.vis_cols = self.cols;
         view.partial |= self.cols != WHOLE;
         view.at = self.rect.bounds(img);
         let mut apart = sides_apart(img, &self.rect);

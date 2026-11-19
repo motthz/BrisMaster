@@ -136,19 +136,38 @@ pub fn diagnose(img: &Img) -> Img {
 
 /// Salva in Documenti\BrisMaster\Diagnosi la schermata letta e la stessa con i riquadri trovati,
 /// più un testo con quello che è stato riconosciuto. Restituisce la cartella.
-pub fn save_diagnosis(img: &Img, summary: &str) -> Result<PathBuf, String> {
+pub fn save_diagnosis(img: &Img, summary: &str, cards: &[&super::CardView]) -> Result<PathBuf, String> {
     let dir = crate::record::dir().parent().map(|p| p.to_path_buf()).unwrap_or_default().join("Diagnosi");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
     img.save_png(&dir.join(format!("schermo_{stamp}.png")))?;
     diagnose(img).save_png(&dir.join(format!("riquadri_{stamp}.png")))?;
-    std::fs::write(dir.join(format!("letto_{stamp}.txt")), summary).map_err(|e| e.to_string())?;
+    let mut details = summary.to_owned();
+    for (index, card) in cards.iter().enumerate() {
+        let label = format!("carta_{stamp}_{index:02}.png");
+        card.img.save_png(&dir.join(&label))?;
+        let mut rank: Vec<_> = card.scores.iter().enumerate().collect();
+        rank.sort_by(|a, b| b.1.total_cmp(a.1));
+        details.push_str(&format!("\n{label} posizione {:?} fascia {:?} colonne {:?} contorno recuperato {}\n",
+            card.at, card.vis, card.vis_cols, card.recovered_outline));
+        for (id, score) in rank.into_iter().take(5) {
+            details.push_str(&format!("  {} punteggio {:.2} riferimento {:.3}\n",
+                briscola_core::cards::name(id as u8), score, card.sim[id]));
+        }
+        if let Some(symbols) = super::pips::visible_symbols(&card.img) {
+            for s in symbols {
+                details.push_str(&format!("  simbolo con area {} e riquadro {:?}\n", s.area, s.bounds));
+            }
+        }
+    }
+    std::fs::write(dir.join(format!("letto_{stamp}.txt")), details).map_err(|e| e.to_string())?;
     Ok(dir)
 }
 
 /// Finestra per scegliere monitor e area del tavolo trascinando un rettangolo sulla schermata.
 #[derive(Default)]
 pub struct AreaPicker {
+    importer: super::deck_import::DeckImport,
     open: bool,
     monitor: usize,
     monitors: usize,
@@ -178,7 +197,7 @@ impl AreaPicker {
 
     /// Pulsanti da mettere sotto l'interruttore della lettura dello schermo. `last` è l'ultima
     /// schermata letta (per la diagnosi), `summary` cosa ci è stato riconosciuto.
-    pub fn controls(&mut self, ui: &mut egui::Ui, last: Option<Img>, summary: &str) {
+    pub fn controls(&mut self, ui: &mut egui::Ui, last: Option<Img>, summary: &str, memory: &Mutex<super::Memory>, cards: &[&super::CardView]) {
         let a = *area().lock().unwrap();
         ui.horizontal_wrapped(|ui| {
             let label = if a.rect.is_some() {
@@ -204,7 +223,7 @@ impl AreaPicker {
                 .on_hover_text("Salva quello che l'app vede, da mandare se la lettura sbaglia");
             if diag.clicked() {
                 if let Some(img) = &last {
-                    match save_diagnosis(img, summary) {
+                    match save_diagnosis(img, summary, cards) {
                         Ok(dir) => {
                             self.error = Some(format!("Diagnosi salvata in {}", dir.display()));
                             open_dir(&dir);
@@ -214,6 +233,7 @@ impl AreaPicker {
                 }
             }
         });
+        self.importer.controls(ui, memory);
         if !self.open {
             if let Some(e) = &self.error {
                 ui.label(RichText::new(e).small());

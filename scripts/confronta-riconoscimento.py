@@ -14,7 +14,19 @@ def read_cases(path, suite, baseline=False):
     for line in output.splitlines():
         # With one test thread libtest can print its prefix on the first log line.
         line = re.sub(r"^test [\w:]+ \.\.\. ", "", line)
-        if suite == "estreme":
+        if suite == "fotogrammi":
+            card = re.fullmatch(r"lettura (\d+) (\w+) (\d+) (-?\d+) ([01])", line)
+            extra = re.fullmatch(r"extra (\d+) (\d+)", line)
+            if card:
+                time, role, expected, picked, auto = card.groups()
+                wrong = expected != picked
+                add = (f"{time}/{role}/{expected}", (int(wrong), int(wrong and auto == "1"),
+                                                       int(not wrong and auto == "0"), 0))
+            elif extra:
+                add = (f"{extra[1]}/extra", (0, 0, 0, int(extra[2])))
+            else:
+                continue
+        elif suite == "estreme":
             delay = re.match(r"seed=(\d+); checkpoint in ritardo=(\d+);", line)
             if delay:
                 delayed[delay[1]] = int(delay[2])
@@ -107,6 +119,7 @@ def read_cases(path, suite, baseline=False):
 
 
 METRICS = {
+    "fotogrammi": ("identità errate o mancanti", "errori automatici", "carte corrette da confermare", "carte in più"),
     "estreme": ("prese mancanti", "interventi totali", "correzioni manuali", "controlli in ritardo"),
     "carte": ("lettura errata", "senza riconoscimento automatico corretto", "posizione mancante", "scarto carte in mano"),
     "mazzi": ("letture non corrette", "letture senza riconoscimento automatico corretto", "campioni"),

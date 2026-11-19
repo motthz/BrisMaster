@@ -1262,7 +1262,9 @@ fn vision_ui(a: &mut Assist, ui: &mut egui::Ui) {
     ui.label(RichText::new(&a.vision.status).small().weak());
     let last = a.vision.reader.as_ref().and_then(|r| r.last_frame());
     let summary = a.vision.status.clone();
-    a.vision.picker.controls(ui, last, &summary);
+    let cards = a.vision.scene.as_ref().map(|scene| scene.hand.iter().chain(&scene.table).collect::<Vec<_>>())
+        .unwrap_or_default();
+    a.vision.picker.controls(ui, last, &summary, &a.vision.memory, &cards);
     let ctx = ui.ctx().clone();
     if let Some(c) = &mut a.vision.confirm {
         let tex = c.texture.get_or_insert_with(|| {
@@ -1641,7 +1643,7 @@ mod tests {
             let v = ((i / 7) as u32).wrapping_mul(c as u32 + 3).wrapping_mul(2654435761).wrapping_shr(24) as u8;
             *p = [v, v / 2, 255 - v];
         }
-        CardView { recovered_outline: false, img, partial: false, vis: crate::vision::WHOLE, sim: [0.0; 40], scores, at: [0.0; 4], styles: Vec::new(), px: [0.0; 2] }
+        CardView { recovered_outline: false, vis_cols: crate::vision::WHOLE, img, partial: false, vis: crate::vision::WHOLE, sim: [0.0; 40], scores, at: [0.0; 4], styles: Vec::new(), px: [0.0; 2] }
     }
 
     fn scene(table: &[Card], hand: &[Card]) -> ScopaScene {

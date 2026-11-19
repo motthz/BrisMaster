@@ -1170,7 +1170,11 @@ pub fn evaluate(obs: &Observation, cfg: &EngineConfig, rng: &mut SmallRng) -> Ve
     }
     let moves = obs.hand.to_vec();
     // Se il mazzo è vuoto le mani sono note: basta un solo mondo.
-    let samples = if obs.deck_len == 0 { 1 } else { cfg.samples.max(1) };
+    let samples = if obs.deck_len == 0 && !obs.has_unobserved_played_cards() {
+        1
+    } else {
+        cfg.samples.max(1)
+    };
     // Con 4 carte o meno nel mazzo i mondi distinti sono pochi e la memoria li riprende:
     // il lavoro è già minimo e i thread non servono.
     let threads = if obs.deck_len <= 4 { 1 } else { (cfg.threads.max(1) as u32).min(samples / 64).max(1) };
@@ -1223,7 +1227,7 @@ pub const INFER_HANDS: usize = 1000;
 /// non finito i mondi si pescano dalle mani avversarie pesate dalla rete di politica.
 pub fn evaluate_with_log(obs: &Observation, cfg: &EngineConfig, log: &[Event], rng: &mut SmallRng) -> Vec<MoveEval> {
     match cfg.ismcts {
-        Some(iterations) if obs.deck_len > 0 && !log.is_empty() => {
+        Some(iterations) if obs.deck_len > 0 && !log.is_empty() && !obs.has_unobserved_played_cards() => {
             let belief = Belief::infer(obs, log, crate::net::policy(), INFER_TEMP, INFER_FLOOR, INFER_HANDS, rng);
             let root = IsmctsPlayer::strong(iterations)
                 .search_with(obs, rng, |r| obs.determinize_given(belief.sample(r), r));

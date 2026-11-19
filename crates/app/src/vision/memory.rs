@@ -39,6 +39,8 @@ pub struct Memory {
     version: u32,
     templates: Vec<Template>,
     #[serde(skip)]
+    pending: Vec<Template>,
+    #[serde(skip)]
     path: Option<PathBuf>,
     #[serde(skip)]
     save_error: Option<String>,
@@ -94,6 +96,40 @@ fn rows(vis: [f32; 2]) -> (usize, usize) {
     (r0, r1)
 }
 
+// Il confronto delle strisce coperte usa la stessa griglia della miniatura.
+fn visible_columns(cols: [f32; 2]) -> (usize, usize) {
+    let margin = CARD_W as f32 / 12.0;
+    let width = CARD_W as f32 - margin * 2.0;
+    let x = |v: f32| ((v * CARD_W as f32 - margin) * TW as f32 / width).clamp(0.0, TW as f32);
+    (x(cols[0]).ceil() as usize, x(cols[1]).floor() as usize)
+}
+
+fn ncc_rect(a: &[u8], b: &[u8], (r0, r1): (usize, usize), cols: (usize, usize)) -> f32 {
+    let (left, right) = cols;
+    if right <= left || (right - left) * (r1 - r0) < TW * TH / 3 {
+        return 0.0;
+    }
+    if cols == (0, TW) {
+        return ncc(a, b, (r0, r1));
+    }
+    let (mut sx, mut sy, mut xx, mut yy, mut xy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for row in r0..r1 {
+        let begin = (row * TW + left) * 3;
+        let end = (row * TW + right) * 3;
+        for (&x, &y) in a[begin..end].iter().zip(&b[begin..end]) {
+            let (x, y) = (f64::from(x), f64::from(y));
+            sx += x;
+            sy += y;
+            xx += x * x;
+            yy += y * y;
+            xy += x * y;
+        }
+    }
+    let n = ((right - left) * (r1 - r0) * 3) as f64;
+    let variance = (xx - sx * sx / n) * (yy - sy * sy / n);
+    if variance <= 0.0 { 0.0 } else { ((xy - sx * sy / n) / variance.sqrt()) as f32 }
+}
+
 /// Correlazione normalizzata fra due miniature, sulle righe `rows`.
 fn ncc(a: &[u8], b: &[u8], (r0, r1): (usize, usize)) -> f32 {
     // Meno di un quarto di carta non basta per dire che è la stessa.
@@ -101,6 +137,10 @@ fn ncc(a: &[u8], b: &[u8], (r0, r1): (usize, usize)) -> f32 {
         return 0.0;
     }
     let (a, b) = (&a[r0 * TW * 3..r1 * TW * 3], &b[r0 * TW * 3..r1 * TW * 3]);
+    correlation(a, b)
+}
+
+fn correlation(a: &[u8], b: &[u8]) -> f32 {
     let n = a.len();
     let ma = a.iter().map(|&v| v as f32).sum::<f32>() / n as f32;
     let mb = b.iter().map(|&v| v as f32).sum::<f32>() / n as f32;
@@ -142,6 +182,38 @@ fn base() -> &'static [Template] {
 fn all<'a>(own: &'a [Template]) -> impl Iterator<Item = &'a Template> {
     let base: &'static [Template] = if cfg!(test) && std::env::var_os("SENZA_MEMORIA_BASE").is_some() { &[] } else { base() };
     base.iter().chain(own.iter())
+}
+
+pub(super) struct Matches {
+    shipped: [Option<f32>; 40],
+    local: [Option<f32>; 40],
+}
+
+impl Default for Matches {
+    fn default() -> Self {
+        Self { shipped: [None; 40], local: [None; 40] }
+    }
+}
+
+impl Matches {
+    pub(super) fn combined(&self) -> [Option<f32>; 40] {
+        std::array::from_fn(|i| match (self.shipped[i], self.local[i]) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        })
+    }
+
+    pub(super) fn conflict(&self) -> bool {
+        let winner = |scores: &[Option<f32>; 40]| {
+            let (card, best) = scores.iter().copied().enumerate()
+                .filter_map(|(card, score)| Some((card, score?)))
+                .max_by(|a, b| a.1.total_cmp(&b.1))?;
+            let runner = scores.iter().enumerate().filter_map(|(i, &s)| (i != card).then_some(s).flatten())
+                .fold(f32::NEG_INFINITY, f32::max);
+            (best >= SURE && best - runner >= SURE_GAP).then_some(card)
+        };
+        matches!((winner(&self.shipped), winner(&self.local)), (Some(a), Some(b)) if a != b)
+    }
 }
 
 /// Somiglianza oltre la quale la carta è considerata la stessa (fra carte diverse dello stesso
@@ -197,7 +269,7 @@ impl Memory {
     /// Copia per una ricostruzione provvisoria: le ipotesi non devono insegnare
     /// carte alla memoria della partita reale, né scrivere sul disco.
     pub fn isolated(&self) -> Memory {
-        Memory { version: self.version, templates: self.templates.clone(), path: None, save_error: None }
+        Memory { version: self.version, templates: self.templates.clone(), pending: Vec::new(), path: None, save_error: None }
     }
 
     pub fn len(&self) -> usize {
@@ -207,26 +279,69 @@ impl Memory {
         cards.len()
     }
 
-    /// Per ogni carta la somiglianza migliore con le immagini ricordate (None se mai vista),
-    /// sulla fascia visibile `vis` (e su quella che si vedeva nell'immagine ricordata).
+    /// Per ogni carta la migliore corrispondenza fra gli esempi disponibili.
     pub fn similarity(&self, img: &Img, vis: [f32; 2]) -> [Option<f32>; 40] {
-        let mut out = [None; 40];
-        if cfg!(test) && std::env::var_os("SENZA_MEMORIA").is_some() {
-            return out;
+        self.visible_matches(img, vis, WHOLE).combined()
+    }
+
+    pub(super) fn visible_matches(&self, img: &Img, vis: [f32; 2], cols: [f32; 2]) -> Matches {
+        let mut matches = Matches::default();
+        if (cfg!(test) && std::env::var_os("SENZA_MEMORIA").is_some()) || all(&self.templates).next().is_none() {
+            return matches;
         }
-        if all(&self.templates).next().is_none() {
-            return out;
-        }
+        let columns = visible_columns(cols);
         let thumbs: Vec<Vec<u8>> = SHIFTS.iter().map(|&o| thumb_at(img, o)).collect();
-        for tpl in all(&self.templates) {
-            let rows = common(vis, tpl.vis);
-            let s = thumbs.iter().map(|t| ncc(t, &tpl.px, rows)).fold(f32::MIN, f32::max);
-            let o = &mut out[tpl.card as usize];
-            if o.is_none_or(|v| s > v) {
-                *o = Some(s);
+        let shipped = if cfg!(test) && std::env::var_os("SENZA_MEMORIA_BASE").is_some() { &[] } else { base() };
+        for (templates, scores) in [(shipped, &mut matches.shipped), (&self.templates[..], &mut matches.local)] {
+            for tpl in templates {
+                let rows = common(vis, tpl.vis);
+                let score = thumbs.iter().map(|image| {
+                    if cols == WHOLE { ncc(image, &tpl.px, rows) }
+                    else { ncc_rect(image, &tpl.px, rows, columns) }
+                }).fold(f32::NEG_INFINITY, f32::max);
+                let slot = &mut scores[tpl.card as usize];
+                if slot.is_none_or(|old| score > old) {
+                    *slot = Some(score);
+                }
             }
         }
-        out
+        matches
+    }
+
+    /// Una lettura automatica entra in memoria solo dopo una seconda
+    /// osservazione compatibile dello stesso volto in un altro evento.
+    pub fn observe(&mut self, img: &Img, vis: [f32; 2], card: Card) {
+        if vis != WHOLE || faint(img) { return; }
+        let pixels = thumb(img);
+        let similar = |tpl: &Template| ncc(&pixels, &tpl.px, rows(WHOLE));
+        if self.pending.iter().any(|tpl| tpl.card != card && similar(tpl) > 0.95) {
+            self.pending.retain(|tpl| similar(tpl) <= 0.95);
+            return;
+        }
+        if let Some(index) = self.pending.iter().position(|tpl| {
+            tpl.card == card && (0.90..0.995).contains(&similar(tpl))
+        }) {
+            self.pending.remove(index);
+            self.remember(img, vis, card);
+        } else if !self.pending.iter().any(|tpl| tpl.card == card && similar(tpl) >= 0.995) {
+            if self.pending.len() >= 80 { self.pending.remove(0); }
+            self.pending.push(Template { card, px: pixels, vis });
+        }
+    }
+
+    /// Applica il mazzo confermato con un solo salvataggio atomico.
+    pub(super) fn import_deck(&mut self, deck: &[Img; 40]) -> Result<(), String> {
+        let mut staged = self.isolated();
+        for (card, img) in deck.iter().enumerate() {
+            staged.remember(img, WHOLE, card as Card);
+        }
+        if let Some(path) = &self.path {
+            save_atomic(path, &staged).map_err(|err| err.to_string())?;
+        }
+        self.templates = staged.templates;
+        self.pending.clear();
+        self.save_error = None;
+        Ok(())
     }
 
     /// Ricorda una carta, vista nella fascia `vis`. Tiene al massimo 4 immagini per carta (luci,
@@ -256,11 +371,71 @@ impl Memory {
     /// Dimentica le immagini uguali a questa (la carta era stata riconosciuta male).
     pub fn forget(&mut self, img: &Img) {
         let t = thumb(img);
+        self.pending.retain(|tpl| ncc(&t, &tpl.px, rows(tpl.vis)) <= 0.97);
         let before = self.templates.len();
         self.templates.retain(|tpl| ncc(&t, &tpl.px, rows(tpl.vis)) <= 0.97);
         if self.templates.len() != before {
             self.save();
         }
+    }
+
+    pub(crate) fn samples(&self) -> Vec<(Card, Img, [f32; 2])> {
+        self.templates.iter().filter_map(|sample| {
+            if sample.card >= 40 || sample.px.len() != TW * TH * 3 {
+                return None;
+            }
+            let img = Img {
+                w: TW,
+                h: TH,
+                px: sample.px.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect(),
+            };
+            Some((sample.card, img, sample.vis))
+        }).collect()
+    }
+
+    pub(crate) fn correct_sample(&mut self, img: &Img, vis: [f32; 2], card: Card) -> Result<(), String> {
+        if card >= 40 || faint(img) {
+            return Err("L’immagine non è abbastanza nitida per la memoria.".into());
+        }
+        let pixels = thumb(img);
+        let mut staged = self.isolated();
+        staged.templates.retain(|sample| ncc(&pixels, &sample.px, rows(sample.vis)) <= 0.97);
+        staged.remember(img, vis, card);
+        self.commit_correction(staged)
+    }
+
+    pub(crate) fn relabel_sample(&mut self, old: Card, image: &Img, vis: [f32; 2], card: Card) -> Result<(), String> {
+        if card >= 40 {
+            return Err("Carta non valida.".into());
+        }
+        let mut staged = self.isolated();
+        let pixels: Vec<_> = image.px.iter().flatten().copied().collect();
+        let Some(index) = staged.templates.iter().position(|sample| sample.card == old && sample.px == pixels && sample.vis == vis) else {
+            return Err("Il campione è cambiato. Aggiorna l’elenco.".into());
+        };
+        let mut sample = staged.templates.remove(index);
+        sample.card = card;
+        if staged.templates.iter().filter(|sample| sample.card == card).count() >= 4 {
+            if let Some(index) = staged.templates.iter().position(|sample| sample.card == card) {
+                staged.templates.remove(index);
+            }
+        }
+        staged.templates.push(sample);
+        self.commit_correction(staged)
+    }
+
+    fn commit_correction(&mut self, staged: Self) -> Result<(), String> {
+        if let Some(path) = &self.path {
+            save_atomic(path, &staged).map_err(|err| err.to_string())?;
+        }
+        self.templates = staged.templates;
+        self.pending.clear();
+        self.save_error = None;
+        Ok(())
+    }
+
+    pub(crate) fn export(&self, path: &std::path::Path) -> std::io::Result<()> {
+        save_atomic(path, self)
     }
 
     pub fn last_error(&self) -> Option<&str> {
@@ -322,6 +497,40 @@ impl Memory {
 #[cfg(test)]
 mod persistence_tests {
     use super::*;
+
+    #[test]
+    fn does_not_learn_the_same_automatic_crop_twice() {
+        let (card, image) = crate::vision::reference::reference_cards().remove(0);
+        let mut memory = Memory::in_memory();
+        memory.observe(&image, WHOLE, card);
+        memory.observe(&image, WHOLE, card);
+        assert_eq!(memory.len(), 0);
+        assert_eq!(memory.pending.len(), 1);
+        memory.remember(&image, WHOLE, card);
+        assert_eq!(memory.len(), 1);
+    }
+
+    #[test]
+    fn ignores_hidden_columns_and_rejects_a_tiny_patch() {
+        let reference: Vec<u8> = (0..TW * TH * 3).map(|i| (i * 13 % 251) as u8).collect();
+        let mut covered = reference.clone();
+        for row in covered.chunks_exact_mut(TW * 3) {
+            row[..8 * 3].fill(0);
+        }
+        let score = ncc_rect(&covered, &reference, (0, TH), (8, TW));
+        assert!((score - 1.0).abs() < 0.001);
+        assert_eq!(ncc_rect(&covered, &reference, (0, 4), (8, TW)), 0.0);
+    }
+
+    #[test]
+    fn separates_conflicting_memory_sources() {
+        let mut matches = Matches::default();
+        matches.shipped[4] = Some(0.98);
+        matches.local[5] = Some(0.96);
+        assert!(matches.conflict());
+        matches.local[4] = Some(0.99);
+        assert!(!matches.conflict());
+    }
 
     /// Scrive la memoria di base da una cartella di carte raddrizzate dall'app (100x160, file
     /// `NN_qualcosa.png` con NN il numero della carta):

@@ -169,5 +169,7 @@ mod tests {
     fn versions_compare() {
         assert!(parse_version("v0.2.0").unwrap() > parse_version("0.1.9").unwrap());
         assert!(parse_version("v1.0.0").unwrap() > parse_version(CURRENT).unwrap());
+        assert!(parse_version("v0.6.10.1").unwrap() > parse_version("0.6.10").unwrap());
+        assert_eq!(parse_version("v0.6.10.1").unwrap(), parse_version("0.6.10+1").unwrap());
     }
 }

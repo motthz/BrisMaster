@@ -5,6 +5,7 @@
 
 pub mod capture;
 pub mod detect;
+mod deck_import;
 pub mod live;
 pub mod memory;
 pub mod reference;
@@ -100,6 +101,7 @@ pub struct CardView {
     pub partial: bool,
     /// Fascia visibile della carta: frazioni dell'altezza, dalla testa.
     pub vis: [f32; 2],
+    pub vis_cols: [f32; 2],
     /// Somiglianza (-1..1) con ciascuna delle 40 carte di riferimento.
     pub sim: [f32; 40],
     /// Punteggio di ciascuna delle 40 carte (più alto = più probabile).
@@ -111,6 +113,30 @@ pub struct CardView {
     pub styles: Vec<[f32; 40]>,
     /// Lato lungo e lato corto della carta sullo schermo, in pixel (0 se non si sa).
     pub px: [f32; 2],
+}
+
+/// Dettaglio locale della parte visibile, usato nel confronto fra fotogrammi
+/// della stessa sagoma. Il bordo della carta e il tavolo non partecipano.
+pub(crate) fn visible_detail(view: &CardView) -> f32 {
+    let lum = |[r, g, b]: [u8; 3]| (i32::from(r) + 2 * i32::from(g) + i32::from(b)) / 4;
+    let (w, h) = (view.img.w, view.img.h);
+    let bounds = |[from, to]: [f32; 2], length: usize| {
+        (((from.max(0.10) * length as f32).ceil() as usize).min(length),
+         ((to.min(0.90) * length as f32).floor() as usize).min(length))
+    };
+    let (x0, x1) = bounds(view.vis_cols, w);
+    let (y0, y1) = bounds(view.vis, h);
+    let mut total = 0u64;
+    let mut samples = 0u32;
+    for y in (y0..y1.saturating_sub(1)).step_by(3) {
+        for x in (x0..x1.saturating_sub(1)).step_by(3) {
+            let p = lum(view.img.at(x, y));
+            total += (p - lum(view.img.at(x + 1, y))).unsigned_abs() as u64;
+            total += (p - lum(view.img.at(x, y + 1))).unsigned_abs() as u64;
+            samples += 2;
+        }
+    }
+    total as f32 / samples.max(1) as f32
 }
 
 pub const CARD_W: usize = 100;
@@ -357,7 +383,14 @@ fn focused_scene_inner(img: &Img) -> Scene {
                 true
             }
         });
-        if clear && !vanished && count(&scene) >= expected && count(&scene) > 0 {
+        let spans_slots = FOCUS.with(|focus| {
+            let focus = focus.borrow();
+            let interior = |p: [f32; 2]| {
+                p[0] >= r[0] && p[0] <= r[2] && p[1] >= r[1] && p[1] <= r[3]
+            };
+            focus.samples < 5 || focus.opp.into_iter().chain(focus.mine).all(interior)
+        });
+        if clear && !vanished && spans_slots && count(&scene) >= expected && count(&scene) > 0 {
             let (sx, sy) = ((x1 - x0) as f32 / img.w as f32, (y1 - y0) as f32 / img.h as f32);
             let (ox, oy) = (x0 as f32 / img.w as f32, y0 as f32 / img.h as f32);
             for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
@@ -427,10 +460,16 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
         let am = |v: &[f32; 40]| (0..40).max_by(|&a, &b| v[a].total_cmp(&v[b])).unwrap();
         eprintln!("RETE top {top:.2} peso {w:.2} parziale {} rif {} rete {}", view.partial, am(&view.sim), am(&lp));
     }
-    if w > 0.0 && !view.partial {
-        if let Some(lp) = nn::log_probs(&view.img) {
+    if w > 0.0 {
+        let neural = if view.partial {
+            nn::partial_log_probs(&view.img, view.vis, view.vis_cols)
+        } else {
+            nn::log_probs(&view.img)
+        };
+        if let Some(lp) = neural {
+            let weight = if view.partial { 0.10 * w } else { w };
             for c in 0..40 {
-                s[c] += w * k * lp[c].max(-12.0);
+                s[c] += weight * k * lp[c].max(-12.0);
             }
         }
     }
@@ -461,12 +500,20 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
     }
     // (Nemmeno la memoria delle carte viste può dare una carta esclusa: un'immagine ricordata
     // sotto il nome sbagliato non deve ripetere l'errore.)
-    let mut sims = mem.similarity(&view.img, view.vis);
+    // Il confronto già affidabile per i mazzi noti può includere una striscia
+    // molto stretta. La maschera è una prova di riserva sulle letture deboli.
+    let narrow_evidence = view.vis_cols != WHOLE && (view.recovered_outline || top < 0.55);
+    let columns = if narrow_evidence { view.vis_cols } else { WHOLE };
+    let matches = mem.visible_matches(&view.img, view.vis, columns);
+    let mut memory_conflict = matches.conflict();
+    let mut sims = matches.combined();
     if !view.partial && top < DECISIVE_BELOW && sims.iter().any(Option::is_some)
         && !sims.iter().flatten().any(|&s| s >= memory::SURE) {
         let mut flipped = view.img.clone();
         flipped.px.reverse();
-        let reverse = mem.similarity(&flipped, [1.0 - view.vis[1], 1.0 - view.vis[0]]);
+        let reversed = mem.visible_matches(&flipped, [1.0 - view.vis[1], 1.0 - view.vis[0]], WHOLE);
+        memory_conflict |= reversed.conflict();
+        let reverse = reversed.combined();
         if reverse.iter().flatten().any(|&s| s >= memory::SURE) {
             for (score, rotated) in sims.iter_mut().zip(reverse) {
                 if let Some(b) = rotated { *score = Some(score.map_or(b, |a| a.max(b))); }
@@ -489,9 +536,12 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
     if let Some(&(c, v)) = order.first() {
         let second = order.get(1).map_or(f32::MIN, |o| o.1);
         if top < DECISIVE_BELOW && v >= memory::SURE && v - second >= memory::SURE_GAP && !(cfg!(test) && std::env::var_os("SENZA_DECISIVA").is_some()) {
-            let top = s.iter().copied().fold(f32::MIN, f32::max);
-            s[c] = s[c].max(top + 6.0);
-            verified_memory = true;
+            memory_conflict |= excluded[c];
+            if !memory_conflict && !narrow_evidence {
+                let top = s.iter().copied().fold(f32::MIN, f32::max);
+                s[c] = s[c].max(top + 6.0);
+                verified_memory = true;
+            }
         }
     }
     // La concordanza tra stampe aumenta la fiducia solo se conferma
@@ -506,7 +556,20 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
             }
         }
     }
-    if view.recovered_outline && !verified_memory {
+    // Solo il confronto incerto di una stampa intera, senza riscontro in memoria.
+    if !view.partial && !view.recovered_outline && !memory_conflict && !verified_memory
+        && (0.60..0.79).contains(&top) {
+        let mut ordered = s;
+        ordered.sort_by(|a, b| b.total_cmp(a));
+        if ordered[0] - ordered[1] < 1.0 {
+            if let Some(card) = reference::luminance_alignment(&view.img) {
+                if !excluded[card] && ordered[0] - s[card] <= 1.0 {
+                    s[card] = s[card].max(ordered[0] + 0.2);
+                }
+            }
+        }
+    }
+    if memory_conflict || ((view.recovered_outline || narrow_evidence) && !verified_memory) {
         // La sagoma dà la posizione, ma non dimostra seme e valore. Finché
         // non si ritrova in memoria, conserva l'ordine dei candidati e limita
         // il distacco anche dopo aver escluso carte impossibili.
@@ -520,7 +583,7 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
 
 impl CardView {
     pub fn new(img: Img, vis: [f32; 2], sim: [f32; 40]) -> CardView {
-        CardView { recovered_outline: false, img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim), at: [0.0; 4], styles: Vec::new(), px: [0.0; 2] }
+        CardView { recovered_outline: false, vis_cols: WHOLE, img, partial: vis[1] - vis[0] < 0.9, vis, sim, scores: reference_scores(&sim), at: [0.0; 4], styles: Vec::new(), px: [0.0; 2] }
     }
 
     /// La carta più probabile fra `among`, e quanto stacca la seconda.
@@ -561,7 +624,12 @@ pub enum Reading<S> {
 /// Lettura per la briscola: trova le carte e le riconosce (None se non c'è nessuna carta scoperta).
 /// La memoria resta bloccata solo mentre si confrontano le carte trovate, non durante la ricerca.
 pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
+    let profile = std::env::var_os("BRIS_PROFILO_CARTE").is_some();
+    let started = std::time::Instant::now();
     let mut scene = focused_scene(img);
+    let detected = started.elapsed();
+    if profile { eprintln!("profilo briscola rilevamento {} us", detected.as_micros()); }
+    let classify_at = std::time::Instant::now();
     let found = scene.trump.is_some() || !scene.hand.is_empty() || scene.opp_slot.is_some() || scene.my_slot.is_some();
     if !found {
         return None;
@@ -591,6 +659,8 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
         recognize(v, &mem);
     }
     resolve_hand_duplicates(&mut scene.hand);
+    resolve_table_duplicates(&mut scene);
+    if profile { eprintln!("profilo briscola classificazione {} us", classify_at.elapsed().as_micros()); }
     Some(scene)
 }
 
@@ -620,13 +690,41 @@ fn resolve_hand_duplicates(hand: &mut [CardView]) {
     }
 }
 
+/// Una briscola scoperta e due carte in tavola distanti dalla mano sono ruoli
+/// diversi. Si corregge soltanto la proposta incerta di un contorno recuperato.
+fn resolve_table_duplicates(scene: &mut Scene) {
+    let mut confirmed = CardSet::EMPTY;
+    for view in scene.hand.iter().filter(|v| !v.partial && !v.recovered_outline) {
+        if let Some((card, _)) = view.best(CardSet::FULL).filter(|&(_, margin)| margin >= 4.0) {
+            confirmed.insert(card);
+        }
+    }
+    for view in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot) {
+        if !view.recovered_outline || view.partial { continue; }
+        let Some((card, margin)) = view.best(CardSet::FULL) else { continue };
+        if !confirmed.contains(card) || margin >= 1.0 { continue; }
+        let Some((alternative, _)) = view.best(CardSet::FULL.minus(confirmed)) else { continue };
+        let ceiling = view.scores[alternative as usize] - 0.01;
+        if view.scores[card as usize] - ceiling > 1.0 { continue; }
+        for id in confirmed.iter() {
+            view.scores[id as usize] = view.scores[id as usize].min(ceiling);
+        }
+    }
+}
+
 /// Lettura per la scopa: mano e carte in tavola, riconosciute (None se il tavolo non si vede).
 pub fn read_scopa(img: &Img, mem: &Mutex<Memory>) -> Option<ScopaScene> {
-    let mut scene = detect::scopa(img)?;
+    let profile = std::env::var_os("BRIS_PROFILO_CARTE").is_some();
+    let started = std::time::Instant::now();
+    let detected = detect::scopa(img);
+    if profile { eprintln!("profilo scopa rilevamento {} us", started.elapsed().as_micros()); }
+    let classify_at = std::time::Instant::now();
+    let mut scene = detected?;
     let mem = mem.lock().unwrap_or_else(|e| e.into_inner()).isolated();
     for v in scene.hand.iter_mut().chain(&mut scene.table) {
         recognize(v, &mem);
     }
+    if profile { eprintln!("profilo scopa classificazione {} us", classify_at.elapsed().as_micros()); }
     Some(scene)
 }
 
@@ -634,6 +732,8 @@ pub fn read_scopa(img: &Img, mem: &Mutex<Memory>) -> Option<ScopaScene> {
 pub trait Located {
     /// Tutte le carte visibili, inseguite singolarmente fra i riconoscimenti.
     fn spots(&self) -> Vec<[f32; 4]>;
+    fn refine_native(&mut self, _img: &Img) {}
+
 }
 
 impl Located for Scene {
@@ -646,11 +746,45 @@ impl Located for Scene {
             .map(|v| v.at)
             .collect()
     }
+    fn refine_native(&mut self, img: &Img) {
+        for card in self.hand.iter_mut().chain(&mut self.opp_slot).chain(&mut self.my_slot) {
+            refine_small_crop(card, img);
+        }
+    }
 }
 
 impl Located for ScopaScene {
     fn spots(&self) -> Vec<[f32; 4]> {
         self.hand.iter().chain(self.table.iter()).map(|v| v.at).collect()
+    }
+    fn refine_native(&mut self, img: &Img) {
+        for card in self.hand.iter_mut().chain(&mut self.table) {
+            refine_small_crop(card, img);
+        }
+    }
+}
+
+fn refine_small_crop(card: &mut CardView, frame: &Img) {
+    if card.partial || card.px[1] > 80.0
+        || card.best(CardSet::FULL).is_none_or(|(_, margin)| margin >= 1.4) {
+        return;
+    }
+    let [l, t, r, b] = card.at;
+    if l < 0.0 || t < 0.0 || r > 1.0 || b > 1.0 || r <= l || b <= t { return; }
+    let w = frame.w as f32;
+    let h = frame.h as f32;
+    let ratio = (r - l) * w / ((b - t) * h);
+    if !(0.52..=0.76).contains(&ratio) { return; }
+    let rect = detect::RotRect { cx: (l+r)*w/2.0, cy: (t+b)*h/2.0,
+        u: (1.0, 0.0), v: (0.0, 1.0), hw: (r-l)*w/2.0, hh: (b-t)*h/2.0 };
+    let img = detect::warp(frame, &rect);
+    let (sim, styles) = reference::Match::with_cols(&img, WHOLE, WHOLE).refine_styles();
+    let Some(id) = reference::agreeing_card(&styles) else { return };
+    let (old, _) = card.best(CardSet::FULL).unwrap();
+    let top = card.scores[old as usize];
+    if sim[id] >= 0.88 && top - card.scores[id] < 0.40 {
+        if id != old as usize { card.scores[id] = top + 0.15; }
+        card.img = img;
     }
 }
 
@@ -766,7 +900,8 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
         let last_result = Arc::new(Mutex::new(std::time::Instant::now()));
         let work = Arc::new(Mutex::new(None::<std::time::Instant>));
         let last = Arc::new(Mutex::new(None));
-        let queue: Arc<(Mutex<Frames<(usize, Option<Place>, u64, std::time::Instant)>>, Condvar)> =
+        type FrameInfo = (usize, Option<Place>, u64, Option<Arc<Img>>);
+        let queue: Arc<(Mutex<Frames<FrameInfo>>, Condvar)> =
             Arc::new((Mutex::new(Frames::new(every)), Condvar::new()));
         // Quanto sono lunghe le carte sullo schermo, in pixel veri (0 se non si sa ancora).
         let card_px = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -799,6 +934,9 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                     match capture(monitor.load(Ordering::Relaxed)) {
                         Ok((img, count, geom)) => {
                             let captured = std::time::Instant::now();
+                            if std::env::var_os("BRIS_PROFILO_CARTE").is_some() {
+                                eprintln!("profilo cattura {} us", captured.duration_since(t0).as_micros());
+                            }
                             spot.lock().unwrap_or_else(|e| e.into_inner()).capture_ok = true;
                             monitors.store(count.max(1), Ordering::Relaxed);
                             let table = Arc::new(screen::table(&img, &area));
@@ -807,11 +945,19 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                             follow(&spot, &table, (geom, area), captured);
                             ctx.request_repaint();
                             let k = shrink_factor(table.w, card_px.load(Ordering::Relaxed));
-                            let table = shrink_by((*table).clone(), k);
+                            let reduced = shrink_by((*table).clone(), k);
                             let (lock, cv) = &*queue;
                             let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
+                            // Conserva l'originale solo entro il budget della coda. Una
+                            // cattura più recente non è un sostituto per questa.
+                            let native = if k > 1 {
+                                let buffered: usize = q.frames.iter()
+                                    .filter_map(|(_, _, info, _, _)| info.3.as_ref())
+                                    .map(|image| image.px.len()).sum();
+                                (buffered + table.px.len() <= 24_000_000).then_some(table)
+                            } else { None };
                             frame_id += 1;
-                            if q.offer_with(table, (k, Some((geom, area)), frame_id, captured), captured) {
+                            if q.offer_with(reduced, (k, Some((geom, area)), frame_id, native), captured) {
                                 let mut w = work.lock().unwrap_or_else(|e| e.into_inner());
                                 if w.is_none() {
                                     *w = q.oldest_changed();
@@ -850,6 +996,7 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
             // uguale non si analizza di nuovo (al più tre volte di fila: quello che l'app impara
             // dalle conferme può cambiare la lettura).
             let mut seen: Option<(Vec<u8>, Option<S>, u32)> = None;
+            let mut last_place = None;
             // Le zone delle carte delle ultime letture: la cattura guarda i cambi solo lì.
             let mut boxes: std::collections::VecDeque<[f32; 4]> = Default::default();
             let mut empty = 0u32;
@@ -857,9 +1004,15 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                 let reading = match wait_frame(&queue, &flag, &err_rx) {
                     Err(error) => Reading::Error(error),
                     Ok(None) => { flag.store(true, Ordering::Relaxed); break; }
-                    Ok(Some((table, (k, at, frame_id, _), captured, _))) => {
+                    Ok(Some((table, (k, at, frame_id, native), captured, _))) => {
                         // Un errore nella lettura di una schermata non deve fermare le letture
                         // dopo: si mostra e si continua.
+                        if last_place != Some((at, k)) {
+                            last_place = Some((at, k));
+                            seen = None;
+                            boxes.clear();
+                            forget_focus();
+                        }
                         let sig = signature(&table);
                         let same = seen.as_ref().is_some_and(|(old, _, n)| *n < 8 && difference(old, &sig) < 0.05 && changed_cells(old, &sig) == 0);
                         let scene = if same {
@@ -867,7 +1020,13 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                             s.2 += 1;
                             Ok(s.1.clone())
                         } else {
-                            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&table, &mem)));
+                            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let mut scene = read(&table, &mem)?;
+                                if let Some(native) = native {
+                                    scene.refine_native(&native);
+                                }
+                                Some(scene)
+                            }));
                             seen = r.as_ref().ok().map(|s| (sig, s.clone(), 0));
                             r
                         };
@@ -2482,3 +2641,6 @@ mod other_sites {
         }
     }
 }
+
+#[cfg(test)]
+mod replay;

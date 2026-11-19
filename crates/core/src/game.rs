@@ -198,6 +198,21 @@ impl Observation {
         u
     }
 
+    /// Carte ignote in eccesso rispetto a mano avversaria e tallone: alcune sono
+    /// già uscite in prese che l'assistente non ha potuto osservare.
+    pub fn has_unobserved_played_cards(&self) -> bool {
+        let trump_in_opp = self.trump_is_unseen_in_opponent_hand() as u32;
+        let hidden = u32::from(self.opp_hand_len) + u32::from(self.deck_len.saturating_sub(1));
+        self.unknown().len() + trump_in_opp > hidden
+    }
+
+    fn trump_is_unseen_in_opponent_hand(&self) -> bool {
+        self.deck_len == 0
+            && !self.hand.contains(self.trump_card)
+            && !self.played.contains(self.trump_card)
+            && self.table != Some(self.trump_card)
+    }
+
     /// Come `determinize`, ma con la mano avversaria data (deve essere compatibile con
     /// quello che so): a caso resta solo l'ordine del mazzo.
     pub fn determinize_given<R: Rng>(&self, opp_hand: CardSet, rng: &mut R) -> Game {
@@ -207,9 +222,11 @@ impl Observation {
         let mut rest = self.unknown().minus(opp_hand).to_vec();
         rest.shuffle(rng);
         g.hands[opp] = opp_hand;
+        let hidden = self.deck_len.saturating_sub(1) as usize;
         if self.deck_len > 0 {
-            g.deck[1..self.deck_len as usize].copy_from_slice(&rest);
+            g.deck[1..self.deck_len as usize].copy_from_slice(&rest[..hidden]);
         }
+        g.played = self.played.union(rest[hidden..].iter().copied().collect());
         g
     }
 
@@ -224,10 +241,7 @@ impl Observation {
         let mut hands = [CardSet::EMPTY; 2];
         hands[me] = self.hand;
         let mut need = self.opp_hand_len as usize;
-        let trump_in_opp = self.deck_len == 0
-            && !self.hand.contains(self.trump_card)
-            && !self.played.contains(self.trump_card)
-            && self.table != Some(self.trump_card);
+        let trump_in_opp = self.trump_is_unseen_in_opponent_hand();
         if trump_in_opp {
             hands[opp].insert(self.trump_card);
             need -= 1;
@@ -235,14 +249,13 @@ impl Observation {
         for &c in &unknown[..need] {
             hands[opp].insert(c);
         }
-        let rest = &unknown[need..];
+        // Dopo un recupero, il pool contiene anche carte già uscite ma ignote.
+        // In ogni simulazione ne teniamo solo quante servono al tallone.
         let mut deck = [0u8; NUM_CARDS];
+        let hidden = self.deck_len.saturating_sub(1) as usize;
         if self.deck_len > 0 {
-            debug_assert_eq!(rest.len() + 1, self.deck_len as usize);
             deck[0] = self.trump_card;
-            deck[1..self.deck_len as usize].copy_from_slice(rest);
-        } else {
-            debug_assert!(rest.is_empty());
+            deck[1..self.deck_len as usize].copy_from_slice(&unknown[need..need + hidden]);
         }
         Game {
             hands,
@@ -253,7 +266,7 @@ impl Observation {
             leader: self.leader,
             table: self.table,
             points: self.points,
-            played: self.played,
+            played: self.played.union(unknown[need + hidden..].iter().copied().collect()),
             trump_card_owner: self.trump_card_owner,
         }
     }
@@ -264,6 +277,35 @@ mod tests {
     use super::*;
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
+
+    #[test]
+    fn samples_the_remaining_opponent_hand_after_unseen_final_tricks() {
+        let obs = Observation {
+            me: 0,
+            hand: [1, 2].into_iter().collect(),
+            opp_hand_len: 2,
+            deck_len: 0,
+            trump_card: 0,
+            trump: 0,
+            leader: 0,
+            table: None,
+            points: [0, 0],
+            played: (6..40).collect(),
+            trump_card_owner: Some(1),
+        };
+        assert!(obs.has_unobserved_played_cards());
+        let mut rng = SmallRng::seed_from_u64(42);
+        let mut possibilities = CardSet::EMPTY;
+        for _ in 0..32 {
+            let game = obs.determinize(&mut rng);
+            assert_eq!(game.hands[1].len(), 2);
+            assert!(game.hands[1].contains(0));
+            assert_eq!(game.played.len(), 36);
+            assert!(game.played.minus(game.hands[1]) == game.played);
+            possibilities = possibilities.union(game.hands[1]);
+        }
+        assert_eq!(possibilities, [0, 3, 4, 5].into_iter().collect());
+    }
 
     #[test]
     fn full_random_game_sums_to_120() {

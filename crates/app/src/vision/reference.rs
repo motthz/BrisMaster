@@ -61,16 +61,19 @@ pub fn sheet_cell(c: cards::Card) -> (usize, usize) {
 }
 
 /// Il foglio di uno stile, decodificato.
-fn sheet(style: &Style) -> Img {
-    let im = image::load_from_memory_with_format(style.bytes, style.format).expect("foglio delle carte").to_rgba8();
-    Img::from_rgba(im.width() as usize, im.height() as usize, im.as_raw())
+fn sheet(index: usize) -> &'static Img {
+    static SHEETS: [OnceLock<Img>; STYLES.len()] = [const { OnceLock::new() }; STYLES.len()];
+    SHEETS[index].get_or_init(|| {
+        let style = &STYLES[index];
+        let im = image::load_from_memory_with_format(style.bytes, style.format).expect("foglio delle carte").to_rgba8();
+        Img::from_rgba(im.width() as usize, im.height() as usize, im.as_raw())
+    })
 }
 
 /// L'immagine della carta `c` nel mazzo `style` (per i test che compongono tavoli finti).
 #[cfg(test)]
 pub fn card_image(style: usize, c: cards::Card) -> Img {
-    let st = &STYLES[style];
-    let sheet = sheet(st);
+    let sheet = sheet(style);
     let (cw, ch) = (sheet.w / 10, sheet.h / 4);
     let (col, row) = sheet_cell(c);
     sheet.crop(col * cw + 1, row * ch + 1, (col + 1) * cw - 1, (row + 1) * ch - 1)
@@ -80,10 +83,10 @@ pub fn card_image(style: usize, c: cards::Card) -> Img {
 /// (CARD_W x CARD_H).
 pub fn reference_cards() -> Vec<(cards::Card, Img)> {
     let mut out = Vec::new();
-    for style in &STYLES {
-        let sheet = sheet(style);
+    for (index, style) in STYLES.iter().enumerate() {
+        let sheet = sheet(index);
         for c in 0..40u8 {
-            let (x0, y0, x1, y1) = cell_rect(&sheet, style, c);
+            let (x0, y0, x1, y1) = cell_rect(sheet, style, c);
             let mut img = Img::new(CARD_W, CARD_H);
             for y in 0..CARD_H {
                 for x in 0..CARD_W {
@@ -278,11 +281,11 @@ fn templates() -> &'static Vec<Stats> {
     static T: OnceLock<Vec<Stats>> = OnceLock::new();
     T.get_or_init(|| {
         let mut out = Vec::with_capacity(NT);
-        for style in &STYLES {
-            let sheet = sheet(style);
+        for (index, style) in STYLES.iter().enumerate() {
+            let sheet = sheet(index);
             for c in 0..40u8 {
-                let (x0, y0, x1, y1) = cell_rect(&sheet, style, c);
-                out.push(Stats::new(sample_thumb(&sheet, x0, y0, x1, y1)));
+                let (x0, y0, x1, y1) = cell_rect(sheet, style, c);
+                out.push(Stats::new(sample_thumb(sheet, x0, y0, x1, y1)));
             }
         }
         out
@@ -370,11 +373,11 @@ fn template_hues() -> &'static Vec<Hues> {
     static T: OnceLock<Vec<Hues>> = OnceLock::new();
     T.get_or_init(|| {
         let mut out = Vec::with_capacity(NT);
-        for style in &STYLES {
-            let sheet = sheet(style);
+        for (index, style) in STYLES.iter().enumerate() {
+            let sheet = sheet(index);
             for c in 0..40u8 {
-                let (x0, y0, x1, y1) = cell_rect(&sheet, style, c);
-                out.push(Hues::new(&sheet, x0, y0, x1, y1));
+                let (x0, y0, x1, y1) = cell_rect(sheet, style, c);
+                out.push(Hues::new(sheet, x0, y0, x1, y1));
             }
         }
         out
@@ -867,6 +870,29 @@ pub fn agreeing_card(styles: &[[f32; 40]]) -> Option<usize> {
     (votes[strongest.0] >= 2).then_some(strongest.0)
 }
 
+/// Secondo confronto in luminanza per un disegno riconoscibile con pigmenti
+/// diversi. Il margine su identità distinte evita che due stampe della stessa
+/// carta contino come due candidati concorrenti.
+pub(super) fn luminance_alignment(img: &Img) -> Option<usize> {
+    let mut seen = Seen::new(img, WHOLE, WHOLE);
+    seen.gray = true;
+    let mut scores = [f32::NEG_INFINITY; 40];
+    for dx in [-0.025, 0.0, 0.025] {
+        for dy in [-0.02, 0.0, 0.02] {
+            for scale in [0.065, 0.105] {
+                let crop = Crop::new(scale, scale * 0.7, dx, dy);
+                for (index, _) in templates().iter().enumerate() {
+                    let score = seen.score(crop, index);
+                    scores[index % 40] = scores[index % 40].max(score);
+                }
+            }
+        }
+    }
+    let mut order: Vec<_> = scores.iter().copied().enumerate().collect();
+    order.sort_by(|a, b| b.1.total_cmp(&a.1));
+    (order[0].1 >= 0.82 && order[0].1 - order[1].1 >= 0.09).then_some(order[0].0)
+}
+
 /// La somiglianza di una carta tenendo conto dello stile del sito: gli altri stili pesano meno.
 pub fn with_style(per_style: &[[f32; 40]], style: usize) -> [f32; 40] {
     let mut out = [f32::MIN; 40];
@@ -923,8 +949,8 @@ mod tests {
     /// Ogni carta del foglio, raddrizzata come quelle dello schermo, riconosce sé stessa.
     #[test]
     fn sheet_cards_recognize_themselves() {
-        for style in &STYLES {
-            check_style(&sheet(style));
+        for index in 0..STYLES.len() {
+            check_style(sheet(index));
         }
     }
 

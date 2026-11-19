@@ -64,6 +64,13 @@ def augment(im):
     if random.random() < 0.3:
         x0 = random.randint(0, W - 8); y0 = random.randint(0, H - 8)
         t[:, y0:y0 + random.randint(6, 20), x0:x0 + random.randint(6, 16)] = torch.rand(3, 1, 1)
+    if random.random() < 0.35:
+        # Le parti coperte visibili al classificatore in Rust sono neutralizzate.
+        axis = random.choice((1, 2))
+        length = t.shape[axis]
+        hidden = random.randint(length // 8, length // 3)
+        start = random.choice((0, length - hidden))
+        t.narrow(axis, start, hidden).fill_(245.0 / 255.0)
     t = t + torch.randn_like(t) * random.uniform(0, 0.04)
     return t
 class Net(nn.Module):
@@ -96,8 +103,48 @@ def evaluate(model, decks):
             p = logp40(model, x).argmax(1).numpy()
             res[name] = int((p == np.arange(40)).sum())
     model.train(); return res
+
+def load_export(model, path):
+    values = np.fromfile(path, dtype="<f4")
+    offset = 0
+    with torch.no_grad():
+        for name in ("c1", "c2", "c3", "c4", "fc", "suit", "rank"):
+            layer = getattr(model, name)
+            for tensor in (layer.weight, layer.bias):
+                end = offset + tensor.numel()
+                tensor.copy_(torch.from_numpy(values[offset:end].copy()).reshape_as(tensor))
+                offset = end
+    if offset != len(values):
+        raise ValueError(f"Numero di pesi inatteso in {path}")
+
+
+def measure_masks(model, decks):
+    masks = {
+        "intera": (slice(0, 0), slice(None)),
+        "alto": (slice(0, H // 4), slice(None)),
+        "basso": (slice(H * 3 // 4, H), slice(None)),
+        "sinistra": (slice(None), slice(0, W // 4)),
+        "destra": (slice(None), slice(W * 3 // 4, W)),
+    }
+    model.eval()
+    records = []
+    with torch.no_grad():
+        for deck, images in decks.items():
+            full = torch.stack([to_t(img) for img in images])
+            for mask, (rows, cols) in masks.items():
+                batch = full.clone()
+                batch[:, :, rows, cols] = 245.0 / 255.0
+                suit, rank = model(torch.stack([norm(card) for card in batch]))
+                for card, (su, rk) in enumerate(zip(suit.argmax(1), rank.argmax(1), strict=True)):
+                    records.append((deck, mask, card, int(su), int(rk)))
+    return records
+
 if __name__ == '__main__':
     train_dirs = sys.argv[1].split(','); test_root = sys.argv[2]; out = sys.argv[3]; epochs = int(sys.argv[4])
+    train_paths = {os.path.realpath(d) for d in train_dirs}
+    eval_paths = {os.path.realpath(os.path.join(test_root, d)) for d in os.listdir(test_root)}
+    if train_paths & eval_paths:
+        raise ValueError("I mazzi di valutazione devono essere separati dall'allenamento")
     train = [(c, im) for d in train_dirs for c, im in enumerate(load_deck(d))]
     views = []
     if len(sys.argv) > 5:
@@ -107,7 +154,10 @@ if __name__ == '__main__':
         print('viste', len(views), flush=True)
     tests = {d: load_deck(os.path.join(test_root, d)) for d in sorted(os.listdir(test_root))}
     random.seed(0); torch.manual_seed(0)
-    model = Net(); opt = torch.optim.AdamW(model.parameters(), 2e-3, weight_decay=1e-3)
+    model = Net()
+    if warm_start := os.environ.get("BRIS_RETE_PESI_INIZIALI"):
+        load_export(model, warm_start)
+    opt = torch.optim.AdamW(model.parameters(), 2e-3, weight_decay=1e-3)
     steps = epochs * 40
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, 3e-3, total_steps=steps)
     t0 = time.time()
@@ -121,3 +171,9 @@ if __name__ == '__main__':
             r = evaluate(model, tests)
             print(f'passo {step+1} perdita {loss.item():.3f} {int(time.time()-t0)}s', r, 'tot', sum(r.values()), flush=True)
     torch.save(model.state_dict(), out)
+    if report := os.environ.get("BRIS_RETE_RISULTATI"):
+        import csv
+        with open(report, "w", newline="", encoding="utf-8") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(("mazzo", "maschera", "carta", "seme_predetto", "valore_predetto"))
+            writer.writerows(measure_masks(model, tests))

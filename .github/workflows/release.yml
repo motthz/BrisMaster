@@ -26,7 +26,12 @@ jobs:
         shell: bash
         run: |
           version=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
+          version=${version//+/.}
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          notes="docs/RELEASE-$version.md"
+          if [[ -f "$notes" ]]; then
+            echo "notes=$notes" >> "$GITHUB_OUTPUT"
+          fi
           if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
             echo "La release v$version esiste già, niente da fare."
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -77,6 +82,7 @@ jobs:
             BrisMaster.exe.sha256
             BrisMaster-Setup.exe
             BrisMaster-Setup.exe.sha256
+          body_path: ${{ steps.ver.outputs.notes }}
           body: |
             **Installazione:** scarica `BrisMaster-Setup.exe` qui sotto, nella sezione **Assets**, e aprilo: installa BrisMaster per il tuo utente (senza permessi di amministratore), con il collegamento sul desktop e nel menu Start. Si disinstalla da *Impostazioni → App*.
             In alternativa `BrisMaster.exe` è il programma da solo, senza installazione.

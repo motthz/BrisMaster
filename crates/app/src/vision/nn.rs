@@ -201,3 +201,24 @@ pub fn log_probs(card: &Img) -> Option<[f32; 40]> {
     let lr = log_softmax(&dense(&net.rank, &hidden, false));
     Some(std::array::from_fn(|c| ls[c / 10] + lr[c % 10]))
 }
+
+
+/// Valuta seme e rango dopo aver neutralizzato la zona coperta. Una finestra
+/// troppo piccola non fornisce un'evidenza affidabile per la rete.
+pub(super) fn partial_log_probs(img: &Img, rows: [f32; 2], cols: [f32; 2]) -> Option<[f32; 40]> {
+    let area = (rows[1] - rows[0]) * (cols[1] - cols[0]);
+    if img.w != CARD_W || img.h != CARD_H || area < 0.65 {
+        return None;
+    }
+    let mut masked = img.clone();
+    for y in 0..CARD_H {
+        for x in 0..CARD_W {
+            let u = (x as f32 + 0.5) / CARD_W as f32;
+            let v = (y as f32 + 0.5) / CARD_H as f32;
+            if u < cols[0] || u > cols[1] || v < rows[0] || v > rows[1] {
+                masked.px[y * CARD_W + x] = [245; 3];
+            }
+        }
+    }
+    log_probs(&masked)
+}

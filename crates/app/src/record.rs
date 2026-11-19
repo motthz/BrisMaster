@@ -94,6 +94,10 @@ pub enum Event {
         presa: u8,
         chi: &'static str,
         carta: CardRec,
+        #[serde(skip)]
+        identificata: bool,
+        #[serde(skip)]
+        ritaglio: Option<(crate::vision::Img, [f32; 2])>,
         /// Solo per le mie giocate.
         #[serde(skip_serializing_if = "Option::is_none")]
         prima: Option<Seen>,
@@ -114,7 +118,7 @@ pub fn who(p: u8) -> &'static str {
 }
 
 impl Event {
-    pub fn play(pos: &Position, c: Card, advice: Option<Advice>) -> Event {
+    pub fn play(pos: &Position, c: Card, advice: Option<Advice>, identificata: bool) -> Event {
         let p = pos.to_move();
         let prima = (p == ME).then(|| Seen {
             mano: pos.hand.iter().map(CardRec::of).collect(),
@@ -128,6 +132,8 @@ impl Event {
             presa: pos.tricks + 1,
             chi: who(p),
             carta: CardRec::of(c),
+            identificata,
+            ritaglio: None,
             prima,
             consiglio: advice,
             seguito_consiglio,

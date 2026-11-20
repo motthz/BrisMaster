@@ -1176,7 +1176,7 @@ impl Assistant {
                 self.vision.now_ms = Some(clock_ms(&mut self.vision));
                 let generation = self.generation;
                 self.sync(&scene);
-                if generation == self.generation && !self.vision.lost && !self.vision.gap
+                if generation == self.generation && !self.vision.lost && !self.vision.gap && !self.partial_advice()
                     && self.vision.frame_id != frame_id {
                     self.confirm_visible_plays(&scene);
                 }

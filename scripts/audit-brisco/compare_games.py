@@ -5,7 +5,8 @@ import re
 from pathlib import Path
 
 ROW = re.compile(r"^seed=(\d+) scenario=(\w+) punti_veri=\[[^\]]+\] (\{.*\})$")
-COUNTERS = ("correct", "correct_identified", "wrong_identified", "ready_with_wrong_position")
+HIGHER_IS_BETTER = ("correct", "correct_identified", "ready_with_correct_position")
+COUNTERS = (*HIGHER_IS_BETTER, "wrong", "wrong_identified", "ready_with_wrong_position")
 
 
 def read_games(paths):
@@ -43,7 +44,7 @@ def main():
         new = after[key]
         for name in COUNTERS:
             delta = new[name] - old[name]
-            if delta and (delta < 0 if name in ("correct", "correct_identified") else delta > 0):
+            if delta and (delta < 0 if name in HIGHER_IS_BETTER else delta > 0):
                 regressions.append((key, name, old[name], new[name]))
     for row in regressions:
         print("REGRESSION", *row)

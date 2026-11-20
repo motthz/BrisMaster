@@ -2520,12 +2520,12 @@ fn framed_viewport(img: &Img) -> Option<[usize; 4]> {
 /// Divide le carte scoperte trovate sullo schermo fra briscola, tavolo e mano.
 pub fn scene(img: &Img) -> Scene {
     let Some([left, top, right, bottom]) = framed_viewport(img) else {
-        return scene_in_viewport(img);
+        return scene_in_viewport(img, false);
     };
     let crop = img.crop(left, top, right, bottom);
     let (x, y) = OFFSET.with(|offset| offset.get());
     set_offset(x + left as f32, y + top as f32);
-    let mut result = scene_in_viewport(&crop);
+    let mut result = scene_in_viewport(&crop, true);
     set_offset(x, y);
     for card in result.trump.iter_mut().chain(&mut result.opp_slot).chain(&mut result.my_slot).chain(&mut result.hand) {
         if card.at[2] > card.at[0] {
@@ -2569,8 +2569,10 @@ fn separate_light_background(img: &Img) -> Option<Img> {
     Some(masked)
 }
 
-fn scene_in_viewport(img: &Img) -> Scene {
-    let prepared = separate_light_background(img);
+fn scene_in_viewport(img: &Img, framed: bool) -> Scene {
+    // Sul ritaglio minuto circondato da barre la seconda maschera può spostare
+    // una carta fra i due lati durante la ricostruzione di una presa interrotta.
+    let prepared = if framed && img.w <= 400 { None } else { separate_light_background(img) };
     let img = prepared.as_ref().unwrap_or(img);
     let small = small_viewport(img);
     let mut scene = detect_briscola(img, small);

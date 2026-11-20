@@ -2541,7 +2541,7 @@ pub fn scene(img: &Img) -> Scene {
 /// Un panno chiaro con una tinta uniforme si può distinguere dalla carta
 /// bianca anche quando i due materiali hanno la stessa luminosità.
 fn separate_light_background(img: &Img) -> Option<Img> {
-    if img.w < 280 || img.w > 800 || img.h > 600 || img.h < 180 { return None; }
+    if img.w < 320 || img.w > 800 || img.h > 600 || img.h < 180 { return None; }
     let chroma = |p: [u8; 3]| [i16::from(p[0]) - i16::from(p[1]), i16::from(p[1]) - i16::from(p[2])];
     let mut colors = Vec::new();
     for row in 1..8 {

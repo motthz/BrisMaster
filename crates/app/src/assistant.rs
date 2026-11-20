@@ -2188,18 +2188,26 @@ impl Assistant {
         } else {
             before_lead.opp_hand_len += 1;
         }
-        if !before_lead.allowed().contains(t) || before_lead.played.contains(t) { return false; }
         let observed = if mine_on_table { &scene.my_slot } else { &scene.opp_slot };
         let evidence = observed.as_ref().filter(|v| !v.partial && !v.recovered_outline
             && v.best(CardSet::FULL).is_some_and(|(id, margin)| id == t && margin >= AUTO_MARGIN));
         let sight = if mine_on_table { &self.vision.sightings.my_side } else { &self.vision.sightings.their_side };
         let identified = evidence.is_some() && sight.get(t as usize).is_some_and(|s|
             s.count >= 2 && s.last == self.vision.sightings.frame);
+        // Dopo più buchi si può vedere bene la faccia senza sapere con certezza
+        // il numero della presa. In quel caso resta solo nella posizione corrente.
+        let record_lead = done == 1 && pos.table.is_some() && self.vision.gaps.is_empty()
+            && pos.played.len() == 2 * u32::from(pos.tricks)
+            && evidence.is_some() && before_lead.allowed().contains(t) && !before_lead.played.contains(t);
         self.vision.gaps.push(self.history.len());
         self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
-        self.pos = before_lead;
-        self.analysis = None;
-        self.record_entry(t, true, identified, evidence.map(|v| (v.img.clone(), v.vis)));
+        if record_lead {
+            self.pos = before_lead;
+            self.analysis = None;
+            self.record_entry(t, true, identified, evidence.map(|v| (v.img.clone(), v.vis)));
+        } else {
+            self.pos = p;
+        }
         self.vision.gap = false;
         self.changed();
         self.vision.last = None;

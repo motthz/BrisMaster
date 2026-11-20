@@ -433,6 +433,7 @@ struct Vision {
     /// Letture di fila senza tavolo, e se da quando il tavolo è tornato non ci si è ancora
     /// riallineati: solo allora la partita può essere andata avanti senza che si vedesse.
     away: u32,
+    interrupted_lead: Option<(usize, u64, Card)>,
     gap: bool,
     /// Indici dei riallineamenti senza eventi completi: non sono giocate osservate.
     gaps: Vec<usize>,
@@ -1231,6 +1232,14 @@ impl Assistant {
 
     /// Una lettura senza tavolo (un'altra finestra davanti, un'altra scheda).
     fn lost_table(&mut self) {
+        if self.vision.away == 0 {
+            self.vision.interrupted_lead = self.vision.scene.as_ref().and_then(|scene| {
+                let (lead, margin) = scene.opp_slot.as_ref()?.best(CardSet::FULL)?;
+                (scene.my_slot.is_none() && margin >= AUTO_MARGIN && self.pos.table == Some(lead)
+                    && self.pos.step() == Step::MyMove)
+                    .then_some((self.history.len(), self.vision.now_ms?, lead))
+            });
+        }
         self.vision.away += 1;
         if self.vision.away >= 3 {
             self.vision.gap = true;
@@ -1303,6 +1312,9 @@ impl Assistant {
             self.check_mismatch(scene);
         }
         self.vision.sightings.update(scene);
+        if self.vision.gap && prev == sig {
+            self.recover_reply_after_gap(scene);
+        }
         // Una carta in più nella mano piena, mentre non si pesca, è un fantasma; e così una carta
         // che la partita non ha in una mano con le carte giuste di numero (una mia letta male): non
         // è una pescata.
@@ -1974,6 +1986,48 @@ impl Assistant {
         true
     }
 
+    /// L'avversario aveva aperto la presa prima del buco. Quando la mano piena
+    /// ricompare con una sola sostituzione, verifica risposta e pesca con le
+    /// regole prima di modificare punti, storico o prossimo giocatore.
+    fn recover_reply_after_gap(&mut self, scene: &Scene) -> bool {
+        let Some((entries, last_ms, lead)) = self.vision.interrupted_lead else { return false };
+        let mut trial = self.pos;
+        if entries != self.history.len() || trial.table != Some(lead)
+            || self.vision.now_ms.is_none_or(|ms| ms.saturating_sub(last_ms) > 3200) {
+            return false;
+        }
+        if trial.step() != Step::MyMove || trial.table.is_none() || trial.deck_len < 2
+            || trial.hand.len() != 3 || scene.hand.len() != 3 || scene.my_slot.is_some()
+            || self.vision.confirm.is_some() || self.vision.inconsistent {
+            return false;
+        }
+        let certain = |v: &CardView| v.best(CardSet::FULL)
+            .filter(|(_, margin)| !v.partial && !v.recovered_outline && *margin >= AUTO_MARGIN)
+            .map(|b| b.0);
+        let hand: CardSet = scene.hand.iter().filter_map(certain).collect();
+        if hand.len() != 3 { return false; }
+        let missing = trial.hand.minus(hand);
+        let drawn = hand.minus(trial.hand);
+        if missing.len() != 1 || drawn.len() != 1 { return false; }
+        let reply = missing.iter().next().unwrap();
+        let draw = drawn.iter().next().unwrap();
+        if trial.enter(reply).flatten().is_none() { return false; }
+        let needs_draw = matches!(trial.step(), Step::Draw(1));
+        if needs_draw && trial.enter(draw).is_none() { return false; }
+        if trial.hand != hand { return false; }
+        if let Some(other) = &scene.opp_slot {
+            let Some(card) = certain(other) else { return false };
+            if trial.step() != Step::OppMove || !trial.allowed().contains(card) { return false; }
+        }
+        // La risposta è dedotta dal cambio di mano, non vista sul tavolo.
+        self.record_entry(reply, false, false, None);
+        if needs_draw { self.record_entry(draw, true, false, None); }
+        self.vision.gap = false;
+        self.vision.last = None;
+        self.vision.status = format!("Presa ricostruita dal cambio di mano: risposta {}.", cards::name(reply));
+        true
+    }
+
     /// Il tavolo non si è visto per un po' (un'altra finestra davanti, un'altra scheda) e intanto si
     /// è giocato: la partita riparte da quello che si vede adesso. Le mie carte sparite dalla mano
     /// sono giocate, ogni presa passata ha fatto pescare una carta a testa, e chi muove si capisce
@@ -2125,9 +2179,27 @@ impl Assistant {
         } else if !mine_on_table {
             return false;
         }
+        // Salva prima la fine del buco, poi registra l'apertura visibile come
+        // giocata normale: posizione, Annulla ed esportazione concordano.
+        let mut before_lead = p;
+        before_lead.table = None;
+        if mine_on_table {
+            before_lead.hand.insert(t);
+        } else {
+            before_lead.opp_hand_len += 1;
+        }
+        if !before_lead.allowed().contains(t) || before_lead.played.contains(t) { return false; }
+        let observed = if mine_on_table { &scene.my_slot } else { &scene.opp_slot };
+        let evidence = observed.as_ref().filter(|v| !v.partial && !v.recovered_outline
+            && v.best(CardSet::FULL).is_some_and(|(id, margin)| id == t && margin >= AUTO_MARGIN));
+        let sight = if mine_on_table { &self.vision.sightings.my_side } else { &self.vision.sightings.their_side };
+        let identified = evidence.is_some() && sight.get(t as usize).is_some_and(|s|
+            s.count >= 2 && s.last == self.vision.sightings.frame);
         self.vision.gaps.push(self.history.len());
         self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
-        self.pos = p;
+        self.pos = before_lead;
+        self.analysis = None;
+        self.record_entry(t, true, identified, evidence.map(|v| (v.img.clone(), v.vis)));
         self.vision.gap = false;
         self.changed();
         self.vision.last = None;
@@ -3714,6 +3786,19 @@ impl Assistant {
         if partial {
             let missing = (2 * u32::from(self.pos.tricks)).saturating_sub(self.pos.played.len());
             ui.colored_label(GOLD, format!("Storico incompleto. Carte mancanti nelle prese concluse: {missing}. I punti possono essere incerti."));
+            if let Some((trick, side)) = (1..=self.pos.tricks).find_map(|trick| {
+                let has = |side| self.rec.events.iter().any(|event| matches!(event,
+                    Event::Giocata { presa, chi, .. } if *presa == trick && *chi == side));
+                let side = match (has(record::who(ME)), has(record::who(OPP))) {
+                    (false, false) => "entrambe le giocate",
+                    (false, true) => "la tua giocata",
+                    (true, false) => "la giocata avversaria",
+                    (true, true) => return None,
+                };
+                Some((trick, side))
+            }) {
+                ui.label(format!("Prima presa da verificare: {trick}. Manca nello storico: {side}."));
+            }
             if ui.button("Controlla le carte e lo storico").clicked() {
                 self.refresh_review(ui.ctx());
                 self.card_review.open = true;
@@ -5296,6 +5381,33 @@ mod tests {
     }
 
     #[test]
+    fn short_capture_gap_recovers_a_unique_reply_and_draw() {
+        let mut a = manual_turn();
+        a.pos.leader = OPP;
+        assert!(a.enter(1));
+        a.vision.now_ms = Some(1000);
+        a.vision.scene = Some(Scene { opp_slot: Some(seen(1, 8.0)), ..Default::default() });
+        a.lost_table();
+        let after = Scene { hand: [20, 30, 11].map(|c| seen(c, 8.0)).to_vec(), ..Default::default() };
+        let mut expected = a.pos;
+        assert!(expected.enter(10).flatten().is_some());
+        expected.enter(11).unwrap();
+        a.vision.now_ms = Some(5000);
+        assert!(!a.recover_reply_after_gap(&after));
+        a.vision.now_ms = Some(3000);
+        let inconsistent = Scene { hand: [20, 20, 11].map(|c| seen(c, 8.0)).to_vec(), ..Default::default() };
+        assert!(!a.recover_reply_after_gap(&inconsistent));
+        assert!(a.recover_reply_after_gap(&after));
+        assert_eq!((a.pos.points, a.pos.played, a.pos.hand, a.pos.leader),
+                   (expected.points, expected.played, expected.hand, expected.leader));
+        assert!(!a.recover_reply_after_gap(&after));
+        assert_eq!(a.played_coverage().1, 1);
+        a.undo();
+        assert_eq!(a.pos.table, Some(1));
+        assert_eq!(a.pos.tricks, 0);
+    }
+
+    #[test]
     fn recovery_anchor_rejects_duplicate_cards_and_distinguishes_table_sides() {
         assert!(!RecoveryAnchor::new(vec![10, 10], None, None).unique());
         assert!(!RecoveryAnchor::new(vec![10, 20], Some(10), None).unique());
@@ -5366,6 +5478,9 @@ mod tests {
         a.vision.sightings.frame = 2;
         assert!(a.resync(&scene));
         assert_eq!(a.pos.tricks, 1);
+        assert!(matches!(a.rec.events.last(), Some(Event::Giocata {
+            presa: 2, chi: "avversario", carta, identificata: false, ..
+        }) if carta.id == 13));
         let _ = a.opp_log();
         // Correggere una vecchia pescata non deve leggere una voce priva di evento.
         assert!(!a.correct_draw(12, 14));

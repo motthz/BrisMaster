@@ -6,6 +6,7 @@
 pub mod capture;
 pub mod detect;
 mod deck_import;
+mod exposure;
 pub mod live;
 pub mod memory;
 pub mod reference;
@@ -627,6 +628,11 @@ pub enum Reading<S> {
 /// Lettura per la briscola: trova le carte e le riconosce (None se non c'è nessuna carta scoperta).
 /// La memoria resta bloccata solo mentre si confrontano le carte trovate, non durante la ricerca.
 pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
+    let recovered = exposure::recover(img);
+    let img = recovered.as_ref().unwrap_or(img);
+    let rectified = detect::rectify_aspect(img);
+    let original_width = img.w;
+    let img = rectified.as_ref().unwrap_or(img);
     let profile = std::env::var_os("BRIS_PROFILO_CARTE").is_some();
     let started = std::time::Instant::now();
     let mut scene = focused_scene(img);
@@ -660,6 +666,18 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
     }
     for v in scene.trump.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot).chain(&mut scene.hand) {
         recognize(v, &mem);
+    }
+    if rectified.is_some() {
+        // px contiene i lati lungo e corto; la briscola è disposta di traverso.
+        let scale = original_width as f32 / img.w as f32;
+        for v in scene.hand.iter_mut().chain(&mut scene.opp_slot).chain(&mut scene.my_slot) {
+            v.px[1] *= scale;
+            if v.px[1] > v.px[0] { v.px.swap(0, 1); }
+        }
+        if let Some(v) = &mut scene.trump {
+            v.px[0] *= scale;
+            if v.px[1] > v.px[0] { v.px.swap(0, 1); }
+        }
     }
     resolve_hand_duplicates(&mut scene.hand);
     resolve_table_duplicates(&mut scene);

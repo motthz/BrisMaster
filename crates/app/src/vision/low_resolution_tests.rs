@@ -141,3 +141,88 @@ fn recovers_the_first_play_on_a_small_light_table() {
     assert!(margin >= 1.4);
     assert!(result.my_slot.is_none());
 }
+
+/// Esporta immagini e annotazioni indipendenti dal risultato del lettore.
+#[test]
+#[ignore = "BRIS_AUDIT_FIXTURES indica la directory temporanea dei replay"]
+fn export_card_audit() {
+    let dir = std::path::PathBuf::from(std::env::var_os("BRIS_AUDIT_FIXTURES").unwrap());
+    std::fs::create_dir_all(&dir).unwrap();
+    let factors: &[(&str, &[f32])] = &[
+        ("altezza_carta", &[32., 64., 96., 160., 224.]),
+        ("forma_carta", &[0.38, 0.50, 0.62, 0.74, 0.90]),
+        ("ventaglio", &[-30., -12., 0., 12., 30.]),
+        ("copertura_briscola", &[0.05, 0.25, 0.45, 0.65, 0.85]),
+        ("scala_tallone", &[0.45, 0.70, 1., 1.30, 1.60]),
+        ("opacita_logo", &[0., 0.25, 0.50, 0.75, 1.]),
+        ("grafica_fondo", &[0., 1., 2., 3., 4.]),
+        ("grafica_mazzo", &[0., 1., 2.]),
+    ];
+    let mut index = Vec::new();
+    for &(factor, levels) in factors {
+        for &level in levels {
+            let look = match factor {
+                "altezza_carta" => Look { card_h:level, ..Look::default() },
+                "forma_carta" => Look { aspect:Some(level), ..Look::default() },
+                "ventaglio" => Look { fan:level, ..Look::default() },
+                "copertura_briscola" => Look { cover:level, ..Look::default() },
+                "scala_tallone" => Look { pile:level, ..Look::default() },
+                "opacita_logo" => Look { logo:level, ..Look::default() },
+                "grafica_fondo" => Look { bg:match level as u8 {
+                    0 => Bg::Felt([20,105,70]), 1 => Bg::Felt([220,215,200]),
+                    2 => Bg::Wood, 3 => Bg::Sea, _ => Bg::Sky,
+                }, ..Look::default() },
+                _ => Look::default(),
+            };
+            for phase in 0..2 {
+                let ids = if factor == "grafica_mazzo" {
+                    [30,31,32,33,34,35].map(|c| 30+(c-30+phase*4)%10)
+                } else {
+                    [0,12,25,37,4,17].map(|c| (c+phase*13)%40)
+                };
+                let style = if factor=="grafica_mazzo" { level as usize } else { phase as usize };
+                let drawn = ids.map(|id| if style == 2 {
+                    capture::load_png(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                        format!("testdata/mazzo_despues/bastoni_{}.jpg",id%10+1))).unwrap()
+                } else { reference::card_image(style,id) });
+                let image = synth::table(&Deal {hand:drawn[..3].iter().collect(), opp:Some(&drawn[3]),
+                    mine:Some(&drawn[4]), trump:Some(&drawn[5]), deck:true},&look);
+                let name=format!("{factor}-{level}-{phase}.png");
+                image.save_png(&dir.join(&name)).unwrap();
+                index.push(serde_json::json!({"factor":factor,"level":level,"scene":format!("sintesi-{phase}"),
+                    "image":name,"cards":{"mano0":ids[0],"mano1":ids[1],"mano2":ids[2],
+                    "avversario":ids[3],"tua":ids[4],"briscola":ids[5]}}));
+            }
+        }
+    }
+    std::fs::write(dir.join("index.json"),serde_json::to_vec(&index).unwrap()).unwrap();
+}
+
+#[test]
+fn full_screen_at_low_exposure_keeps_the_real_hand() {
+    let mut screen = capture::load_png(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/solitalian_briscola.png")).unwrap();
+    for pixel in &mut screen.px {
+        for channel in pixel { *channel /= 5; }
+    }
+    detect::forget_reading_state();
+    let scene = read_briscola(&screen, &Mutex::new(Memory::in_memory())).unwrap();
+    let ids: Vec<_> = scene.hand.iter().map(|v| v.best(CardSet::FULL).unwrap().0).collect();
+    assert_eq!(ids, [21, 31, 6]);
+    assert_eq!(scene.trump.unwrap().best(CardSet::FULL).unwrap().0, 14);
+}
+
+#[test]
+fn narrow_viewport_maps_the_cards_back_to_the_hand() {
+    let screen = capture::load_png(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/sito_briscola.png")).unwrap();
+    let w = screen.w * 2 / 5;
+    let compressed = Img { w, h:screen.h, px:screen.px.chunks_exact(screen.w)
+        .flat_map(|row| (0..w).map(move |x| row[x*screen.w/w])).collect() };
+    detect::forget_reading_state();
+    let scene = read_briscola(&compressed, &Mutex::new(Memory::in_memory())).unwrap();
+    let ids: Vec<_> = scene.hand.iter().map(|v| v.best(CardSet::FULL).unwrap().0).collect();
+    assert_eq!(ids, [7, 10]);
+    for card in scene.hand {
+        let [x0,y0,x1,y1] = card.at;
+        assert!(x0 < x1 && y0 < y1 && (0.25..0.5).contains(&((x0+x1)/2.)) && y0 > 0.7);
+    }
+}

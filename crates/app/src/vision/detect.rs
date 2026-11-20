@@ -197,6 +197,53 @@ impl Paper {
     }
 }
 
+/// Corregge una scala orizzontale anomala solo se almeno due sagome concordano
+/// con la deformazione del viewport. Le coordinate frazionarie restano identiche.
+pub(super) fn rectify_aspect(img: &Img) -> Option<Img> {
+    let screen = img.w as f32 / img.h.max(1) as f32;
+    if (1.20..=2.05).contains(&screen) || img.w.min(img.h) < 240 { return None; }
+    let thumb = img.shrink(4);
+    let mask: Vec<_> = thumb.px.iter().map(|rgb| {
+        let lo = rgb[0].min(rgb[1]).min(rgb[2]);
+        let hi = rgb[0].max(rgb[1]).max(rgb[2]);
+        lo > 176 && hi - lo < 47
+    }).collect();
+    let sizes: Vec<_> = blobs_r(&thumb, &mask, 0).into_iter().filter_map(|b| {
+        let [x0,y0,x1,y1] = b.rect.bounds(&thumb);
+        let w = (x1-x0) * thumb.w as f32;
+        let h = (y1-y0) * thumb.h as f32;
+        ((0.38..0.96).contains(&b.white) && b.bg > 0.45 && w >= 5.0 && h >= 8.0
+            && w < thumb.w as f32 / 3.0 && h < thumb.h as f32 / 3.0).then_some((w,h))
+    }).collect();
+    // Un pannello con troppi elementi simili non fornisce una scala affidabile.
+    if sizes.len() > 96 { return None; }
+    let close = |a:f32,b:f32| (a-b).abs() <= 1.0f32.max(0.09 * a.max(b));
+    let (&(w,h),support) = sizes.iter().map(|size| (size,sizes.iter()
+        .filter(|other| close(size.0, other.0) && close(size.1, other.1)).count()))
+        .max_by_key(|(size,n)| (*n,(size.0*size.1) as usize))?;
+    let ratio = w/h;
+    if support < 2 || !(screen < 1.20 && ratio < 0.50 || screen > 2.05 && ratio > 0.88) {
+        return None;
+    }
+    let scale = 0.67 / ratio;
+    if !(0.3..=3.0).contains(&scale) { return None; }
+    let width = (img.w as f32 * scale).round() as usize;
+    if width.checked_mul(img.h)? > 8_000_000 { return None; }
+    let mut px = Vec::with_capacity(width * img.h);
+    let samples: Vec<_> = (0..width).map(|x| {
+        let pos = ((x as f32 + 0.5) * img.w as f32 / width as f32 - 0.5).clamp(0.0,img.w as f32 - 1.0);
+        (pos as usize,(pos.fract()*256.0).round() as u32)
+    }).collect();
+    for row in img.px.chunks_exact(img.w) {
+        for &(idx,weight) in &samples {
+            let left = row[idx];
+            let right = row[(idx+1).min(img.w-1)];
+            px.push(std::array::from_fn(|c| ((u32::from(left[c])*(256-weight)+u32::from(right[c])*weight+128)/256) as u8));
+        }
+    }
+    Some(Img { w: width, h: img.h, px })
+}
+
 /// Inviluppo convesso (catena monotona di Andrew).
 fn hull(mut pts: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
     pts.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -2427,13 +2474,14 @@ fn best<'a>(cards: impl Iterator<Item = &'a Found>) -> Option<&'a Found> {
 fn drop_repeated_graphics(cards: &mut Vec<Found>) {
     let doubtful = |card: &Found| !card.partial() && card.score < ACCEPT;
     let repeated = |a: &Found, b: &Found| {
-        doubtful(b)
-            && a.rect.dist(&b.rect) > a.rect.short()
+        !b.partial() && a.rect.dist(&b.rect) > a.rect.short()
             && (a.rect.long() / b.rect.long() - 1.0).abs() < 0.08
-            && super::memory::similarity(&a.view.img, &b.view.img, WHOLE) >= 0.99
+            && (a.view.img.px == b.view.img.px
+                || (doubtful(a) && doubtful(b)
+                    && super::memory::similarity(&a.view.img, &b.view.img, WHOLE) >= 0.99))
     };
     let reject: Vec<_> = cards.iter().map(|card| {
-        doubtful(card) && cards.iter().filter(|other| repeated(card, other)).take(2).count() == 2
+        !card.partial() && cards.iter().filter(|other| repeated(card, other)).take(2).count() == 2
     }).collect();
     let mut flags = reject.into_iter();
     cards.retain(|_| !flags.next().unwrap_or(false));

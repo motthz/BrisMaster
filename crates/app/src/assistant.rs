@@ -3673,8 +3673,14 @@ impl Assistant {
             ui.label("Consiglio sospeso mentre recupero il tavolo attuale.");
             return;
         }
-        if self.partial_advice() {
-            ui.colored_label(GOLD, "Storico incompleto. Carte o punti delle prese non osservate possono essere incerti.");
+        let partial = self.partial_advice();
+        if partial {
+            let missing = (2 * u32::from(self.pos.tricks)).saturating_sub(self.pos.played.len());
+            ui.colored_label(GOLD, format!("Storico incompleto. Carte mancanti nelle prese concluse: {missing}. I punti possono essere incerti."));
+            if ui.button("Controlla le carte e lo storico").clicked() {
+                self.refresh_review(ui.ctx());
+                self.card_review.open = true;
+            }
         }
         if self.pos.hand.len() == 1 {
             let c = self.pos.hand.iter().next().unwrap();
@@ -3706,17 +3712,19 @@ impl Assistant {
                     cards_ui::card(ui, Some(best.card), vec2(62.0, 96.0), None, false);
                     ui.add_space(8.0);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("Gioca").color(Color32::from_white_alpha(180)));
+                        ui.label(RichText::new(if partial { "Suggerimento con storico incompleto" } else { "Gioca" }).color(Color32::from_white_alpha(180)));
                         ui.label(RichText::new(cards::name(best.card)).size(24.0).strong().color(Color32::WHITE));
-                        ui.label(
-                            RichText::new(format!(
-                                "Vittoria {:.0}% · punti attesi {:.0}",
-                                best.win_prob * 100.0,
-                                best.exp_points
-                            ))
-                            .size(16.0)
-                            .color(BEST),
-                        );
+                        if !partial {
+                            ui.label(
+                                RichText::new(format!(
+                                    "Vittoria {:.0}% · punti attesi {:.0}",
+                                    best.win_prob * 100.0,
+                                    best.exp_points
+                                ))
+                                .size(16.0)
+                                .color(BEST),
+                            );
+                        }
                     });
                 });
             });
@@ -3728,11 +3736,12 @@ impl Assistant {
             });
         }
         ui.add_space(8.0);
-        ui.label(RichText::new("Tutte le carte").strong());
+        ui.label(RichText::new(if partial { "Ordine stimato delle carte" } else { "Tutte le carte" }).strong());
         for (i, e) in a.evals.iter().enumerate() {
             ui.horizontal(|ui| {
                 let name = RichText::new(format!("{:<20}", cards::name(e.card))).monospace();
                 ui.label(if i == 0 { name.color(BEST) } else { name });
+                if partial { return; }
                 let (rect, _) = ui.allocate_exact_size(vec2(130.0, 14.0), Sense::hover());
                 ui.painter().rect_filled(rect, 4.0, Color32::from_gray(50));
                 let mut fill = rect;

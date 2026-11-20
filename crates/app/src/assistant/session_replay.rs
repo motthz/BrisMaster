@@ -578,3 +578,25 @@ fn native_window_move_resize_minimize_restore() {
         }
     }
 }
+
+#[test]
+#[ignore = "Misura separata del tempo motore, senza cattura o interfaccia"]
+fn measure_advice_time() {
+    for seed in [1, 2, 31, 42] {
+        let mut deal = SmallRng::seed_from_u64(seed);
+        let mut game = Game::new(&mut deal, (seed % 2) as u8);
+        while !game.is_over() {
+            let player = game.to_move();
+            let choices = game.legal_moves().to_vec();
+            if player == ME && choices.len() > 1 {
+                let obs = Observation::of(&game, ME);
+                let mut engine = SmallRng::seed_from_u64(seed + game.played.len() as u64);
+                let start = std::time::Instant::now();
+                let evals = evaluate_with_log(&obs, &crate::app::engine_cfg(1000), &[], &mut engine);
+                assert!(choices.contains(&evals[0].card));
+                println!("motore,{seed},{},{},{}", game.played.len(), choices.len(), start.elapsed().as_micros());
+            }
+            game.play(choices[deal.gen_range(0..choices.len())]);
+        }
+    }
+}

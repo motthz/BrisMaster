@@ -581,9 +581,13 @@ impl Assistant {
 
     /// Come `correct_draw`, per il primo evento della cronologia che soddisfa `is`.
     fn correct_event(&mut self, is: impl Fn(&Event) -> bool, right: Card) -> bool {
-        // Il fotogramma di ripartenza non è un evento: lo si può conservare
-        // come punto di partenza, ma non rigiocare durante una correzione.
-        let start = self.vision.gaps.last().map_or(0, |gap| gap + 1);
+        // I salti e le sostituzioni dirette della mano salvano una posizione
+        // per Annulla senza aggiungere un evento. Le correzioni possono
+        // rigiocare solo il tratto continuo dopo l'ultimo di questi salvataggi.
+        let start = (0..self.history.len()).rfind(|&index| {
+            let after = self.history.get(index + 1).map_or(self.rec.events.len(), |entry| entry.2);
+            self.history[index].2.checked_add(1) != Some(after)
+        }).map_or(0, |index| index + 1);
         let Some(i) = self.history.iter().enumerate().skip(start)
             .find_map(|(index, h)| self.rec.events.get(h.2).filter(|event| is(event)).map(|_| index))
         else {
@@ -812,13 +816,17 @@ impl Assistant {
     }
 
     fn screen_is_behind(&self) -> bool {
+        self.screen_is_behind_with_lag(self.vision.reader.as_ref().map(|reader| || reader.lag()))
+    }
+
+    fn screen_is_behind_with_lag(&self, lag: Option<impl FnOnce() -> std::time::Duration>) -> bool {
         // Al mio turno la partita cambia solo quando gioco io: una lettura un po' indietro (le carte
         // che si alzano sotto il mouse, un'animazione del sito) non toglie il consiglio. Solo una
         // lettura bloccata, che si riavvia da sola, lo sospende.
         let late = if self.pos.step() == Step::MyMove { 8000 } else { 2500 };
         self.vision.restart_after.is_some()
             || (self.vision.catching_up && self.pos.step() != Step::MyMove)
-            || self.vision.reader.as_ref().is_some_and(|r| self.vision.inconsistent || (self.vision.lost && self.vision.gap) || r.lag() > std::time::Duration::from_millis(late))
+            || lag.is_some_and(|age| self.vision.inconsistent || (self.vision.lost && self.vision.gap) || age() > std::time::Duration::from_millis(late))
     }
 
     /// Un canale chiuso o un calcolo troppo lungo non lasciano il consiglio in attesa per sempre.
@@ -1150,32 +1158,37 @@ impl Assistant {
 
     /// Una lettura dello schermo.
     fn take_reading(&mut self, latest: Reading<Scene>) {
-        match Some(latest) {
-            Some(Reading::Scene(scene, frame_id)) => {
+        self.apply_reading(latest, |vision| {
+            let t0 = *vision.t0.get_or_insert_with(std::time::Instant::now);
+            t0.elapsed().as_millis() as u64
+        });
+    }
+
+    fn apply_reading(&mut self, latest: Reading<Scene>, clock_ms: impl FnOnce(&mut Vision) -> u64) {
+        match latest {
+            Reading::Scene(scene, frame_id) => {
                 self.vision.status = format!(
                     "Vedo: briscola {} · {} carte in mano · {} in tavola",
                     if scene.trump.is_some() { "sì" } else { "no" },
                     scene.hand.len(),
                     scene.opp_slot.is_some() as u8 + scene.my_slot.is_some() as u8
                 );
-                let t0 = *self.vision.t0.get_or_insert_with(std::time::Instant::now);
-                self.vision.now_ms = Some(t0.elapsed().as_millis() as u64);
+                self.vision.now_ms = Some(clock_ms(&mut self.vision));
                 self.sync(&scene);
                 self.vision.scene = Some(scene);
                 self.vision.frame_id = frame_id;
                 self.vision.lost = false;
             }
-            Some(Reading::NoTable) => {
+            Reading::NoTable => {
                 self.lost_table();
                 self.vision.lost = true;
                 self.vision.status = "Non vedo il tavolo: tieni la partita aperta e visibile sullo schermo".into()
             }
-            Some(Reading::Error(e)) => {
+            Reading::Error(e) => {
                 self.lost_table();
                 self.vision.lost = true;
                 self.vision.status = format!("Lettura dello schermo non riuscita: {e}. Continuo dalla prossima schermata.");
             }
-            None => {}
         }
     }
 
@@ -3637,6 +3650,10 @@ impl Assistant {
         );
     }
 
+    fn partial_advice(&self) -> bool {
+        !self.vision.gaps.is_empty() || self.pos.observation().has_unobserved_played_cards()
+    }
+
     fn advice(&mut self, ui: &mut egui::Ui, samples: &mut u32) {
         ui.horizontal(|ui| {
             ui.heading(RichText::new("Consiglio").strong());
@@ -3655,6 +3672,9 @@ impl Assistant {
         if self.screen_is_behind() {
             ui.label("Consiglio sospeso mentre recupero il tavolo attuale.");
             return;
+        }
+        if self.partial_advice() {
+            ui.colored_label(GOLD, "Storico incompleto. Carte o punti delle prese non osservate possono essere incerti.");
         }
         if self.pos.hand.len() == 1 {
             let c = self.pos.hand.iter().next().unwrap();
@@ -4317,6 +4337,9 @@ impl Sightings {
             .map(|c| (c, false))
     }
 }
+
+#[cfg(test)]
+mod session_replay;
 
 #[cfg(test)]
 mod tests {
@@ -5303,6 +5326,31 @@ mod tests {
         a.undo();
         assert_eq!(a.pos.tricks, 0);
         assert_eq!(a.pos.table, Some(11));
+    }
+
+    #[test]
+    fn corrections_only_replay_events_after_a_direct_hand_replacement() {
+        let mut a = manual_turn();
+        let scene = Scene {
+            hand: [12, 20, 30].map(|card| seen(card, 4.0)).to_vec(),
+            ..Default::default()
+        };
+        assert!(!a.swap_misread(&scene));
+        assert!(!a.swap_misread(&scene));
+        assert!(a.swap_misread(&scene));
+
+        let event_count = a.rec.events.len();
+        assert!(!a.correct_draw(20, 21));
+        assert_eq!(a.rec.events.len(), event_count);
+        assert_eq!(a.pos.hand.to_vec(), vec![12, 20, 30]);
+
+        assert!(a.enter(12));
+        assert!(a.enter(11));
+        assert!(a.enter(13));
+        assert!(!a.correct_draw(20, 21));
+        assert!(a.correct_draw(13, 14));
+        assert_eq!(a.pos.hand.to_vec(), vec![14, 20, 30]);
+        assert_eq!(a.pos.tricks, 1);
     }
 
     #[test]

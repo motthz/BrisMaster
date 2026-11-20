@@ -2439,11 +2439,91 @@ fn drop_repeated_graphics(cards: &mut Vec<Found>) {
     cards.retain(|_| !flags.next().unwrap_or(false));
 }
 
+/// In una cattura compatta, isola un riquadro interamente circondato da
+/// fasce piatte scure. Una fascia sopra e una sotto sono obbligatorie:
+/// una barra del browser o un tavolo scuro da soli non definiscono il ritaglio.
+fn framed_viewport(img: &Img) -> Option<[usize; 4]> {
+    if !(320..=900).contains(&img.w) || !(200..=550).contains(&img.h) {
+        return None;
+    }
+    let background = img.px[0];
+    if background.iter().any(|&channel| channel > 64) {
+        return None;
+    }
+    let flat = |row: &[[_; 3]]| row.iter().all(|&pixel| pixel == background);
+    let mut rows = img.px.chunks_exact(img.w);
+    let top = rows.position(|row| !flat(row))?;
+    let bottom = top + 1 + rows.rposition(|row| !flat(row))? + 1;
+    if top < 8 || img.h - bottom < 8 || bottom - top < img.h * 4 / 5 {
+        return None;
+    }
+    let content = img.px[top * img.w..bottom * img.w].chunks_exact(img.w);
+    let left = content.clone().filter_map(|row| row.iter().position(|&p| p != background)).min()?;
+    let right = content.filter_map(|row| row.iter().rposition(|&p| p != background)).max()? + 1;
+    if left + img.w - right < 16 || right - left < img.w * 4 / 5 {
+        return None;
+    }
+    Some([left, top, right, bottom])
+}
+
 /// Divide le carte scoperte trovate sullo schermo fra briscola, tavolo e mano.
 pub fn scene(img: &Img) -> Scene {
+    let Some([left, top, right, bottom]) = framed_viewport(img) else {
+        return scene_in_viewport(img);
+    };
+    let crop = img.crop(left, top, right, bottom);
+    let (x, y) = OFFSET.with(|offset| offset.get());
+    set_offset(x + left as f32, y + top as f32);
+    let mut result = scene_in_viewport(&crop);
+    set_offset(x, y);
+    for card in result.trump.iter_mut().chain(&mut result.opp_slot).chain(&mut result.my_slot).chain(&mut result.hand) {
+        if card.at[2] > card.at[0] {
+            let [x0, y0, x1, y1] = card.at;
+            let full_x = |at| (left as f32 + at * crop.w as f32) / img.w as f32;
+            let full_y = |at| (top as f32 + at * crop.h as f32) / img.h as f32;
+            card.at = [full_x(x0), full_y(y0), full_x(x1), full_y(y1)];
+        }
+    }
+    result
+}
+
+/// Un panno chiaro con una tinta uniforme si può distinguere dalla carta
+/// bianca anche quando i due materiali hanno la stessa luminosità.
+fn separate_light_background(img: &Img) -> Option<Img> {
+    if img.w <= 400 || img.w > 800 || img.h > 600 || img.h < 180 { return None; }
+    let chroma = |p: [u8; 3]| [i16::from(p[0]) - i16::from(p[1]), i16::from(p[1]) - i16::from(p[2])];
+    let mut colors = Vec::new();
+    for row in 1..8 {
+        for col in 1..12 {
+            colors.push(img.at(col * img.w / 12, row * img.h / 8));
+        }
+    }
+    let typical = std::array::from_fn(|i| {
+        let mut values: Vec<_> = colors.iter().map(|p| p[i]).collect();
+        values.sort_unstable();
+        values[values.len()/2]
+    });
+    if typical.iter().any(|&c| c < 175) { return None; }
+    let ref_tint = chroma(typical);
+    if ref_tint.iter().all(|v| v.abs() < 8) { return None; }
+    let matches = |p: [u8; 3]| {
+        let tint = chroma(p);
+        p.iter().all(|&c| c >= 145) && (tint[0]-ref_tint[0]).abs() <= 6 && (tint[1]-ref_tint[1]).abs() <= 6
+    };
+    if colors.iter().filter(|&&p| matches(p)).count() * 2 <= colors.len() { return None; }
+    let mut masked = img.clone();
+    for pixel in &mut masked.px {
+        if matches(*pixel) { *pixel = [42, 45, 43]; }
+    }
+    Some(masked)
+}
+
+fn scene_in_viewport(img: &Img) -> Scene {
+    let prepared = separate_light_background(img);
+    let img = prepared.as_ref().unwrap_or(img);
     let small = small_viewport(img);
     let mut scene = detect_briscola(img, small);
-    if small && (scene.opp_slot.is_none() || scene.my_slot.is_none()) {
+    if img.w <= 800 && img.h <= 600 && (scene.opp_slot.is_none() || scene.my_slot.is_none()) {
         recover_light_table_plays(img, &mut scene);
     }
     // Una briscola parzialmente coperta può risultare più leggibile nella
@@ -2489,7 +2569,7 @@ fn recover_light_table_plays(img: &Img, scene: &mut Scene) {
     let viewport = (img.w, img.h, OFFSET.with(|offset| offset.get()));
     let anchor = LIGHT_HAND.with(|saved| {
         let visible = scene.hand.iter().filter(|card| !card.partial
-            && (24.0..=65.0).contains(&card.px[0]) && card.px[1] > 0.0)
+            && (24.0..=100.0).contains(&card.px[0]) && card.px[1] > 0.0)
             .max_by(|a, b| a.px[0].total_cmp(&b.px[0]));
         let anchor = if let Some(card) = visible {
             let [long, short] = card.px;

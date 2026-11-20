@@ -1174,7 +1174,12 @@ impl Assistant {
                     scene.opp_slot.is_some() as u8 + scene.my_slot.is_some() as u8
                 );
                 self.vision.now_ms = Some(clock_ms(&mut self.vision));
+                let generation = self.generation;
                 self.sync(&scene);
+                if generation == self.generation && !self.vision.lost && !self.vision.gap
+                    && self.vision.frame_id != frame_id {
+                    self.confirm_visible_plays(&scene);
+                }
                 self.vision.scene = Some(scene);
                 self.vision.frame_id = frame_id;
                 self.vision.lost = false;
@@ -1188,6 +1193,38 @@ impl Assistant {
                 self.lost_table();
                 self.vision.lost = true;
                 self.vision.status = format!("Lettura dello schermo non riuscita: {e}. Continuo dalla prossima schermata.");
+            }
+        }
+    }
+
+    /// Una giocata può essere registrata prima che l'animazione mostri bene la carta.
+    /// Conserva l'immagine e la conferma solo se due catture consecutive concordano
+    /// sul lato del tavolo, sul valore e sul seme, senza usare i vincoli del mazzo.
+    fn confirm_visible_plays(&mut self, scene: &Scene) {
+        let Some(previous) = &self.vision.scene else { return };
+        let certain = |v: &CardView| {
+            if v.partial || v.recovered_outline { return None; }
+            v.best(CardSet::FULL).filter(|&(_, margin)| margin >= 2.0 * AUTO_MARGIN).map(|b| b.0)
+        };
+        for (player, now, before, opposite) in [
+            (ME, &scene.my_slot, &previous.my_slot, &scene.opp_slot),
+            (OPP, &scene.opp_slot, &previous.opp_slot, &scene.my_slot),
+        ] {
+            let Some(view) = now.as_ref() else { continue };
+            let Some(id) = certain(view) else { continue };
+            if before.as_ref().and_then(certain) != Some(id)
+                || opposite.iter().chain(&scene.hand).any(|v| v.best(CardSet::FULL).is_some_and(|b| b.0 == id)) {
+                continue;
+            }
+            let current = self.pos.tricks + 1;
+            let latest = self.rec.events.iter_mut().rev().find(|e| matches!(
+                e, Event::Giocata { chi, .. } if *chi == crate::record::who(player)
+            ));
+            if let Some(Event::Giocata { presa, carta, identificata, ritaglio, .. }) = latest {
+                if !*identificata && carta.id == id && (*presa == current || *presa == self.pos.tricks) {
+                    *identificata = true;
+                    *ritaglio = Some((view.img.clone(), view.vis));
+                }
             }
         }
     }

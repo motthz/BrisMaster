@@ -337,6 +337,11 @@ fn blobs_r(img: &Img, paper: &[bool], r: usize) -> Vec<Blob> {
 /// Come `blobs_r`, solo dentro il riquadro (x0, y0, x1, y1): per dividere una zona sola non serve
 /// erodere tutto lo schermo.
 fn blobs_in(img: &Img, paper: &[bool], r: usize, (x0, y0, x1, y1): (usize, usize, usize, usize)) -> Vec<Blob> {
+    let min_area = ((img.w * img.h) as f32 * 0.0002) as usize;
+    blobs_with_min_area(img, paper, r, (x0, y0, x1, y1), min_area)
+}
+
+fn blobs_with_min_area(img: &Img, paper: &[bool], r: usize, (x0, y0, x1, y1): (usize, usize, usize, usize), min_area: usize) -> Vec<Blob> {
     let (x1, y1) = (x1.min(img.w), y1.min(img.h));
     if x1 <= x0 || y1 <= y0 {
         return Vec::new();
@@ -344,8 +349,6 @@ fn blobs_in(img: &Img, paper: &[bool], r: usize, (x0, y0, x1, y1): (usize, usize
     let (w, h) = (x1 - x0, y1 - y0);
     let sub: Vec<bool> = (y0..y1).flat_map(|y| paper[y * img.w + x0..y * img.w + x1].iter().copied()).collect();
     let er = if r == 0 { sub } else { erode(&sub, w, h, r) };
-    // Basta poco: di un asso di denari piccolo resta solo la cornice bianca.
-    let min_area = ((img.w * img.h) as f32 * 0.0002) as usize;
     let mut seen = vec![false; w * h];
     let mut out = Vec::new();
     let mut stack = Vec::new();
@@ -2538,7 +2541,7 @@ pub fn scene(img: &Img) -> Scene {
 /// Un panno chiaro con una tinta uniforme si può distinguere dalla carta
 /// bianca anche quando i due materiali hanno la stessa luminosità.
 fn separate_light_background(img: &Img) -> Option<Img> {
-    if img.w <= 400 || img.w > 800 || img.h > 600 || img.h < 180 { return None; }
+    if img.w < 280 || img.w > 800 || img.h > 600 || img.h < 180 { return None; }
     let chroma = |p: [u8; 3]| [i16::from(p[0]) - i16::from(p[1]), i16::from(p[1]) - i16::from(p[2])];
     let mut colors = Vec::new();
     for row in 1..8 {
@@ -2702,6 +2705,37 @@ fn recover_light_table_plays(img: &Img, scene: &mut Scene) {
     if seek_hand { scene.hand.sort_by(|a, b| a.at[0].total_cmp(&b.at[0])); }
 }
 
+/// Cerca carte sotto la soglia del rilevatore ordinario anche su desktop grandi.
+/// Due facce distinte della stessa scala devono sostenere l'ipotesi.
+fn compact_cards(img: &Img, analysis: &Analysis) -> Option<Analysis> {
+    let plausible = |blob: &Blob| {
+        (24.0..40.0).contains(&blob.rect.long()) && card_shaped(&blob.rect)
+            && blob.white > 0.12 && blob.bg > 0.3
+    };
+    if img.w.saturating_mul(img.h) > 8_000_000 {
+        return None;
+    }
+    let paper = Paper::of(img);
+    let mask: Vec<_> = img.px.iter().map(|&p| paper.is(p)).collect();
+    let blobs = blobs_with_min_area(img, &mask, 0, (0, 0, img.w, img.h), 60);
+    let candidates: Vec<_> = blobs.iter().filter(|b| plausible(b)).collect();
+    if !(2..=16).contains(&candidates.len()) { return None; }
+    let mut cards: Vec<_> = candidates.iter().filter_map(|b| as_full(img, &b.rect))
+        .filter(|c| c.score >= 0.7).collect();
+    drop_repeated_graphics(&mut cards);
+    let support = |card: &Found, other: &Found| {
+        (card.rect.long() - other.rect.long()).abs() <= 3.0
+            && card.rect.dist(&other.rect) > card.rect.short()
+            && card.view.best(cards::CardSet::FULL).zip(other.view.best(cards::CardSet::FULL))
+                .is_some_and(|((a, _), (b, _))| a != b)
+    };
+    let anchor = cards.iter().max_by_key(|a| cards.iter().filter(|b| support(a, b)).count())?;
+    if !cards.iter().any(|other| support(anchor, other)) { return None; }
+    let card_l = anchor.rect.long();
+    cards.retain(|card| (card.rect.long() - card_l).abs() <= 3.0);
+    Some(Analysis { cards, card_l, table: analysis.table, blobs, split: false })
+}
+
 fn detect_briscola(img: &Img, small: bool) -> Scene {
     let ta = std::time::Instant::now();
     let mut a = analyze_mode(img, small);
@@ -2727,6 +2761,15 @@ fn detect_briscola(img: &Img, small: bool) -> Scene {
     }
     drop_repeated_graphics(&mut a.cards);
     if a.cards.is_empty() { a.card_l = 0.0; }
+    if !small && a.cards.is_empty() {
+        let previous_gray = reference::gray_screen();
+        reference::set_gray_screen(original_gray);
+        if let Some(compact) = compact_cards(img, &a) {
+            a = compact;
+        } else {
+            reference::set_gray_screen(previous_gray);
+        }
+    }
     let blobs = a.cards.iter().all(|c| c.rect.landscape()).then(|| a.blobs.clone());
     let mut scene = assign_briscola(img, a);
     // Il bianco normale può unire la carta color avorio al dorso sotto cui

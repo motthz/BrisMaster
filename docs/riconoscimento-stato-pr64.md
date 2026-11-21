@@ -86,3 +86,11 @@ Nessuna regressione sui sei indicatori per singola partita. Negli otto replay su
 [Confronto per ciascuna delle 44 partite](https://github.com/Motthz/BrisMaster/blob/recognition/compact-tables-and-late-evidence/docs/audit-pr64/8c213f7-replay.csv) · [CI del codice misurato](https://github.com/Motthz/BrisMaster/actions/runs/44879857857)
 
 Il passo successivo è riprodurre CaptureLoss, seme 42: il registro arriva a 40 giocate ma in due turni il consiglio risulta pronto con posizione errata senza avviso di storico parziale.
+
+
+### Consigli con tavolo discordante · 1114cbe
+
+1. In CaptureLoss, seme 42, a 26.800 e 31.600 ms mano e insieme delle carte uscite coincidono con il simulatore. La posizione del motore ha tavolo vuoto; nel replay sono presenti rispettivamente cavallo di bastoni (38) e quattro di spade (23).
+2. Quando la posizione resta ferma per almeno due controlli discordanti, il pannello avvisa che le letture differiscono dalla posizione usata. Il consiglio resta disponibile. La traccia facoltativa si attiva con BRIS_ADVICE_TRACE=1. Il test del seme 42 verifica che tutti i consigli pronti errati siano segnalati e che i turni corretti pronti non ricevano avvisi in questo caso.
+3. Sui 44 replay, rispetto a 8c213f7, i consigli pronti errati segnalati passano da 81/86 a 86/86. Due dei 707 consigli con posizione corretta presentano un avviso nella candidata. Il riferimento non misurava questo secondo contatore. Sul seme 42 gli avvisi passano da 0/2 a 2/2 con 0/14 sui turni corretti. Le 1.570 conferme corrette su 1.760, i 707 consigli pronti corretti e gli 86 errati restano invariati. Nessuna regressione sui sei indicatori confrontati partita per partita. Superati i 129 test standard e il replay mirato con le nuove asserzioni.
+4. Resta da recuperare la carta già visibile prima che il motore elabori il consiglio, verificando che le aperture transitorie durante le animazioni non vengano conteggiate due volte.

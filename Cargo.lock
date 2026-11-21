@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "brismaster"
-version = "0.6.14"
+version = "0.6.15"
 dependencies = [
  "blackjack-core",
  "briscola-core 0.6.14",

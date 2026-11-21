@@ -92,6 +92,12 @@ impl Manifest {
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize)]
 struct Report {
+    first_visible: usize,
+    first_face_correct: usize,
+    first_face_and_side_correct: usize,
+    first_registered: usize,
+    first_registered_confirmed: usize,
+    first_hidden: usize,
     correct: usize,
     correct_identified: usize,
     missing: usize,
@@ -104,6 +110,7 @@ struct Report {
     ready_with_correct_position: usize,
     ready_with_wrong_position: usize,
     wrong_position_with_partial_notice: usize,
+    correct_position_with_partial_notice: usize,
     blocked_wrong_phase: usize,
     blocked_confirmation: usize,
     blocked_screen: usize,
@@ -197,9 +204,15 @@ impl Session {
         } else if a.screen_is_behind_with_lag(Some(|| Duration::from_millis(queue_delay_ms))) {
             self.report.blocked_screen += 1;
         } else if !correct {
+            if std::env::var_os("BRIS_ADVICE_TRACE").is_some() {
+                println!("consiglio ms={ms} turno={} avviso={} letture_discordanti={} mano={:?}/{:?} tavolo={:?}/{:?} uscite={:?}/{:?}",
+                    self.report.my_turns, a.partial_advice(), a.vision.stuck, a.pos.hand.to_vec(), turn.hand,
+                    a.pos.table, turn.table, a.pos.played.to_vec(), played.to_vec());
+            }
             self.report.ready_with_wrong_position += 1;
             self.report.wrong_position_with_partial_notice += usize::from(a.partial_advice());
         } else {
+            self.report.correct_position_with_partial_notice += usize::from(a.partial_advice());
             self.report.ready_with_correct_position += 1;
             self.unavailable_turns = 0;
             return;
@@ -298,7 +311,7 @@ fn synthetic_session(seed: u64, window: Window) -> (Report, [u8; 2]) {
     let interrupted = matches!(window, Window::CaptureLoss | Window::Interrupted);
     let moving = !matches!(window, Window::Stable | Window::CaptureLoss);
     let mut previous_geometry = (1, 0);
-    let mut show = |session: &mut Session, game: &Game, slots: [Option<Card>; 2], hand: &[Card], trick: u8, closing: bool| {
+    let mut show = |session: &mut Session, game: &Game, slots: [Option<Card>; 2], hand: &[Card], trick: u8, closing: bool, play: Option<(u8, Card)>| {
         let compact = moving && matches!(trick, 2..=4 | 9..=12 | 18..=19);
         let offset = if compact && with_chrome {
             if trick % 2 == 0 || closing { 56 } else { 28 }
@@ -337,6 +350,7 @@ fn synthetic_session(seed: u64, window: Window) -> (Report, [u8; 2]) {
 
         if closing && interrupted && matches!(trick, 3 | 11 | 18) {
             // Copertura e perdita cattura mentre si sta chiudendo davvero una presa.
+            session.report.first_hidden += usize::from(play.is_some());
             let blank = Img::new(image.w, image.h);
             let before = session.assistant.pos.clone();
             for input in [Some(&blank), None, None] {
@@ -353,6 +367,23 @@ fn synthetic_session(seed: u64, window: Window) -> (Report, [u8; 2]) {
         for repeat in 0..4 {
             ms += 400;
             session.capture(ms, Some(&image), repeat == 0 && changed);
+            if let Some((player, card)) = play.filter(|_| repeat == 0) {
+                session.report.first_visible += 1;
+                if let Some(scene) = &session.last_scene {
+                    let views = [&scene.my_slot, &scene.opp_slot];
+                    let matches = |view: &Option<CardView>| view.as_ref()
+                        .and_then(|v| v.best(CardSet::FULL)).is_some_and(|(id, _)| id == card);
+                    session.report.first_face_correct += usize::from(views.iter().any(|v| matches(v)));
+                    session.report.first_face_and_side_correct += usize::from(matches(views[player as usize]));
+                }
+                let entry = session.assistant.rec.events.iter().find_map(|event| match event {
+                    Event::Giocata { presa, chi, carta, identificata, .. }
+                        if *presa == trick && *chi == record::who(player) && carta.id == card => Some(*identificata),
+                    _ => None,
+                });
+                session.report.first_registered += usize::from(entry.is_some());
+                session.report.first_registered_confirmed += usize::from(entry == Some(true));
+            }
         }
         if std::env::var_os("BRIS_WINDOW_TRACE").is_some() {
             let seen = |card: &CardView| card.best(CardSet::FULL).map(|(id, margin)| (id, margin));
@@ -367,7 +398,7 @@ fn synthetic_session(seed: u64, window: Window) -> (Report, [u8; 2]) {
         ms
     };
 
-    let mut checkpoint = show(&mut session, &game, [None; 2], &hand, 1, false);
+    let mut checkpoint = show(&mut session, &game, [None; 2], &hand, 1, false, None);
     while !game.is_over() {
         let trick = (game.played.len() / 2 + 1) as u8;
         let mut slots = [None; 2];
@@ -388,10 +419,10 @@ fn synthetic_session(seed: u64, window: Window) -> (Report, [u8; 2]) {
             if player == ME {
                 hand.retain(|&c| c != card);
             }
-            checkpoint = show(&mut session, &game, slots, &hand, trick, closing);
+            checkpoint = show(&mut session, &game, slots, &hand, trick, closing, Some((player, card)));
         }
         hand.extend(game.hands[ME as usize].iter().filter(|c| !hand.contains(c)).collect::<Vec<_>>());
-        checkpoint = show(&mut session, &game, [None; 2], &hand, trick, false);
+        checkpoint = show(&mut session, &game, [None; 2], &hand, trick, false, None);
     }
     (session.finish(&plays), game.points)
 }
@@ -422,9 +453,17 @@ fn window_changes_during_whole_games() {
             ran += 1;
             let (report, truth_points) = synthetic_session(seed, window);
             println!("seed={seed} scenario={window:?} punti_veri={truth_points:?} {}", serde_json::to_string(&report).unwrap());
+            assert_eq!(report.first_visible + report.first_hidden, 40);
+            assert!(report.first_registered_confirmed <= report.first_registered);
             assert_eq!(report.my_turns, 20);
             assert_eq!(report.correct + report.wrong + report.missing, 40);
             assert_eq!(report.duplicate_events, 0);
+            // In questo replay la mano può coincidere mentre manca l'apertura
+            // avversaria. Verifica anche che l'avviso non copra i turni corretti.
+            if seed == 42 && matches!(window, Window::CaptureLoss) {
+                assert_eq!(report.wrong_position_with_partial_notice, report.ready_with_wrong_position);
+                assert_eq!(report.correct_position_with_partial_notice, 0);
+            }
             if matches!(window, Window::Stable | Window::ResizeAndMove) {
                 assert_eq!((report.correct, report.wrong, report.missing), (40, 0, 0));
                 assert_eq!(report.tricks, 20);

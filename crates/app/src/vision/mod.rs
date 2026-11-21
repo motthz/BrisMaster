@@ -920,7 +920,7 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
         let lag_ms = Arc::new(AtomicU64::new(0));
         let last_result = Arc::new(Mutex::new(std::time::Instant::now()));
         let work = Arc::new(Mutex::new(None::<std::time::Instant>));
-        let last = Arc::new(Mutex::new(None));
+        let last = Arc::new(Mutex::new(None::<Img>));
         type FrameInfo = (usize, Option<Place>, u64, Option<Arc<Img>>);
         let queue: Arc<(Mutex<Frames<FrameInfo>>, Condvar)> =
             Arc::new((Mutex::new(Frames::new(every)), Condvar::new()));
@@ -1013,10 +1013,10 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
         let completed = last_result.clone();
         let working = work.clone();
         std::thread::spawn(move || {
-            // L'ultima schermata analizzata (impronta) e cosa ci si era letto: una schermata
-            // uguale non si analizza di nuovo (al più tre volte di fila: quello che l'app impara
+            // L'ultima schermata analizzata e cosa ci si era letto: una schermata
+            // uguale non si analizza di nuovo (al più otto volte di fila: quello che l'app impara
             // dalle conferme può cambiare la lettura).
-            let mut seen: Option<(Vec<u8>, Option<S>, u32)> = None;
+            let mut seen: Option<(Option<S>, u32)> = None;
             let mut last_place = None;
             // Le zone delle carte delle ultime letture: la cattura guarda i cambi solo lì.
             let mut boxes: std::collections::VecDeque<[f32; 4]> = Default::default();
@@ -1034,12 +1034,15 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                             boxes.clear();
                             forget_focus();
                         }
-                        let sig = signature(&table);
-                        let same = seen.as_ref().is_some_and(|(old, _, n)| *n < 8 && difference(old, &sig) < 0.05 && changed_cells(old, &sig) == 0);
+                        // Due facce possono avere la stessa luminosità media in ogni cella.
+                        // Riusa una lettura solo per pixel identici alla stessa risoluzione.
+                        let same = k == 1 && seen.as_ref().is_some_and(|(_, n)| *n < 8)
+                            && frame.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                                .is_some_and(|old| old.w == table.w && old.h == table.h && old.px == table.px);
                         let scene = if same {
-                            let s = seen.as_mut().unwrap();
-                            s.2 += 1;
-                            Ok(s.1.clone())
+                            let (result, repeats) = seen.as_mut().unwrap();
+                            *repeats += 1;
+                            Ok(result.clone())
                         } else {
                             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 let mut scene = read(&table, &mem)?;
@@ -1048,7 +1051,7 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                                 }
                                 Some(scene)
                             }));
-                            seen = r.as_ref().ok().map(|s| (sig, s.clone(), 0));
+                            seen = r.as_ref().ok().map(|s| (s.clone(), 0));
                             r
                         };
                         // La misura delle carte decide quanto rimpicciolire le schermate dopo.
@@ -1350,27 +1353,29 @@ fn changed_cells(a: &[u8], b: &[u8]) -> usize {
     if a.len() != b.len() {
         return a.len().max(b.len());
     }
-    a.iter().zip(b).filter(|(&x, &y)| (x as i32 - y as i32).abs() >= 24).count()
+    a.chunks_exact(3).zip(b.chunks_exact(3)).filter(|(x, y)|
+        x.iter().zip(*y).any(|(&a, &b)| a.abs_diff(b) >= 24)
+    ).count()
 }
 
-/// Impronta di una schermata: la luminosità media su una griglia 48 x 32.
+/// Impronta di una schermata: il colore medio su una griglia 48 x 32.
 pub fn signature(img: &Img) -> Vec<u8> {
     let (gw, gh) = (48usize, 32usize);
-    let mut out = Vec::with_capacity(gw * gh);
+    let mut out = Vec::with_capacity(gw * gh * 3);
     for j in 0..gh {
         for i in 0..gw {
             let (x0, x1) = (i * img.w / gw, ((i + 1) * img.w / gw).max(i * img.w / gw + 1).min(img.w));
             let (y0, y1) = (j * img.h / gh, ((j + 1) * img.h / gh).max(j * img.h / gh + 1).min(img.h));
-            let (mut sum, mut n) = (0u32, 0u32);
+            let (mut sum, mut n) = ([0u32; 3], 0u32);
             // Un punto ogni due per lato basta.
             for y in (y0..y1).step_by(2) {
                 for x in (x0..x1).step_by(2) {
                     let p = img.at(x, y);
-                    sum += (p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10;
+                    for (channel, value) in sum.iter_mut().zip(p) { *channel += u32::from(value); }
                     n += 1;
                 }
             }
-            out.push((sum / n.max(1)) as u8);
+            out.extend(sum.map(|v| (v / n.max(1)) as u8));
         }
     }
     out
@@ -1381,7 +1386,9 @@ pub fn difference(a: &[u8], b: &[u8]) -> f32 {
     if a.len() != b.len() {
         return 255.0;
     }
-    a.iter().zip(b).map(|(&x, &y)| (x as i32 - y as i32).unsigned_abs()).sum::<u32>() as f32 / a.len().max(1) as f32
+    a.chunks_exact(3).zip(b.chunks_exact(3)).map(|(x, y)| {
+        x.iter().zip(y).map(|(&a, &b)| a.abs_diff(b)).max().unwrap_or(0) as u32
+    }).sum::<u32>() as f32 / (a.len() / 3).max(1) as f32
 }
 
 /// Le schermate molto grandi (monitor 4K) si rimpiccioliscono, così l'analisi è molto più
@@ -1656,6 +1663,21 @@ mod tests {
             seen.push(i.px[0][0]);
         }
         assert!(seen.contains(&200), "stato breve perso: {seen:?}");
+    }
+
+    #[test]
+    fn brief_equal_luminance_suit_change_is_queued() {
+        let mut frame = Img::new(640, 480);
+        frame.px.fill([60, 80, 50]);
+        let now = std::time::Instant::now();
+        let mut queue = Frames::new(std::time::Duration::from_secs(1));
+        assert!(queue.offer(frame.clone(), now));
+        for y in 220..252 {
+            for x in 310..334 {
+                frame.px[y * frame.w + x] = [180, 20, 50];
+            }
+        }
+        assert!(queue.offer(frame, now + std::time::Duration::from_millis(80)));
     }
 
     /// Su uno schermo grande una carta sola che compare cambia poco nel complesso, ma la schermata

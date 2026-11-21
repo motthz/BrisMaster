@@ -315,3 +315,16 @@ fn distinguishes_two_rows_from_a_nearby_play() {
     super::detect::forget_reading_state();
     assert_eq!(super::detect::scene(&img).hand.len(), 3);
 }
+
+#[test]
+fn identifies_small_faces_in_a_large_viewport() {
+    use briscola_core::cards::CardSet;
+    let ids = [0, 12, 25];
+    let images = ids.map(|id| super::reference::card_image(0, id));
+    let look = Look { card_h: 32.0, ..Look::default() };
+    let deal = Deal { hand: images.iter().collect(), mine: None, opp: None, trump: None, deck: false };
+    super::detect::forget_reading_state();
+    let scene = super::read_briscola(&table(&deal, &look), &std::sync::Mutex::new(super::memory::Memory::in_memory())).unwrap();
+    let actual: Vec<_> = scene.hand.iter().filter_map(|v| v.best(CardSet::FULL).map(|b| b.0)).collect();
+    assert_eq!(actual, ids);
+}

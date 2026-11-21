@@ -94,3 +94,20 @@ Il passo successivo è riprodurre CaptureLoss, seme 42: il registro arriva a 40 
 2. Quando la posizione resta ferma per almeno due controlli discordanti, il pannello avvisa che le letture differiscono dalla posizione usata. Il consiglio resta disponibile. La traccia facoltativa si attiva con BRIS_ADVICE_TRACE=1. Il test del seme 42 verifica che tutti i consigli pronti errati siano segnalati e che i turni corretti pronti non ricevano avvisi in questo caso.
 3. Sui 44 replay, rispetto a 8c213f7, i consigli pronti errati segnalati passano da 81/86 a 86/86. Due dei 707 consigli con posizione corretta presentano un avviso nella candidata. Il riferimento non misurava questo secondo contatore. Sul seme 42 gli avvisi passano da 0/2 a 2/2 con 0/14 sui turni corretti. Le 1.570 conferme corrette su 1.760, i 707 consigli pronti corretti e gli 86 errati restano invariati. Nessuna regressione sui sei indicatori confrontati partita per partita. Superati i 129 test standard e il replay mirato con le nuove asserzioni.
 4. Resta da recuperare la carta già visibile prima che il motore elabori il consiglio, verificando che le aperture transitorie durante le animazioni non vengano conteggiate due volte.
+
+
+### Prima cattura di ogni giocata · 46f9d24
+
+Il replay misura il primo fotogramma consegnato dopo la giocata, prima delle tre letture ripetute. Su 44 partite sintetiche, 1.736 giocate sono visibili e 24 cadono interamente durante un’interruzione. In 1.667 casi il classificatore propone l’identità corretta in uno dei due posti sul tavolo; in 1.572 anche il lato coincide. Nello stesso istante 73 giocate sono già registrate con carta, presa e giocatore corretti, zero sono anche confermate. A fine partita le conferme corrette sono 1.570 su tutte le 1.760 giocate. Il dato della prima lettura riguarda carte appena giocate sul tavolo, anche se già viste in mano. [CSV per partita](https://github.com/Motthz/BrisMaster/blob/2feab9e3c78f2e183bc2e07c00cf4c97e9fb7e36/docs/audit-pr64/prima-cattura-46f9d24.csv).
+
+Quattro esperimenti anticipano l’assegnazione del lato quando il centro della carta è entro il 20% della distanza tra le caselle rispetto al centro più vicino. Risultati nello stesso ordine: lato corretto subito, conferme corrette finali, conferme errate finali.
+
+| Variante | Carta e lato al primo fotogramma | Conferme corrette finali | Conferme errate finali |
+|---|---:|---:|---:|
+| Riferimento | 1572 | 1570 | 15 |
+| Posizione vicina | 1649 | 1584 | 16 |
+| Carta intera e almeno 64 px | 1644 | 1580 | 16 |
+| Anche tre coppie già osservate | 1624 | 1576 | 16 |
+| Carta intera ≥64 px, due carte in mano, briscola presente, spostamento verso il proprio lato | 1644 | 1580 | 16 |
+
+Tutte registrano correttamente 73 giocate sul primo fotogramma. In ciascuna il replay Interrupted con seme 42 peggiora da 9 a 10 conferme errate. Le regole sperimentali sono state scartate. Il codice conservato estende soltanto il banco di prova e riproduce i sei contatori precedenti su tutte le partite. Prossima verifica: conservare la prima lettura come ipotesi provvisoria e misurare quando una seconda evidenza indipendente (variazione della mano o nuova apertura) permette di confermarla; cronometrare anche il tempo alla prima registrazione corretta.

@@ -2202,10 +2202,16 @@ impl Assistant {
         } else {
             before_lead.opp_hand_len += 1;
         }
-        let observed = if mine_on_table { &scene.my_slot } else { &scene.opp_slot };
+        // Una carta isolata può finire nello slot avversario anche quando era
+        // nella nostra mano. In quella situazione l'identità viene dalla faccia
+        // osservata, il giocatore dalla carta scomparsa dalla mano.
+        let our_lead_in_opp_slot = mine_on_table && missing.contains(&t)
+            && scene.my_slot.is_none() && !weak && !unread && each == 3;
+        let use_my_slot = mine_on_table && !our_lead_in_opp_slot;
+        let observed = if use_my_slot { &scene.my_slot } else { &scene.opp_slot };
         let evidence = observed.as_ref().filter(|v| !v.partial && !v.recovered_outline
             && v.best(CardSet::FULL).is_some_and(|(id, margin)| id == t && margin >= AUTO_MARGIN));
-        let sight = if mine_on_table { &self.vision.sightings.my_side } else { &self.vision.sightings.their_side };
+        let sight = if use_my_slot { &self.vision.sightings.my_side } else { &self.vision.sightings.their_side };
         let identified = evidence.is_some() && sight.get(t as usize).is_some_and(|s|
             s.count >= 2 && s.last == self.vision.sightings.frame);
         // Dopo più buchi si può vedere bene la faccia senza sapere con certezza
@@ -5419,6 +5425,30 @@ mod tests {
         assert!(a.screen_agrees(&scene));
         scene.hand[0].scores[20] = scene.hand[0].scores[10] - 2.0;
         assert!(!a.screen_agrees(&scene));
+    }
+
+    #[test]
+    fn resync_records_our_known_lead_in_the_opposite_slot() {
+        let mut a = manual_turn();
+        assert!(a.enter(10));
+        a.vision.gap = true;
+        a.vision.sightings.full_hands = vec![(1, vec![20, 11]), (2, vec![20, 11])];
+        a.vision.sightings.frame = 2;
+        let scene = Scene {
+            hand: [20, 11].map(|c| seen(c, 8.0)).to_vec(),
+            opp_slot: Some(seen(30, 8.0)),
+            ..Default::default()
+        };
+        assert!(a.resync(&scene));
+        assert_eq!(a.pos.table, Some(30));
+        assert_eq!(a.pos.leader, ME);
+        assert_eq!(a.pos.points, [0, 0]);
+        assert!(!a.vision.gaps.is_empty());
+        let plays: Vec<_> = a.rec.events.iter().filter_map(|event| match event {
+            Event::Giocata { presa, chi, carta, .. } => Some((*presa, *chi, carta.id)),
+            _ => None,
+        }).collect();
+        assert_eq!(plays, vec![(1, record::who(ME), 10), (2, record::who(ME), 30)]);
     }
 
     #[test]

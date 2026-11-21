@@ -1903,6 +1903,7 @@ fn analyze_once(img: &Img, small: bool) -> Analysis {
         let tk = std::time::Instant::now();
         let Some(a) = run(k) else { continue };
         let n = a.cards.len();
+        let convincing = a.cards.iter().any(|c| c.score >= KNOWN_DECK) || off("SENZA_PROVE_DEBOLI");
         if std::env::var_os("TEMPI").is_some() {
             eprintln!("    prova {k}: {} carte in {:?} ({}x{})", n, tk.elapsed(), img.w, img.h);
         }
@@ -1911,7 +1912,9 @@ fn analyze_once(img: &Img, small: bool) -> Analysis {
         }
         // Abbastanza carte, o quante se ne vedevano prima con la stessa prova (a fine partita ne
         // restano poche): niente altre prove.
-        if n >= 3 || (k == first && n >= 1 && n + 1 >= last_n) {
+        // (Non se l'unica carta trovata somiglia appena a un mazzo noto: è più spesso un riquadro del
+        // sito, e le carte vere le trovano le prove dopo.)
+        if n >= 3 || (k == first && n >= 1 && n + 1 >= last_n && convincing) {
             break;
         }
     }

@@ -1,6 +1,6 @@
 # Riconoscimento delle partite · PR 64
 
-Punto di ripresa del 21 novembre 2026. Il codice misurato è [4231a52](https://github.com/Motthz/BrisMaster/commit/4231a5206257a6c21d3409e54bc8f16b5906da61). Il lavoro prosegue sul branch `recognition/compact-tables-and-late-evidence` della [PR 64](https://github.com/Motthz/BrisMaster/pull/64). La versione pubblicata usata come riferimento è la 0.6.14.
+Punto di ripresa del 21 novembre 2026. Il riferimento iniziale è [4231a52](https://github.com/Motthz/BrisMaster/commit/4231a5206257a6c21d3409e54bc8f16b5906da61). Il lavoro prosegue sul branch `recognition/compact-tables-and-late-evidence` della [PR 64](https://github.com/Motthz/BrisMaster/pull/64). La versione pubblicata usata come riferimento è la 0.6.14.
 
 ## 1. Modifiche già implementate
 
@@ -66,3 +66,23 @@ Il confronto controlla sei contatori per ogni coppia scenario/seme e segnala il 
 3. Correggere la causa riprodotta e aggiungere un test che fallisca sulla revisione precedente. Verificare sia i consigli errati sia quelli corretti disponibili.
 4. Rieseguire i 44 replay e i casi mirati. Registrare commit, risultati per caso, eventuali regressioni ed esito CI nella PR.
 5. Verificare il traguardo del 90% su partite complete annotate di siti e mazzi indipendenti. Conservare in locale screenshot e correzioni dei siti. Pubblicare solo risultati aggregati e casi sintetici riproducibili.
+
+
+### Recupero del quattro di coppe · 8c213f7
+
+Nel replay CaptureLoss, seme 31, l’app vede una carta isolata dal lato avversario, ma quella stessa carta era nella mano del giocatore ed è scomparsa. Il recupero usa la faccia osservata per l’identità e la variazione della mano per attribuirla al giocatore. Si applica nel riallineamento di una singola presa con storico precedente coerente. Richiede carte leggibili e una mano compatibile; la conferma visiva richiede osservazioni ripetute. Il quattro di coppe risulta registrato alla quarta presa già a 17.200 ms. La risposta nascosta alla terza presa e i suoi punti restano incerti.
+
+| Misura sui 44 replay | 4231a52 | 8c213f7 |
+|---|---:|---:|
+| Giocate corrette | 1.704 | 1.705 |
+| Corrette e confermate | 1.569 | 1.570 |
+| Mancanti | 28 | 27 |
+| Errate, di cui confermate | 28 (15) | 28 (15) |
+| Turni con consiglio pronto e posizione corretta | 707 | 707 |
+| Turni con consiglio pronto e posizione errata | 86 | 86 |
+
+Nessuna regressione sui sei indicatori per singola partita. Negli otto replay supplementari con interruzioni nel finale, entrambe le versioni confermano 271 giocate corrette su 320, con 148 turni pronti corretti e 6 errati. Superati 129 test unitari locali; 22 test esclusi dalla corsa standard. Il nuovo test verifica anche che il recupero non inventi punti o una giocata avversaria.
+
+[Confronto per ciascuna delle 44 partite](https://github.com/Motthz/BrisMaster/blob/recognition/compact-tables-and-late-evidence/docs/audit-pr64/8c213f7-replay.csv) · [CI del codice misurato](https://github.com/Motthz/BrisMaster/actions/runs/44879857857)
+
+Il passo successivo è riprodurre CaptureLoss, seme 42: il registro arriva a 40 giocate ma in due turni il consiglio risulta pronto con posizione errata senza avviso di storico parziale.

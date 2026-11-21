@@ -2132,7 +2132,10 @@ impl Assistant {
         // sembrano meno di tre anche col mazzo ancora pieno.)
         let trump_shown = scene.trump.as_ref().and_then(sure) == Some(trump);
         let exhausted = each < 3 && pos.deck_len > 0 && !trump_shown;
-        if new.is_empty() && missing.len() <= 1 && !exhausted {
+        let unchanged_hand = new.is_empty() && missing.len() <= 1 && !exhausted;
+        let endgame_reply = pos.deck_len == 0 && pos.step() == Step::OppMove && pos.table.is_some()
+            && pos.tricks + 1 == 20u8.saturating_sub(each);
+        if unchanged_hand && !endgame_reply {
             // Niente di nuovo in mano: non è un buco, al più una giocata non vista.
             return false;
         }
@@ -2210,6 +2213,25 @@ impl Assistant {
         let record_lead = done == 1 && pos.table.is_some() && self.vision.gaps.is_empty()
             && pos.played.len() == 2 * u32::from(pos.tricks)
             && evidence.is_some() && before_lead.allowed().contains(t) && !before_lead.played.contains(t);
+        if record_lead && led && pos.deck_len == 0 && !weak {
+            // A mazzo finito l'apertura successiva rivela chi ha preso. Prova
+            // ogni risposta legale e accetta soltanto una soluzione unica.
+            let mut replies = pos.allowed().iter().filter(|&reply| {
+                let mut trial = pos;
+                trial.enter(reply).flatten().is_some() && trial.leader == p.leader
+                    && trial.enter(t).is_some() && trial.hand == p.hand
+                    && trial.opp_hand_len == p.opp_hand_len && trial.tricks == p.tricks
+            });
+            if let (Some(reply), None) = (replies.next(), replies.next()) {
+                self.record_entry(reply, false, false, None);
+                self.record_entry(t, true, identified, evidence.map(|v| (v.img.clone(), v.vis)));
+                self.vision.gap = false;
+                self.vision.last = None;
+                self.vision.status = format!("Presa ricostruita: {} è l’unica risposta compatibile con l’apertura successiva.", cards::name(reply));
+                return true;
+            }
+        }
+        if unchanged_hand { return false; }
         self.vision.gaps.push(self.history.len());
         self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
         if record_lead {
@@ -5397,6 +5419,35 @@ mod tests {
         assert!(a.screen_agrees(&scene));
         scene.hand[0].scores[20] = scene.hand[0].scores[10] - 2.0;
         assert!(!a.screen_agrees(&scene));
+    }
+
+    #[test]
+    fn exhausted_deck_recovers_the_only_opponent_response() {
+        let mut a = manual_turn();
+        a.pos.deck_len = 0;
+        a.pos.trump_card_owner = Some(OPP);
+        a.pos.tricks = 17;
+        a.pos.played = (0..40).filter(|c| ![0, 10, 11, 12, 20, 30].contains(c)).collect();
+        assert!(a.enter(10));
+        a.vision.gap = true;
+        a.vision.sightings.full_hands = vec![(1, vec![20, 30]), (2, vec![20, 30])];
+        a.vision.sightings.frame = 2;
+        let scene = Scene { hand: [20, 30].map(|c| seen(c, 8.0)).to_vec(),
+            opp_slot: Some(seen(11, 8.0)), ..Default::default() };
+        // Due briscole possibili possono entrambe battere l'Asso di Coppe.
+        a.pos.played.remove(2);
+        a.pos.played.insert(12);
+        assert!(!a.resync(&scene));
+        assert_eq!(a.pos.table, Some(10));
+        assert_eq!(a.pos.tricks, 17);
+        a.pos.played.insert(2);
+        a.pos.played.remove(12);
+        assert!(a.resync(&scene));
+        assert_eq!(a.pos.table, Some(11));
+        assert_eq!(a.pos.tricks, 18);
+        assert_eq!(a.pos.points[OPP as usize], 22);
+        assert!(a.pos.played.contains(0));
+        assert!(a.vision.gaps.is_empty());
     }
 
     #[test]

@@ -3808,6 +3808,7 @@ impl Assistant {
 
     fn partial_advice(&self) -> bool {
         !self.vision.gaps.is_empty() || self.pos.observation().has_unobserved_played_cards()
+            || self.vision.stuck >= 2
     }
 
     fn advice(&mut self, ui: &mut egui::Ui, samples: &mut u32) {
@@ -3832,7 +3833,12 @@ impl Assistant {
         let partial = self.partial_advice();
         if partial {
             let missing = (2 * u32::from(self.pos.tricks)).saturating_sub(self.pos.played.len());
-            ui.colored_label(GOLD, format!("Storico incompleto. Carte mancanti nelle prese concluse: {missing}. I punti possono essere incerti."));
+            if self.vision.stuck >= 2 {
+                ui.colored_label(GOLD, "Le ultime letture del tavolo non coincidono con la posizione usata per il consiglio.");
+            }
+            if missing > 0 || !self.vision.gaps.is_empty() {
+                ui.colored_label(GOLD, format!("Storico incompleto. Carte mancanti nelle prese concluse: {missing}. I punti possono essere incerti."));
+            }
             if let Some((trick, side)) = (1..=self.pos.tricks).find_map(|trick| {
                 let has = |side| self.rec.events.iter().any(|event| matches!(event,
                     Event::Giocata { presa, chi, .. } if *presa == trick && *chi == side));

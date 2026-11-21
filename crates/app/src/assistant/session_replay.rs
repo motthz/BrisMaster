@@ -104,6 +104,7 @@ struct Report {
     ready_with_correct_position: usize,
     ready_with_wrong_position: usize,
     wrong_position_with_partial_notice: usize,
+    correct_position_with_partial_notice: usize,
     blocked_wrong_phase: usize,
     blocked_confirmation: usize,
     blocked_screen: usize,
@@ -197,9 +198,15 @@ impl Session {
         } else if a.screen_is_behind_with_lag(Some(|| Duration::from_millis(queue_delay_ms))) {
             self.report.blocked_screen += 1;
         } else if !correct {
+            if std::env::var_os("BRIS_ADVICE_TRACE").is_some() {
+                println!("consiglio ms={ms} turno={} avviso={} letture_discordanti={} mano={:?}/{:?} tavolo={:?}/{:?} uscite={:?}/{:?}",
+                    self.report.my_turns, a.partial_advice(), a.vision.stuck, a.pos.hand.to_vec(), turn.hand,
+                    a.pos.table, turn.table, a.pos.played.to_vec(), played.to_vec());
+            }
             self.report.ready_with_wrong_position += 1;
             self.report.wrong_position_with_partial_notice += usize::from(a.partial_advice());
         } else {
+            self.report.correct_position_with_partial_notice += usize::from(a.partial_advice());
             self.report.ready_with_correct_position += 1;
             self.unavailable_turns = 0;
             return;

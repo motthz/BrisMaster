@@ -432,6 +432,12 @@ fn window_changes_during_whole_games() {
             assert_eq!(report.my_turns, 20);
             assert_eq!(report.correct + report.wrong + report.missing, 40);
             assert_eq!(report.duplicate_events, 0);
+            // In questo replay la mano può coincidere mentre manca l'apertura
+            // avversaria. Verifica anche che l'avviso non copra i turni corretti.
+            if seed == 42 && matches!(window, Window::CaptureLoss) {
+                assert_eq!(report.wrong_position_with_partial_notice, report.ready_with_wrong_position);
+                assert_eq!(report.correct_position_with_partial_notice, 0);
+            }
             if matches!(window, Window::Stable | Window::ResizeAndMove) {
                 assert_eq!((report.correct, report.wrong, report.missing), (40, 0, 0));
                 assert_eq!(report.tricks, 20);

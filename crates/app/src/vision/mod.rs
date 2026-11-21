@@ -173,6 +173,13 @@ const NN_FROM: f32 = 0.65;
 /// sbagliato non deve ripetere l'errore.
 const DECISIVE_BELOW: f32 = 0.75;
 const NN_WEIGHT: f32 = 1.0;
+/// Accordo fra confronto e rete (vedi `recognize`): da quale somiglianza, sotto quale distacco, con
+/// quale sicurezza della rete (probabilità in logaritmo: 0.9 e 0.05) e quanto si aggiunge.
+const AGREE_FROM: f32 = 0.70;
+const AGREE_BELOW: f32 = 1.4;
+const AGREE_NN_SURE: f32 = -0.105;
+const AGREE_NN_OTHER: f32 = -3.0;
+const AGREE_BONUS: f32 = 0.8;
 
 fn reference_scores(sim: &[f32; 40]) -> [f32; 40] {
     let mut s = sim.map(|v| v * SCALE);
@@ -474,6 +481,22 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
             let weight = if view.partial { 0.10 * w } else { w };
             for c in 0..40 {
                 s[c] += weight * k * lp[c].max(-12.0);
+            }
+        }
+    }
+    // Due carte di un mazzo noto molto simili (il fante di bastoni e quello di denari): il
+    // confronto le separa di poco. Se la rete, che guarda la carta in un altro modo, dà con
+    // sicurezza la stessa carta e quasi niente alla seconda, i due giudizi insieme bastano.
+    if !view.partial && top >= AGREE_FROM && !(cfg!(test) && std::env::var_os("SENZA_ACCORDO").is_some()) {
+        let mut order: Vec<usize> = (0..40).collect();
+        order.sort_by(|&a, &b| s[b].total_cmp(&s[a]));
+        let (first, second) = (order[0], order[1]);
+        if s[first] - s[second] < AGREE_BELOW {
+            if let Some(lp) = nn::log_probs(&view.img) {
+                let nn_best = (0..40).max_by(|&a, &b| lp[a].total_cmp(&lp[b])).unwrap();
+                if nn_best == first && lp[first] >= AGREE_NN_SURE && lp[second] <= AGREE_NN_OTHER {
+                    s[first] += AGREE_BONUS;
+                }
             }
         }
     }
@@ -2047,6 +2070,27 @@ mod bench {
                 cards::name(c),
                 m
             );
+            let mut rec = f.view.clone();
+            recognize(&mut rec, &Memory::in_memory());
+            let lp = nn::log_probs(&f.view.img).unwrap_or([0.0; 40]);
+            let nb = (0..40).max_by(|&x, &y| lp[x].total_cmp(&lp[y])).unwrap();
+            println!("    riconosciuta: {:?}; rete {} {:.3}", rec.best(cards::CardSet::FULL).map(|(c, m)| (cards::short(c), m)), cards::short(nb as u8), lp[nb]);
+            let mut order: Vec<usize> = (0..40).collect();
+            order.sort_by(|&x, &y| f.view.scores[y].total_cmp(&f.view.scores[x]));
+            println!(
+                "    prime: {}",
+                order[..4]
+                    .iter()
+                    .map(|&k| format!(
+                        "{} {:.2} (sim {:.3}, stili {:?})",
+                        cards::short(k as u8),
+                        f.view.scores[k],
+                        f.view.sim[k],
+                        f.view.styles.iter().map(|s| (s[k] * 1000.0).round() / 1000.0).collect::<Vec<_>>()
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
         }
         for b in a.blobs.iter() {
             println!(
@@ -2293,7 +2337,7 @@ mod other_sites {
                             let _ = v.img.save_png(std::path::Path::new(&format!("{d}/{n:03}_vera{c:02}_letta{b:02}.png")));
                         }
                         let nn = super::nn::log_probs(&v.img).map(|lp| (0..40).max_by(|&a, &b| lp[a].total_cmp(&lp[b])).unwrap() as Card);
-                        format!(" (sbagliata; rete {} {}, parziale {})", nn.map(cards::name).unwrap_or_default(), if nn == Some(*c) { "GIUSTA" } else { "no" }, v.partial)
+                        format!(" (sbagliata{}; rete {} {}, parziale {})", if m >= 1.4 { " SICURA" } else { "" }, nn.map(cards::name).unwrap_or_default(), if nn == Some(*c) { "GIUSTA" } else { "no" }, v.partial)
                     } else if m < 1.4 {
                         format!(" (da confermare, {m:.2})")
                     } else {
@@ -2422,7 +2466,7 @@ mod other_sites {
     #[ignore]
     fn esporta_riferimenti() {
         let root = std::path::PathBuf::from(std::env::var("ESPORTA").expect("ESPORTA=cartella"));
-        for style in 0..3 {
+        for style in 0..crate::vision::reference::STYLE_COUNT {
             let d = root.join(format!("rif{style}"));
             std::fs::create_dir_all(&d).unwrap();
             for c in 0..40u8 {
@@ -2447,7 +2491,7 @@ mod other_sites {
             (seed >> 11) as f32 / (1u64 << 53) as f32
         };
         let mut saved = 0;
-        for style in 0..3 {
+        for style in 0..crate::vision::reference::STYLE_COUNT {
             let deck: Vec<Img> = (0..40u8).map(|c| reference::card_image(style, c)).collect();
             for k in 0..per {
                 let bg = match (rnd() * 6.0) as usize {

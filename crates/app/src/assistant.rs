@@ -4188,6 +4188,9 @@ impl Sightings {
         // confermare invece di chiederla da scrivere.)
         for v in table {
             if let Some((c, m)) = v.best(CardSet::FULL).filter(|b| b.1 >= 0.3) {
+                if cfg!(test) && std::env::var_os("DEBUG_TAVOLA").is_some() {
+                    eprintln!("TAVOLA f{f} {} {m:.2} at {:?}", cards::short(c), v.at);
+                }
                 self.table[c as usize].bump(f, m);
                 self.views[c as usize] = Some((v.img.clone(), v.vis));
             }

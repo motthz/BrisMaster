@@ -1996,8 +1996,17 @@ impl Assistant {
             || self.vision.now_ms.is_none_or(|ms| ms.saturating_sub(last_ms) > 3200) {
             return false;
         }
-        if trial.step() != Step::MyMove || trial.table.is_none() || trial.deck_len < 2
-            || trial.hand.len() != 3 || scene.hand.len() != 3 || scene.my_slot.is_some()
+        let exhausted = trial.deck_len == 0;
+        let expected = if exhausted {
+            // Una carta in meno potrebbe essere soltanto coperta. Serve anche
+            // una nuova apertura avversaria compatibile con il vincitore.
+            if scene.opp_slot.is_none() || trial.hand.len() < 2 { return false; }
+            trial.hand.len() - 1
+        } else {
+            if trial.hand.len() != 3 { return false; }
+            3
+        };
+        if trial.step() != Step::MyMove || scene.hand.len() != expected as usize || scene.my_slot.is_some()
             || self.vision.confirm.is_some() || self.vision.inconsistent {
             return false;
         }
@@ -2005,15 +2014,17 @@ impl Assistant {
             .filter(|(_, margin)| !v.partial && !v.recovered_outline && *margin >= AUTO_MARGIN)
             .map(|b| b.0);
         let hand: CardSet = scene.hand.iter().filter_map(certain).collect();
-        if hand.len() != 3 { return false; }
+        if hand.len() != expected { return false; }
         let missing = trial.hand.minus(hand);
         let drawn = hand.minus(trial.hand);
-        if missing.len() != 1 || drawn.len() != 1 { return false; }
+        if missing.len() != 1 || drawn.len() != u32::from(!exhausted) { return false; }
         let reply = missing.iter().next().unwrap();
-        let draw = drawn.iter().next().unwrap();
+        let draw = drawn.iter().next();
         if trial.enter(reply).flatten().is_none() { return false; }
-        let needs_draw = matches!(trial.step(), Step::Draw(1));
-        if needs_draw && trial.enter(draw).is_none() { return false; }
+        let pending_draw = draw.filter(|_| matches!(trial.step(), Step::Draw(1)));
+        if let Some(card) = pending_draw {
+            if trial.enter(card).is_none() { return false; }
+        }
         if trial.hand != hand { return false; }
         if let Some(other) = &scene.opp_slot {
             let Some(card) = certain(other) else { return false };
@@ -2021,7 +2032,7 @@ impl Assistant {
         }
         // La risposta è dedotta dal cambio di mano, non vista sul tavolo.
         self.record_entry(reply, false, false, None);
-        if needs_draw { self.record_entry(draw, true, false, None); }
+        if let Some(card) = pending_draw { self.record_entry(card, true, false, None); }
         self.vision.gap = false;
         self.vision.last = None;
         self.vision.status = format!("Presa ricostruita dal cambio di mano: risposta {}.", cards::name(reply));
@@ -5386,6 +5397,28 @@ mod tests {
         assert!(a.screen_agrees(&scene));
         scene.hand[0].scores[20] = scene.hand[0].scores[10] - 2.0;
         assert!(!a.screen_agrees(&scene));
+    }
+
+    #[test]
+    fn exhausted_deck_needs_a_legal_new_lead_to_recover() {
+        let mut a = manual_turn();
+        a.pos.leader = OPP;
+        a.pos.deck_len = 0;
+        a.pos.tricks = 17;
+        assert!(a.enter(1));
+        a.vision.now_ms = Some(1000);
+        a.vision.scene = Some(Scene { opp_slot: Some(seen(1, 8.0)), ..Default::default() });
+        a.lost_table();
+        let mut after = Scene { hand: [20, 30].map(|c| seen(c, 8.0)).to_vec(), ..Default::default() };
+        assert!(!a.recover_reply_after_gap(&after));
+        after.opp_slot = Some(seen(1, 8.0));
+        assert!(!a.recover_reply_after_gap(&after));
+        after.opp_slot = Some(seen(2, 8.0));
+        assert!(a.recover_reply_after_gap(&after));
+        assert_eq!(a.pos.tricks, 18);
+        assert_eq!(a.pos.leader, OPP);
+        assert_eq!(a.pos.to_draw, 0);
+        assert_eq!(a.pos.hand.to_vec(), vec![20, 30]);
     }
 
     #[test]

@@ -27,7 +27,7 @@ struct Style {
     margin: (f32, f32),
 }
 
-const STYLES: [Style; 3] = [
+const STYLES: [Style; 4] = [
     Style {
         bytes: include_bytes!("../../assets/carte_napoletane_wiki.jpg"),
         format: image::ImageFormat::Jpeg,
@@ -43,7 +43,16 @@ const STYLES: [Style; 3] = [
         format: image::ImageFormat::Jpeg,
         margin: (0.0, 0.0),
     },
+    // Le piacentine (Wikimedia Commons, "Carte piacentine al completo", pubblico dominio),
+    // ritagliate su una griglia regolare di 10 x 4 carte.
+    Style {
+        bytes: include_bytes!("../../assets/carte_piacentine_wiki.jpg"),
+        format: image::ImageFormat::Jpeg,
+        margin: (0.0, 0.0),
+    },
 ];
+/// Quanti mazzi di riferimento ci sono.
+pub const STYLE_COUNT: usize = STYLES.len();
 /// Quante carte di riferimento ci sono in tutto (40 per stile).
 const NT: usize = 40 * STYLES.len();
 

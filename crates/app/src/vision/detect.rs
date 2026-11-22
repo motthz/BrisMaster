@@ -1903,6 +1903,7 @@ fn analyze_once(img: &Img, small: bool) -> Analysis {
         let tk = std::time::Instant::now();
         let Some(a) = run(k) else { continue };
         let n = a.cards.len();
+        let convincing = a.cards.iter().any(|c| c.score >= KNOWN_DECK) || off("SENZA_PROVE_DEBOLI");
         if std::env::var_os("TEMPI").is_some() {
             eprintln!("    prova {k}: {} carte in {:?} ({}x{})", n, tk.elapsed(), img.w, img.h);
         }
@@ -1911,7 +1912,9 @@ fn analyze_once(img: &Img, small: bool) -> Analysis {
         }
         // Abbastanza carte, o quante se ne vedevano prima con la stessa prova (a fine partita ne
         // restano poche): niente altre prove.
-        if n >= 3 || (k == first && n >= 1 && n + 1 >= last_n) {
+        // (Non se l'unica carta trovata somiglia appena a un mazzo noto: è più spesso un riquadro del
+        // sito, e le carte vere le trovano le prove dopo.)
+        if n >= 3 || (k == first && n >= 1 && n + 1 >= last_n && convincing) {
             break;
         }
     }
@@ -3025,9 +3028,19 @@ fn assign_briscola(img: &Img, mut a: Analysis) -> Scene {
     // In tavola: carte in piedi non troppo più piccole di quelle in mano (un pezzo di carta non lo è)
     // e più o meno sopra la mano: le carte giocate vanno al centro del tavolo, non in un punto
     // qualsiasi dello sfondo.
+    // (Una carta nella riga della mano, accanto alle carte della mano, è della mano anche se la sua
+    // sagoma ha una misura sbagliata, per esempio mentre arriva la pescata: non è una carta giocata.
+    // Se non la si può leggere come carta della mano, per questa lettura non si conta.)
+    let beside_hand = |f: &Found| {
+        hand.len() >= 2
+            && std::env::var_os("SENZA_RIGA_MANO").is_none()
+            && hand.iter().any(|h| (f.rect.cy - h.rect.cy).abs() < 0.2 * card_l)
+            && hand.iter().any(|h| (f.rect.cx - h.rect.cx).abs() < 1.6 * h.rect.short())
+    };
     let mut table: Vec<&Found> = others
         .into_iter()
         .filter(|f| upright(f) && f.rect.long() > 0.7 * card_l && central(f) && !trump.is_some_and(|t| std::ptr::eq(t, *f)))
+        .filter(|f| !beside_hand(f))
         .collect();
     table.sort_by(|x, y| x.rect.cy.total_cmp(&y.rect.cy));
     match table.as_slice() {

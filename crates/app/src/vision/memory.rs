@@ -612,7 +612,7 @@ mod persistence_tests {
     #[test]
     fn base_memory_never_relabels_reference_cards() {
         let m = Memory::in_memory();
-        for style in 0..3 {
+        for style in 0..crate::vision::reference::STYLE_COUNT {
             for c in 0..40u8 {
                 let img = crate::vision::reference::card_image(style, c);
                 let sims = m.similarity(&img, WHOLE);

@@ -212,7 +212,10 @@ recognition (net and memory, section 5).
   - `carte_napoletane_wiki.jpg`: Wikimedia, public domain. It is also the deck drawn in the app;
   - `carte_napoletane_classiche.jpg`: Wikimedia, public domain;
   - `carte_napoletane_brisva.jpg`: the deck of the site the user plays on, supplied and
-    authorised by the user.
+    authorised by the user;
+  - `carte_piacentine_wiki.jpg`: Wikimedia Commons, "Carte piacentine al completo", public
+    domain, recut on a regular 10×4 grid (0.6.16). It covers the Piacentine pattern; Trevigiane
+    and other northern patterns are still not covered by a reference deck.
 - **Thumbnail**: 16×26 pixels, each with brightness plus two colour differences (red–green,
   yellow–blue), compared with **normalised correlation**. That way how light, dark or saturated
   the screen is does not matter. Colour weighs `ALPHA` = 2 compared with brightness.
@@ -244,6 +247,12 @@ in this order.
    `NN_FROM` = **0.65**, and the score is `s[c] += w · NN_WEIGHT · max(log p_net(c), −12)`. On the
    known decks (`top` ≥ 0.65) the net counts for nothing. With 0.85 it overrode correct readings
    of large cards from known decks (the "big cards" extreme game).
+   **Agreement** (0.6.16): on a card seen whole with `top` ≥ `AGREE_FROM` (0.70), when the first
+   two cards are less than `AGREE_BELOW` (1.4) apart, the network is asked anyway: if its first
+   card is the same with probability ≥ 0.9 and the second gets ≤ 5%, the first gets
+   `AGREE_BONUS` (+0.8). Two independent methods agreeing replace the confirmation for close pairs
+   such as Fante di Bastoni / Fante di Denari. On the unknown-deck bench it adds no confident
+   wrong reading (`SENZA_ACCORDO=1` switches it off for comparison).
 3. **Symbol count** (`pips.rs`): on a card seen whole, large enough (long side ≥ 110 px, short
    side ≥ 66) and with normal proportions, the symbols are counted. Cards with a different count
    lose `PIP_PENALTY` = 3. The count is used only if it agrees with at least one of the 4 most

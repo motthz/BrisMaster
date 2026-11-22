@@ -1,0 +1,136 @@
+{
+ "risultati": {
+  "iter_10000": {
+   "punteggio": 49.5,
+   "ic_basso": 48.62,
+   "ic_alto": 50.39
+  },
+  "iter_160000": {
+   "punteggio": 51.38,
+   "ic_basso": 50.51,
+   "ic_alto": 52.25
+  },
+  "iter_2000": {
+   "punteggio": 44.5,
+   "ic_basso": 43.6,
+   "ic_alto": 45.4
+  },
+  "iter_40000": {
+   "punteggio": 49.77,
+   "ic_basso": 48.92,
+   "ic_alto": 50.61
+  },
+  "iter_5000": {
+   "punteggio": 48.54,
+   "ic_basso": 47.65,
+   "ic_alto": 49.42
+  },
+  "iter_80000": {
+   "punteggio": 50.69,
+   "ic_basso": 49.83,
+   "ic_alto": 51.55
+  },
+  "mani_100": {
+   "punteggio": 49.07,
+   "ic_basso": 48.2,
+   "ic_alto": 49.94
+  },
+  "mani_10000": {
+   "punteggio": 49.73,
+   "ic_basso": 48.89,
+   "ic_alto": 50.56
+  },
+  "mani_300": {
+   "punteggio": 50.26,
+   "ic_basso": 49.41,
+   "ic_alto": 51.11
+  },
+  "mani_3000": {
+   "punteggio": 50.87,
+   "ic_basso": 50.02,
+   "ic_alto": 51.71
+  },
+  "minimo_0.1": {
+   "punteggio": 49.83,
+   "ic_basso": 48.98,
+   "ic_alto": 50.68
+  },
+  "minimo_0.5": {
+   "punteggio": 50.23,
+   "ic_basso": 49.38,
+   "ic_alto": 51.09
+  },
+  "minimo_0": {
+   "punteggio": 49.89,
+   "ic_basso": 49.01,
+   "ic_alto": 50.76
+  },
+  "minimo_1": {
+   "punteggio": 48.26,
+   "ic_basso": 47.38,
+   "ic_alto": 49.14
+  },
+  "rete_17M": {
+   "punteggio": 46.54,
+   "ic_basso": 45.64,
+   "ic_alto": 47.45
+  },
+  "rete_28M": {
+   "punteggio": 45.64,
+   "ic_basso": 44.73,
+   "ic_alto": 46.55
+  },
+  "rete_35M": {
+   "punteggio": 45.8,
+   "ic_basso": 44.9,
+   "ic_alto": 46.71
+  },
+  "rete_38M": {
+   "punteggio": 45.67,
+   "ic_basso": 44.77,
+   "ic_alto": 46.58
+  },
+  "rete_51M": {
+   "punteggio": 46.79,
+   "ic_basso": 45.86,
+   "ic_alto": 47.72
+  },
+  "rete_81M": {
+   "punteggio": 46.73,
+   "ic_basso": 45.81,
+   "ic_alto": 47.65
+  },
+  "rete_grande_49M": {
+   "punteggio": 45.57,
+   "ic_basso": 44.66,
+   "ic_alto": 46.49
+  },
+  "ucb_0.3": {
+   "punteggio": 48.69,
+   "ic_basso": 47.8,
+   "ic_alto": 49.58
+  },
+  "ucb_0.5": {
+   "punteggio": 50.21,
+   "ic_basso": 49.35,
+   "ic_alto": 51.07
+  },
+  "ucb_1.0": {
+   "punteggio": 50.19,
+   "ic_basso": 49.34,
+   "ic_alto": 51.03
+  },
+  "ucb_1.4": {
+   "punteggio": 48.68,
+   "ic_basso": 47.83,
+   "ic_alto": 49.53
+  }
+ },
+ "saturazione": {
+  "iterazioni": 160000.0,
+  "mani": 3000.0,
+  "ucb": 0.5,
+  "minimo": 0.0
+ },
+ "range_R10000": 0.3815
+}

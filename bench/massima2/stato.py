@@ -22,8 +22,8 @@ def gruppo(nome):
     if nome.startswith("mani_"): return "Mani dedotte", float(nome[5:])
     if nome.startswith("ucb_"): return "Esplorazione", float(nome[4:])
     if nome.startswith("minimo_"): return "Minimo delle mani", float(nome[7:])
-    m = re.match(r"rete_(rete|grande)_(\d+)M", nome)
-    if m: return ("Rete piccola" if m.group(1) == "rete" else "Rete grande"), float(m.group(2))
+    m = re.match(r"rete_(grande_)?(\d+)M", nome)
+    if m: return ("Rete grande" if m.group(1) else "Rete piccola"), float(m.group(2))
     return "Altro", 0.0
 
 def main():
@@ -33,7 +33,7 @@ def main():
     for c in cartelle:
         if os.path.isdir(c):
             files += [os.path.join(c, f) for f in os.listdir(c)]
-    punti = [l.split("|", 1) for l in open(os.path.join(coda, "punti.txt")).read().splitlines() if "|" in l]
+    punti = [l.split("|", 1) for l in open(os.path.join(coda, "punti_tutti.txt") if os.path.exists(os.path.join(coda, "punti_tutti.txt")) else os.path.join(coda, "punti.txt")).read().splitlines() if "|" in l]
     in_corso = None
     rows = []
     for nome, spec in punti:

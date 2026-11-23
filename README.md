@@ -1,5 +1,8 @@
 # BrisMaster
 
+> **Documentazione per continuare il progetto (anche senza Codex):** [PROJECT-MASTERPLAN.md](PROJECT-MASTERPLAN.md) — audit completo del repository, architettura, stato di Briscola e HumanSim, limiti, miglioramenti, roadmap, benchmark, protocolli per dati umani e istruzioni di handoff. Per la specifica HumanSim vedi anche [docs/HUMANSIM.md](docs/HUMANSIM.md). Il codice HumanSim è sperimentale nel ramo della [PR #66](https://github.com/motthz/BrisMaster/pull/66).
+
+
 Assistente per i giochi di carte, per Windows. Scegli il gioco dal menu in alto a sinistra, inserisci tu come sta andando la partita (le tue carte, quelle che peschi, quelle giocate dagli avversari) e il motore ti dice cosa fare, con la probabilità di vittoria o il valore atteso di ogni alternativa.
 
 Giochi: **briscola**, **scopa**, **scala 40**, **burraco**, **sette e mezzo**, **blackjack**, **poker all'italiana** e **Texas Hold'em**.

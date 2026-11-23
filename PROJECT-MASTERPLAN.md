@@ -2,8 +2,8 @@
 > **Documento principale del progetto — 23 novembre 2026.**
 >
 > **Repository:** [motthz/BrisMaster](https://github.com/motthz/BrisMaster).
-> **Versione rilevata:** workspace \`0.6.16\` nel ramo \`main\` al momento dell'audit.
-> **Lavoro HumanSim:** ramo \`feature/humansim-benchmark-foundation\`, [PR #66](https://github.com/motthz/BrisMaster/pull/66) in bozza.
+> **Versione rilevata:** workspace `0.6.16` nel ramo `main` al momento dell'audit.
+> **Lavoro HumanSim:** ramo `feature/humansim-benchmark-foundation`, [PR #66](https://github.com/motthz/BrisMaster/pull/66) in bozza.
 > **Status:** audit statico dei sorgenti e documenti presenti su GitHub; non equivale a test locale di ogni eseguibile, ambiente o asset.
 >
 > **Per chi riprende il progetto:** leggere TUTTO questo documento prima di modificare codice. Il progetto si può sviluppare con qualunque IDE, assistente o programmatore: **non dipende da Codex**. Non interpretare numeri obsoleti, ipotesi sperimentali, test sintetici o la baseline HumanSim come prove di realismo umano.
@@ -40,74 +40,74 @@ Il repository ospita **BrisMaster**, un assistente Windows per otto giochi di ca
 ### 1.1 Stack e prodotto
 
 - Linguaggio principale: Rust 2021, workspace Cargo.
-- GUI desktop: \`eframe\` / \`egui\`; cattura Windows con \`xcap\` e API Windows per overlay.
-- Reti neurali tradizionali: codice Rust in \`crates/core/src/net.rs\`; dati/allenamento in Rust/Python.
-- Allenamento RL sperimentale: \`crates/rl-py\`, Python + PyTorch e binding Python/Rust (crate escluso dal workspace root).
-- Parallelismo/benchmark: \`rayon\`, random \`SmallRng\`, simulatore \`briscola-sim\`.
+- GUI desktop: `eframe` / `egui`; cattura Windows con `xcap` e API Windows per overlay.
+- Reti neurali tradizionali: codice Rust in `crates/core/src/net.rs`; dati/allenamento in Rust/Python.
+- Allenamento RL sperimentale: `crates/rl-py`, Python + PyTorch e binding Python/Rust (crate escluso dal workspace root).
+- Parallelismo/benchmark: `rayon`, random `SmallRng`, simulatore `briscola-sim`.
 - Artefatti: reti binarie versionate, mazzi di riferimento, dati di test, installer Inno Setup.
-- Distribuzione: Windows \`BrisMaster.exe\`, installer e aggiornamento automatico tramite GitHub Releases.
+- Distribuzione: Windows `BrisMaster.exe`, installer e aggiornamento automatico tramite GitHub Releases.
 - Licenza del codice: MIT. **Licenze e provenienza delle immagini/reti/dataset vanno comunque controllate separatamente** prima di redistribuirli.
 
 ### 1.2 Giochi supportati e responsabilità
 
 | Gioco | Engine / moduli | Valutazione |
 |---|---|---|
-| **Briscola** | \`crates/core\`, \`crates/sim\` | PIMC, ISMCTS, deduzione, finale esatto, simulatori e stili |
-| **Scopa** | \`crates/scopa\`, \`crates/scopa-sim\` | inferenza delle mani, ricerca, benchmark |
-| **Scala 40** | \`crates/scala40\`, \`crates/scala40-sim\` | combinazioni, suggerimenti e benchmark |
-| **Burraco** | \`crates/burraco\` | carte/melds/engine/banco di prova integrato |
-| **Sette e mezzo** | \`crates/settemezzo\` | risolutore e simulatore |
-| **Blackjack** | \`crates/blackjack\` | regole, valore atteso, simulatore |
-| **Poker all'italiana** | \`crates/poker-it\`, \`crates/poker-it-sim\` | CFR, stima avversario, test |
-| **Texas Hold'em** | \`crates/poker\`, \`crates/poker-sim\` | CFR, astrazione, equity, test |
+| **Briscola** | `crates/core`, `crates/sim` | PIMC, ISMCTS, deduzione, finale esatto, simulatori e stili |
+| **Scopa** | `crates/scopa`, `crates/scopa-sim` | inferenza delle mani, ricerca, benchmark |
+| **Scala 40** | `crates/scala40`, `crates/scala40-sim` | combinazioni, suggerimenti e benchmark |
+| **Burraco** | `crates/burraco` | carte/melds/engine/banco di prova integrato |
+| **Sette e mezzo** | `crates/settemezzo` | risolutore e simulatore |
+| **Blackjack** | `crates/blackjack` | regole, valore atteso, simulatore |
+| **Poker all'italiana** | `crates/poker-it`, `crates/poker-it-sim` | CFR, stima avversario, test |
+| **Texas Hold'em** | `crates/poker`, `crates/poker-sim` | CFR, astrazione, equity, test |
 
-La GUI di tutti i giochi vive in \`crates/app\`. HumanSim v1 riguarda **esclusivamente Briscola a due giocatori**. Non applicare i suoi criteri ad altri giochi senza definire specifici dataset/regole/split.
+La GUI di tutti i giochi vive in `crates/app`. HumanSim v1 riguarda **esclusivamente Briscola a due giocatori**. Non applicare i suoi criteri ad altri giochi senza definire specifici dataset/regole/split.
 
 ### 1.3 Mappa dei file fondamentali
 
 **Core Briscola**
-- \`crates/core/src/cards.rs\` — ID delle 40 carte, semi, punti, forza e comparazione delle prese.
-- \`crates/core/src/game.rs\` — \`Game\` (stato completo per simulazione), \`Observation\` (vista lecita), pesca, turno, trick, finalizzazione, ricostruzione mondi.
-- \`crates/core/src/ai.rs\` — giocatori, euristiche, PIMC, ISMCTS, \`RootChild\`, rollout, solver alfa-beta, \`EngineConfig\`.
-- \`crates/core/src/infer.rs\` — \`Log\`, \`Belief\`, deduzione condizionata alla storia delle mosse avversarie.
-- \`crates/core/src/net.rs\` — reti politica/valore, rappresentazione \`Position\`, canonizzazione semi.
-- \`crates/core/src/rl.rs\` — codifica RL della storia e interfaccia verso la rete auto-allenata.
-- \`crates/core/src/style.rs\` — 12 parametri \`Knobs\`, 20 stili \`STYLES\`, \`Persona\`, \`Adapt\`.
-- **Branch HumanSim** \`crates/core/src/humansim.rs\` — prima policy umanizzata *non calibrata*, \`HumanSimPlayer\`, distribuzioni e test.
-- \`crates/core/src/stats.rs\` — statistica.
+- `crates/core/src/cards.rs` — ID delle 40 carte, semi, punti, forza e comparazione delle prese.
+- `crates/core/src/game.rs` — `Game` (stato completo per simulazione), `Observation` (vista lecita), pesca, turno, trick, finalizzazione, ricostruzione mondi.
+- `crates/core/src/ai.rs` — giocatori, euristiche, PIMC, ISMCTS, `RootChild`, rollout, solver alfa-beta, `EngineConfig`.
+- `crates/core/src/infer.rs` — `Log`, `Belief`, deduzione condizionata alla storia delle mosse avversarie.
+- `crates/core/src/net.rs` — reti politica/valore, rappresentazione `Position`, canonizzazione semi.
+- `crates/core/src/rl.rs` — codifica RL della storia e interfaccia verso la rete auto-allenata.
+- `crates/core/src/style.rs` — 12 parametri `Knobs`, 20 stili `STYLES`, `Persona`, `Adapt`.
+- **Branch HumanSim** `crates/core/src/humansim.rs` — prima policy umanizzata *non calibrata*, `HumanSimPlayer`, distribuzioni e test.
+- `crates/core/src/stats.rs` — statistica.
 
 **Simulatore**
-- \`crates/sim/src/main.rs\` — CLI: confronti, panel, gate, calibrate, report, altri banchi.
-- \`crates/sim/src/arena.rs\` — mazzi in duplicato, giocatori a posti invertiti, intervalli per mazzo.
-- \`crates/sim/src/agents.rs\` — factory, agenti, spec dei motori e riferimento a release passate.
-- \`crates/sim/src/persona.rs\` — wrapper di tempo/tilt/cambio stile.
-- \`crates/sim/src/rl_agent.rs\` — integrazione RL con simulatore.
-- \`crates/sim/src/bin/reali.rs\` — ingest dei registri esistenti e ricostruzione delle mani avversarie non osservate.
-- \`crates/sim/src/bin/train.rs\`, \`selfplay.rs\`, \`bench.rs\` — allenamento, dati sintetici e prestazioni.
-- \`bench/RISULTATI.md\`, \`bench/RAPPORTO.md\`, \`bench/0.6.0/README.md\` — numeri storici e configurazioni.
+- `crates/sim/src/main.rs` — CLI: confronti, panel, gate, calibrate, report, altri banchi.
+- `crates/sim/src/arena.rs` — mazzi in duplicato, giocatori a posti invertiti, intervalli per mazzo.
+- `crates/sim/src/agents.rs` — factory, agenti, spec dei motori e riferimento a release passate.
+- `crates/sim/src/persona.rs` — wrapper di tempo/tilt/cambio stile.
+- `crates/sim/src/rl_agent.rs` — integrazione RL con simulatore.
+- `crates/sim/src/bin/reali.rs` — ingest dei registri esistenti e ricostruzione delle mani avversarie non osservate.
+- `crates/sim/src/bin/train.rs`, `selfplay.rs`, `bench.rs` — allenamento, dati sintetici e prestazioni.
+- `bench/RISULTATI.md`, `bench/RAPPORTO.md`, `bench/0.6.0/README.md` — numeri storici e configurazioni.
 
 **App e riconoscimento**
-- \`crates/app/src/assistant.rs\` — stato della partita, consigli, storico, correzioni e integrazione della vista.
-- \`crates/app/src/assistant/session_replay.rs\` — replay deterministico di sequenze annotate.
-- \`crates/app/src/record.rs\` — registrazione volontaria delle partite.
-- \`crates/app/src/vision/mod.rs\` — pipeline visiva e \`CardView\`/\`Scene\`.
-- \`crates/app/src/vision/detect.rs\` — ricerca e normalizzazione di quadrilateri/carte.
-- \`crates/app/src/vision/reference.rs\`, \`nn.rs\`, \`memory.rs\`, \`track.rs\` — riferimenti grafici, rete, memoria e tracking.
-- \`crates/app/src/vision/capture.rs\`, \`screen.rs\`, \`live.rs\` — cattura, monitor, lavoro live.
-- \`crates/app/src/vision/deck_import.rs\` — importazione di nuovi mazzi.
-- \`crates/app/src/psyfly.rs\` — overlay Psy Fly.
-- \`crates/app/src/update.rs\` — updater; \`installer/BrisMaster.iss\` — installer.
+- `crates/app/src/assistant.rs` — stato della partita, consigli, storico, correzioni e integrazione della vista.
+- `crates/app/src/assistant/session_replay.rs` — replay deterministico di sequenze annotate.
+- `crates/app/src/record.rs` — registrazione volontaria delle partite.
+- `crates/app/src/vision/mod.rs` — pipeline visiva e `CardView`/`Scene`.
+- `crates/app/src/vision/detect.rs` — ricerca e normalizzazione di quadrilateri/carte.
+- `crates/app/src/vision/reference.rs`, `nn.rs`, `memory.rs`, `track.rs` — riferimenti grafici, rete, memoria e tracking.
+- `crates/app/src/vision/capture.rs`, `screen.rs`, `live.rs` — cattura, monitor, lavoro live.
+- `crates/app/src/vision/deck_import.rs` — importazione di nuovi mazzi.
+- `crates/app/src/psyfly.rs` — overlay Psy Fly.
+- `crates/app/src/update.rs` — updater; `installer/BrisMaster.iss` — installer.
 
 **Documenti esistenti da NON perdere**
-- \`README.md\`, \`docs/HUMANSIM.md\` (sul branch), \`docs/PARTITE-VERE.md\`
-- \`docs/RICONOSCIMENTO-CARTE.md\`, \`docs/replay/README.md\`
-- \`docs/RELEASE-0.6.15.md\`, \`docs/RELEASE-0.6.16.md\`
-- \`bench/BANCO.md\`, \`bench/RAPPORTO.md\`, \`bench/0.6.0/README.md\`
-- \`.github/workflows/ci.yml\`, \`.github/workflows/release.yml\`
+- `README.md`, `docs/HUMANSIM.md` (sul branch), `docs/PARTITE-VERE.md`
+- `docs/RICONOSCIMENTO-CARTE.md`, `docs/replay/README.md`
+- `docs/RELEASE-0.6.15.md`, `docs/RELEASE-0.6.16.md`
+- `bench/BANCO.md`, `bench/RAPPORTO.md`, `bench/0.6.0/README.md`
+- `.github/workflows/ci.yml`, `.github/workflows/release.yml`
 
 ### 1.4 Struttura logica (data flow)
 
-\`\`\`text
+```text
 Modalità A: motore competitivo Massima
   stato pubblico della partita + propria mano
     -> Observation + storico
@@ -133,18 +133,18 @@ Modalità C: laboratorio di benchmark
     -> aggregazione per MAZZO, persona, fase, difficoltà
     -> IC e confronto con versioni precedenti
     -> report immutabile con commit/hash/configurazione
-\`\`\`
+```
 
 ### 1.5 Regole esatte Briscola (codifica attuale)
 
 - Partita 1 contro 1; mazzo 40 carte con quattro semi, dieci valori.
-- ID: \`card = seme * 10 + rank_index\`; semi \`Denari=0\`, \`Coppe=1\`, \`Spade=2\`, \`Bastoni=3\`.
-- \`rank_index\`: Asso 0, Due 1, Tre 2, Quattro 3, Cinque 4, Sei 5, Sette 6, Fante 7, Cavallo 8, Re 9.
+- ID: `card = seme * 10 + rank_index`; semi `Denari=0`, `Coppe=1`, `Spade=2`, `Bastoni=3`.
+- `rank_index`: Asso 0, Due 1, Tre 2, Quattro 3, Cinque 4, Sei 5, Sette 6, Fante 7, Cavallo 8, Re 9.
 - Punti: Asso 11; Tre 10; Re 4; Cavallo 3; Fante 2; altri 0. Totale mazzo 120.
 - Forza: Asso > Tre > Re > Cavallo > Fante > 7 > 6 > 5 > 4 > 2.
 - Chi risponde prende con carta dello stesso seme più forte, oppure briscola contro carta di altro seme; assenza di obbligo di rispondere al seme.
 - Tre carte per giocatore, venti prese, chi vince la presa pesca per primo (quando il mazzo non è vuoto).
-- \`Game\` può conoscere tutto; \`Observation\` espone soltanto informazioni consentite. Questa separazione è il confine anti-cheating.
+- `Game` può conoscere tutto; `Observation` espone soltanto informazioni consentite. Questa separazione è il confine anti-cheating.
 
 ---
 
@@ -154,12 +154,12 @@ Modalità C: laboratorio di benchmark
 
 La documentazione del repository descrive, per la v0.5.0 e successive fino alla 0.6.16, una modalità Massima basata su **ISMCTS potenziato, 20.000 iterazioni, deduzione delle mani** con una rete di politica allenata originariamente su giochi fra motori.
 
-L'implementazione dei motori storici è utilizzabile come riferimento per nuove prove tramite factory \`make_agent\`, ad esempio \`infer:20000:1:1000:0.25\`, \`ismcts+:20000\`, \`engine:1000\`, \`stile:circolo\`. Per esperimenti che richiedono rete su file, impostare \`BRISCOLA_POLICY\` sul file previsto e verificare le opzioni nel sorgente \`crates/sim/src/agents.rs\`.
+L'implementazione dei motori storici è utilizzabile come riferimento per nuove prove tramite factory `make_agent`, ad esempio `infer:20000:1:1000:0.25`, `ismcts+:20000`, `engine:1000`, `stile:circolo`. Per esperimenti che richiedono rete su file, impostare `BRISCOLA_POLICY` sul file previsto e verificare le opzioni nel sorgente `crates/sim/src/agents.rs`.
 
 **Risultati pubblicati, non ricalcolati in questo audit:**
-- \`bench/RAPPORTO.md\`, esperimenti 27/10/2026: con deduzione 52,4% contro Massima senza deduzione, su 8.000 partite (4.000 mazzi duplicati), CI riportato 51,5–53,4%; 54,5% contro PIMC 3.000.
-- \`bench/0.6.0/README.md\`: fino a circa 88 milioni di partite RL sperimentali riportate; la rete auto-allenata non ha mostrato un miglioramento convincente sulla Massima; aumentare indiscriminatamente le iterazioni non è risultato efficace.
-- \`bench/RISULTATI.md\`: il PIMC e l'ISMCTS hanno storici di prove ampie con controlli sui mazzi accoppiati.
+- `bench/RAPPORTO.md`, esperimenti 27/10/2026: con deduzione 52,4% contro Massima senza deduzione, su 8.000 partite (4.000 mazzi duplicati), CI riportato 51,5–53,4%; 54,5% contro PIMC 3.000.
+- `bench/0.6.0/README.md`: fino a circa 88 milioni di partite RL sperimentali riportate; la rete auto-allenata non ha mostrato un miglioramento convincente sulla Massima; aumentare indiscriminatamente le iterazioni non è risultato efficace.
+- `bench/RISULTATI.md`: il PIMC e l'ISMCTS hanno storici di prove ampie con controlli sui mazzi accoppiati.
 
 **Conclusione tecnica:** aumentare solo la forza di calcolo o re-addestrare una rete generica non garantisce progressi. Un benchmark HumanSim empiricamente fondato individua errori e opportunità che non emergono dagli avversari euristici.
 
@@ -174,10 +174,10 @@ L'implementazione dei motori storici è utilizzabile come riferimento per nuove 
 
 ### 2.3 Formati attuali
 
-- Carte come ID \`0..39\`.
-- \`Observation\`: \`me\`, \`hand\`, \`opp_hand_len\`, \`deck_len\`, \`trump_card\`, \`trump\`, \`leader\`, \`table\`, \`points\`, \`played\`, \`trump_card_owner\`.
+- Carte come ID `0..39`.
+- `Observation`: `me`, `hand`, `opp_hand_len`, `deck_len`, `trump_card`, `trump`, `leader`, `table`, `points`, `played`, `trump_card_owner`.
 - Le reti esistenti rinumerano i semi rispetto al seme di briscola per migliorare la generalizzazione. Ogni nuova codifica deve preservare l'inversa per risalire alla carta originale.
-- \`Position::of_obs\` è la codifica limitata alle osservazioni; **non usare \`Position::of(game)\` per allenare/valutare la politica che vuole sembrare umana**, perché il modello vedrebbe stato completo.
+- `Position::of_obs` è la codifica limitata alle osservazioni; **non usare `Position::of(game)` per allenare/valutare la politica che vuole sembrare umana**, perché il modello vedrebbe stato completo.
 
 ---
 
@@ -185,39 +185,39 @@ L'implementazione dei motori storici è utilizzabile come riferimento per nuove 
 
 ### 3.1 Implementazione sul branch di PR #66
 
-File \`crates/core/src/humansim.rs\`, collegato in \`crates/core/src/lib.rs\`; in \`crates/sim/src/agents.rs\` sono state aggiunte le factory:
+File `crates/core/src/humansim.rs`, collegato in `crates/core/src/lib.rs`; in `crates/sim/src/agents.rs` sono state aggiunte le factory:
 
-\`\`\`text
+```text
 humansim:7
 humansim:42
 humansim-style:circolo
 humansim-style:prudente
 humansim-style:domenica
-\`\`\`
+```
 
-\`HumanSimPlayer\` ha:
-- ID seme identità, manopole \`Knobs\`, insieme di carte ricordate costruito all'avvio;
+`HumanSimPlayer` ha:
+- ID seme identità, manopole `Knobs`, insieme di carte ricordate costruito all'avvio;
 - funzioni di stima del costo di conservazione, rischio dell'apertura, valore della presa;
-- \`distribution(&Observation) -> Vec<(Card, f64)>\`;
+- `distribution(&Observation) -> Vec<(Card, f64)>`;
 - softmax della utilità con temperatura e lieve probabilità di lapse/errori;
-- \`choose\` tramite RNG iniettato dall'arena;
+- `choose` tramite RNG iniettato dall'arena;
 - test per distribuzioni normalizzate, mosse legali, assenza della vera mano nascosta, 120 punti e caricamento profili.
 
-**QUESTO È UN PROTOTIPO NON CALIBRATO.** I valori di temperatura, lapse e utilità sono convenzioni progettuali; non sono frequenze osservate su persone reali. Il file non possiede ancora memoria episodica aggiornabile, personalità longitudinali allenate, modelli supervisionati, dataset umano o un test cieco. Il ramo è separato da \`main\`; non indicare "release pronta".
+**QUESTO È UN PROTOTIPO NON CALIBRATO.** I valori di temperatura, lapse e utilità sono convenzioni progettuali; non sono frequenze osservate su persone reali. Il file non possiede ancora memoria episodica aggiornabile, personalità longitudinali allenate, modelli supervisionati, dataset umano o un test cieco. Il ramo è separato da `main`; non indicare "release pronta".
 
-### 3.2 Cosa esiste già in \`style.rs\`
+### 3.2 Cosa esiste già in `style.rs`
 
-I 12 parametri: \`memoria\`, \`aggressivita\`, \`risparmio\`, \`caccia\`, \`apre_carichi\`, \`protegge\`, \`apre_briscola\`, \`tiene_assi\`, \`errori\`, \`finale\`, \`tilt\`, \`fretta\`. I 20 profili predefiniti includono \`circolo\`, \`prudente\`, \`nonno\`, \`impulsivo\`, \`memoria-perfetta\`, \`domenica\`.
+I 12 parametri: `memoria`, `aggressivita`, `risparmio`, `caccia`, `apre_carichi`, `protegge`, `apre_briscola`, `tiene_assi`, `errori`, `finale`, `tilt`, `fretta`. I 20 profili predefiniti includono `circolo`, `prudente`, `nonno`, `impulsivo`, `memoria-perfetta`, `domenica`.
 
-**Miglioramento concreto:** la \`Persona::choose\` esistente aggiunge rumore chiamando il generatore casuale nel comparatore di \`max_by\`; per un modello probabilistico scientifico è meglio calcolare una volta i punteggi delle tre carte e campionare una distribuzione stabile, senza confronti casuali che cambiano durante la stessa selezione.
+**Miglioramento concreto:** la `Persona::choose` esistente aggiunge rumore chiamando il generatore casuale nel comparatore di `max_by`; per un modello probabilistico scientifico è meglio calcolare una volta i punteggi delle tre carte e campionare una distribuzione stabile, senza confronti casuali che cambiano durante la stessa selezione.
 
 ### 3.3 Gap prioritari
 
 | ID | Problema | Impatto | Soluzione |
 |---|---|---|---|
 | HS-01 | Mancano dati di persone con mano/alternative note | Critico | recorder strumentato o torneo locale autorizzato |
-| HS-02 | Scelte reali influenzate dai consigli di BrisMaster | Critico | campo \`advice_exposure\`, dati "no hint" per train/test principale |
-| HS-03 | Split dei file \`reali.rs\` basato su hash della partita, non sul giocatore | Alto | split per identità/sessione, test bloccato |
+| HS-02 | Scelte reali influenzate dai consigli di BrisMaster | Critico | campo `advice_exposure`, dati "no hint" per train/test principale |
+| HS-03 | Split dei file `reali.rs` basato su hash della partita, non sul giocatore | Alto | split per identità/sessione, test bloccato |
 | HS-04 | Baseline attuale è softmax su parametri manuali | Alto | stima empirica e rete di imitazione |
 | HS-05 | La personalità non evolve fra sessioni | Alto | parametri gerarchici, identità e memoria persistente |
 | HS-06 | Errori prevalentemente random | Alto | errori condizionati a scelta/contesto/attenzione |
@@ -234,20 +234,20 @@ I 12 parametri: \`memoria\`, \`aggressivita\`, \`risparmio\`, \`caccia\`, \`apre
 
 ### 4.1 Cosa fa il prodotto oggi
 
-\`crates/app/src/record.rs\` salva un file JSON quando l'utente attiva **Registra questa partita** (spento di default), con eventi \`briscola\`, \`primo_di_mano\`, \`pescata\`, \`giocata\`, versione app e risultato. Nell'evento \`Giocata\`, **solo quando gioca l'utente**, la struttura \`prima: Seen\` contiene mano, carta sul tavolo, punteggi, numero carte nel mazzo e quantità della mano avversaria. Può essere registrato \`consiglio\` e \`seguito_consiglio\`.
+`crates/app/src/record.rs` salva un file JSON quando l'utente attiva **Registra questa partita** (spento di default), con eventi `briscola`, `primo_di_mano`, `pescata`, `giocata`, versione app e risultato. Nell'evento `Giocata`, **solo quando gioca l'utente**, la struttura `prima: Seen` contiene mano, carta sul tavolo, punteggi, numero carte nel mazzo e quantità della mano avversaria. Può essere registrato `consiglio` e `seguito_consiglio`.
 
-\`docs/PARTITE-VERE.md\` e \`crates/sim/src/bin/reali.rs\` descrivono già:
-- import delle registrazioni tramite \`--partite\`;
+`docs/PARTITE-VERE.md` e `crates/sim/src/bin/reali.rs` descrivono già:
+- import delle registrazioni tramite `--partite`;
 - deduplicazione partite;
 - ricostruzione per campionamento degli ordini di pescata avversari;
 - peso delle ricostruzioni con la rete di politica;
 - una quota di controllo basata su hash del contenuto;
-- allenamento \`train --kind policy\` e confronto delle reti.
+- allenamento `train --kind policy` e confronto delle reti.
 
 ### 4.2 Problemi metodologici veri
 
-1. La mano di un **avversario esterno** non è osservata direttamente e \`reali.rs\` ricostruisce scenari compatibili, non la sua reale osservazione a ogni turno. Per HumanSim serviranno partite dove il decisore e le sue opzioni sono noti con certezza.
-2. **Contaminazione del consiglio:** le mosse dell'utente nel recorder potrebbero essere state prese seguendo Massima. Impostare una modalità di raccolta **senza consigli**, o per lo meno salvare \`advice_visible\`, \`advice_generated\`, \`advice_followed\` e separare i casi.
+1. La mano di un **avversario esterno** non è osservata direttamente e `reali.rs` ricostruisce scenari compatibili, non la sua reale osservazione a ogni turno. Per HumanSim serviranno partite dove il decisore e le sue opzioni sono noti con certezza.
+2. **Contaminazione del consiglio:** le mosse dell'utente nel recorder potrebbero essere state prese seguendo Massima. Impostare una modalità di raccolta **senza consigli**, o per lo meno salvare `advice_visible`, `advice_generated`, `advice_followed` e separare i casi.
 3. L'hash di singole partite non impedisce che lo stesso giocatore/seduta finisca contemporaneamente in train e test. Gli split per giocatore/sessione sono obbligatori.
 4. La rete attuale può influenzare quali ricostruzioni sopravvivono durante l'EM: rischio di auto-conferma e di evidenza artificiosamente elevata. Usare pesatura robusta, analisi ESS, sensitivity analysis a prior diversi, e dati con mano realmente nota quando disponibili.
 5. Il recorder salva un timestamp ma non uno **pseudonimo stabile con consenso**, una versione delle regole, durata delle decisioni o fonte/qualità dello stato. Aggiungere con migrazione di schema.
@@ -269,7 +269,7 @@ Partire da pilotaggio di qualità (es. decine di persone e molte partite ripetut
 
 Ogni riga rappresenta una **decisione reale**, non solo una carta osservata in video:
 
-\`\`\`json
+```json
 {
   "schema_version": "human_decision_v1",
   "game_id": "g-000314",
@@ -295,20 +295,20 @@ Ogni riga rappresenta una **decisione reale**, non solo una carta osservata in v
   "observation_quality": "exact",
   "is_complete_game": true
 }
-\`\`\`
+```
 
-**Valori soltanto illustrativi**, non un log realmente ottenuto. \`points\` e \`seat\` devono avere convenzioni fisse; \`public_history\` nell'implementazione reale conterrebbe tutte le giocate pubbliche precedenti, ordinate, NON soltanto quella mostrata nell'esempio. Lo schema di partita deve aggiungere \`player_id\` per entrambi, seed dell'arbitro, \`ruleset_version\`, timestamp e consenso/provenienza. Gli identificativi non devono contenere nome, email, IP o altri dati direttamente identificativi.
+**Valori soltanto illustrativi**, non un log realmente ottenuto. `points` e `seat` devono avere convenzioni fisse; `public_history` nell'implementazione reale conterrebbe tutte le giocate pubbliche precedenti, ordinate, NON soltanto quella mostrata nell'esempio. Lo schema di partita deve aggiungere `player_id` per entrambi, seed dell'arbitro, `ruleset_version`, timestamp e consenso/provenienza. Gli identificativi non devono contenere nome, email, IP o altri dati direttamente identificativi.
 
 ### 4.5 Invarianti del validatore dati
 
-- Ogni \`chosen_card\` appartiene a \`legal_cards\` e alla mano osservata.
-- \`legal_cards\` coincide con le carte effettivamente giocabili secondo il ruleset.
+- Ogni `chosen_card` appartiene a `legal_cards` e alla mano osservata.
+- `legal_cards` coincide con le carte effettivamente giocabili secondo il ruleset.
 - Nessuna carta appare in due posti incompatibili della stessa posizione.
 - Dopo le 40 giocate di una partita completa le carte sono tutte esaurite; totale punti = 120, 20 prese.
 - Storico, numero prese, punteggi e ordine turni sono ricostruibili.
 - Dopo la pesca deve esserci l'aggiornamento coerente della mano e della briscola scoperta.
-- \`advice_visible\` non può essere ignorato; le sessioni assistite sono distinte dalle autonome.
-- Ogni dato ha \`source\`, \`schema_version\`, \`observation_quality\`, una sessione e un giocatore.
+- `advice_visible` non può essere ignorato; le sessioni assistite sono distinte dalle autonome.
+- Ogni dato ha `source`, `schema_version`, `observation_quality`, una sessione e un giocatore.
 - Dati incoerenti sono **scartati e motivati**; mai corretti silenziosamente.
 - I dati di test sono bloccati tramite manifest/hash e non sono disponibili al tuning.
 
@@ -318,7 +318,7 @@ Ogni riga rappresenta una **decisione reale**, non solo una carta osservata in v
 
 ### 5.1 Moduli nuovi consigliati (non confondere con file già creati)
 
-\`\`\`text
+```text
 crates/core/src/humansim/
     mod.rs               # API e gating delle versioni
     observation.rs       # viste canoniche, nessun dato segreto
@@ -343,13 +343,13 @@ scripts/humansim/
     report.py
 data/humansim/README.md   # schemi e manifest; non committare registrazioni private
 bench/humansim/            # baseline, manifest, valutazioni, CI
-\`\`\`
+```
 
-**ATTENZIONE:** oggi \`humansim.rs\` è un FILE; prima di trasformarlo in cartella, migrare il modulo senza lasciare contemporaneamente \`humansim.rs\` e \`humansim/mod.rs\` allo stesso livello. Prediligere piccoli commit revisibili.
+**ATTENZIONE:** oggi `humansim.rs` è un FILE; prima di trasformarlo in cartella, migrare il modulo senza lasciare contemporaneamente `humansim.rs` e `humansim/mod.rs` allo stesso livello. Prediligere piccoli commit revisibili.
 
 ### 5.2 API concettuale
 
-\`\`\`rust
+```rust
 // PSEUDOCODICE, non firma Rust già implementata
 struct HumanObservation {
     hand: Vec<Card>,
@@ -380,9 +380,9 @@ trait HumanPolicy {
     ) -> Vec<(Card, Probability)>;
     fn on_public_event(&mut self, event: &PublicEvent);
 }
-\`\`\`
+```
 
-**Regola architetturale:** ambiente e osservatore creano \`HumanObservation\`; il modulo HumanSim non deve ricevere un \`&Game\` completo. \`Game\` rimane consentito ad arbitro e banco di prova, non all'inferenza della policy. \`on_public_event\` deve applicare solo eventi realmente visibili. Mantieni contesto prima e dopo una presa senza anticipare la pescata.
+**Regola architetturale:** ambiente e osservatore creano `HumanObservation`; il modulo HumanSim non deve ricevere un `&Game` completo. `Game` rimane consentito ad arbitro e banco di prova, non all'inferenza della policy. `on_public_event` deve applicare solo eventi realmente visibili. Mantieni contesto prima e dopo una presa senza anticipare la pescata.
 
 ### 5.3 Stato persistente e popolazione gerarchica
 
@@ -399,7 +399,7 @@ La variazione **entro la persona** deve riflettere contesto e incertezza, non ri
 
 ### 5.4 Modelli, dal più semplice al più potente
 
-**Baseline B0 — stili esistenti:** \`Persona\` / \`HumanSimPlayer\` come controllo sintetico. Non attribuire realismo empirico.
+**Baseline B0 — stili esistenti:** `Persona` / `HumanSimPlayer` come controllo sintetico. Non attribuire realismo empirico.
 
 **B1 — modello probabilistico interpretabile:** feature vettoriali condizionate a carta/fase/briscola/storia, softmax multinomiale o modello gerarchico misto. Parametri diversi per persone e gruppi, con regolarizzazione. Vantaggio: campioni piccoli, spiegabilità e audit.
 
@@ -416,7 +416,7 @@ La variazione **entro la persona** deve riflettere contesto e incertezza, non ri
 1. Osservazione *lecita* e stato persona.
 2. Canonizzazione delle carte/semi, maschera azioni legali.
 3. Vettore features interpretative e/o embedding sequenziale.
-4. Politica \`P(carta | obs, storia, identità)\`.
+4. Politica `P(carta | obs, storia, identità)`.
 5. Controllo di integrità: probabilità finite, non negative e normalizzate.
 6. Campionamento usando RNG seme noto, **senza alterare la distribuzione in modo nascosto**.
 7. Aggiornamento della memoria dopo gli eventi pubblici.
@@ -435,12 +435,12 @@ La variazione **entro la persona** deve riflettere contesto e incertezza, non ri
 
 ### 6.1 Split rigorosi
 
-- \`TRAIN\`: giocatori/persona e sessioni usati per stimare modello.
-- \`VALIDATION\`: giocatori/sedute indipendenti per iperparametri.
-- \`TEST-NEW-PEOPLE\`: **persone mai viste** per misura della generalizzazione di popolazione.
-- \`TEST-LONGITUDINAL\`: sessioni successive per persone presenti nei dati precedenti, ma tempo futuro rigorosamente isolato.
-- \`TEST-UNSEEN-CONTEXTS\`: situazioni rare e mazzi/strategie non dominanti.
-- \`BLIND-TEST\`: partite complete senza rivelare origine e senza suggerimenti sul tipo di modello.
+- `TRAIN`: giocatori/persona e sessioni usati per stimare modello.
+- `VALIDATION`: giocatori/sedute indipendenti per iperparametri.
+- `TEST-NEW-PEOPLE`: **persone mai viste** per misura della generalizzazione di popolazione.
+- `TEST-LONGITUDINAL`: sessioni successive per persone presenti nei dati precedenti, ma tempo futuro rigorosamente isolato.
+- `TEST-UNSEEN-CONTEXTS`: situazioni rare e mazzi/strategie non dominanti.
+- `BLIND-TEST`: partite complete senza rivelare origine e senza suggerimenti sul tipo di modello.
 
 Qualsiasi revisione del modello dopo aver letto risultati del test finale richiede nuova partizione/test o un protocollo esplicito con correzione per selezione. La parte per persone mai viste misura il realismo della popolazione; il test longitudinale misura la fedeltà a una persona specifica. Non confonderli.
 
@@ -448,12 +448,12 @@ Qualsiasi revisione del modello dopo aver letto risultati del test finale richie
 
 | Metrica | Calcolo | Interpretazione |
 |---|---|---|
-| Negative log-likelihood | \`-mean(log P(mossa_umano))\` | più bassa = meglio |
+| Negative log-likelihood | `-mean(log P(mossa_umano))` | più bassa = meglio |
 | Accuracy top-1 | quota di mosse umane più probabili | utile, ma insufficiente |
 | Brier multiclass | errore quadratico sui vettori di probabilità | calibrazione/precisione |
 | Calibration / reliability | frequenza reale per bucket di probabilità | onestà probabilistica |
 | Coverage per persona | persone con risultati non degradati | evita sovra-ottimizzare la media |
-| Regret vs Massima | \`Q(best)-Q(chosen)\`, stima separata | distribuzione degli errori, non realismo da sola |
+| Regret vs Massima | `Q(best)-Q(chosen)`, stima separata | distribuzione degli errori, non realismo da sola |
 | Conditional action rates | tagli, aperture, carichi, lisci, gestione di briscole per fase/punteggio | pattern umani |
 | Tempo di scelta | distribution p50/p95 se tempo vero registrato | realismo temporale, non artificio |
 
@@ -479,7 +479,7 @@ Confrontare ogni metrica con **baseline adeguate**: casuale vincolato, euristico
 - report standard prodotti automaticamente e integri.
 
 **Realismo da raggiungere (da confermare prima dei test):**
-- migliore log-loss del modello \`Persona\` calibrato sul set bloccato;
+- migliore log-loss del modello `Persona` calibrato sul set bloccato;
 - buona calibrazione su 1/2/3 mosse disponibili, per livello e fase;
 - distribuzioni di errori e punti comparabili a persone reali;
 - discriminatore non significativamente migliore di soglia di equivalenza preregistrata (con sufficiente potenza);
@@ -493,7 +493,7 @@ Confrontare ogni metrica con **baseline adeguate**: casuale vincolato, euristico
 
 ### 7.1 Perché il banco attuale è buono ma insufficiente
 
-\`crates/sim/src/arena.rs\` usa lo stesso mazzo in due partite a posti invertiti e aggrega per mazzo: è la scelta giusta per ridurre varianza. Invece i 20 stili sintetici del \`style.rs\` non costituiscono una popolazione umana dimostrata. HumanSim aggiunge un benchmark misurato, non sostituisce il banco tradizionale.
+`crates/sim/src/arena.rs` usa lo stesso mazzo in due partite a posti invertiti e aggrega per mazzo: è la scelta giusta per ridurre varianza. Invece i 20 stili sintetici del `style.rs` non costituiscono una popolazione umana dimostrata. HumanSim aggiunge un benchmark misurato, non sostituisce il banco tradizionale.
 
 ### 7.2 Matrice fissa di valutazione
 
@@ -507,7 +507,7 @@ Per ogni nuova candidata Massima eseguire almeno:
 
 ### 7.3 Manifest del benchmark (proposto)
 
-\`\`\`json
+```json
 {
   "bench_schema": "human_bench_v1",
   "project_commit": "<git-sha>",
@@ -524,7 +524,7 @@ Per ogni nuova candidata Massima eseguire almeno:
   "hardware": "<cpu and OS>",
   "created_at": "<timestamp>"
 }
-\`\`\`
+```
 
 Questa è una **specifica esemplificativa**, non un output attuale. Le weights vanno stimate sul campione umano, non impostate arbitrariamente. Salvare conteggi grezzi e IC al 95%; considerare boostrap gerarchico per mazzo e persona (entrambi possono generare correlazioni).
 
@@ -547,7 +547,7 @@ HumanSim può essere addestrato e testato nel simulatore **senza** riconosciment
 
 ### 8.1 Pipeline oggi presente
 
-\`\`\`text
+```text
 cattura monitor (capture/screen/live)
  -> ricerca regioni geometriche e normalizzazione (detect)
  -> match con carte di riferimento / rete / memoria (reference/nn/memory)
@@ -555,15 +555,15 @@ cattura monitor (capture/screen/live)
  -> stato della partita e ricostruzione (assistant/session_replay)
  -> consiglio tramite motore
  -> overlay opzionale Psy Fly / UI
-\`\`\`
+```
 
-Questa è una descrizione ad alto livello: i dettagli delle soglie e delle transizioni sono in \`docs/RICONOSCIMENTO-CARTE.md\`. L'app permette scelta manuale dell'area, diagnosi e conferma delle carte incerte.
+Questa è una descrizione ad alto livello: i dettagli delle soglie e delle transizioni sono in `docs/RICONOSCIMENTO-CARTE.md`. L'app permette scelta manuale dell'area, diagnosi e conferma delle carte incerte.
 
 ### 8.2 Risultati misurati riportati
 
-- \`docs/RELEASE-0.6.15.md\`: su 44 partite **sintetiche appaiate**, giocate corrette/confermate da 82,3% a 89,2%; lettura corretta alla prima cattura su giocate visibili 96,0%, ma carta + lato non coincidono in tutti i casi.
-- \`docs/RELEASE-0.6.16.md\`: su 8 mazzi mai visti, carte giuste dal 64,5% al 74,3% e giuste **senza conferma** dal 60,1% al 70,5%; dopo apprendimento 71,9%–80,3%. Su 20 partite dell'utente, partite perfette da 4 a 8, conferme 31→14, carte manuali 16→10.
-- Limiti aperti dichiarati: partita \`u13\` con prima mano errata e otto inserimenti manuali; carte trevigiane e mazzi del nord senza riferimento.
+- `docs/RELEASE-0.6.15.md`: su 44 partite **sintetiche appaiate**, giocate corrette/confermate da 82,3% a 89,2%; lettura corretta alla prima cattura su giocate visibili 96,0%, ma carta + lato non coincidono in tutti i casi.
+- `docs/RELEASE-0.6.16.md`: su 8 mazzi mai visti, carte giuste dal 64,5% al 74,3% e giuste **senza conferma** dal 60,1% al 70,5%; dopo apprendimento 71,9%–80,3%. Su 20 partite dell'utente, partite perfette da 4 a 8, conferme 31→14, carte manuali 16→10.
+- Limiti aperti dichiarati: partita `u13` con prima mano errata e otto inserimenti manuali; carte trevigiane e mazzi del nord senza riferimento.
 
 **Non confrontare il 96,0% sintetico della prima cattura con il 70,5% di carte su mazzi mai visti come se fossero la stessa metrica.** Cambiano denominatore, condizioni e criterio.
 
@@ -573,7 +573,7 @@ Questa è una descrizione ad alto livello: i dettagli delle soglie e delle trans
 2. Gerarchia: individuazione carte → lato/slot → riconoscimento ID → tracking → aggiornamento stato; misurare ogni livello.
 3. Tracciamento multi-frame con vincoli delle regole (nessuna carta duplicata, mano di 3, ordine presa/pescata).
 4. Calibrazione delle probabilità e **astensione** quando il dato è incerto.
-5. Misurare \`first-frame\`, \`first-correct\`, \`confirmed\`, falsi “certi”, duplicati, ritardi e disponibilità del consiglio corretto.
+5. Misurare `first-frame`, `first-correct`, `confirmed`, falsi “certi”, duplicati, ritardi e disponibilità del consiglio corretto.
 6. Regression suite con replay visivo riproducibile; test Windows separati per multi-monitor/DPI/minimizzazione.
 7. Proteggere la privacy dei diagnostici (screen capture può contenere altri elementi del desktop).
 
@@ -585,30 +585,30 @@ Non tentare di ottenere il “90% umano” tramite miglioramenti OCR: sono due m
 
 ### 9.1 CI attuale
 
-\`.github/workflows/ci.yml\` contiene:
+`.github/workflows/ci.yml` contiene:
 - test del workspace Rust in release su Windows;
 - build dell'app Windows;
 - creazione dell'installer Inno Setup;
 - confronto di regressione del motore Briscola su Ubuntu;
 - test simulativi di Sette e mezzo.
 
-\`.github/workflows/release.yml\`: su nuova versione Cargo in \`main\`, compila/testa, crea installer, tag e release GitHub. Non alzare \`version\` per un semplice merge della documentazione/HumanSim M0; release solo dopo revisione.
+`.github/workflows/release.yml`: su nuova versione Cargo in `main`, compila/testa, crea installer, tag e release GitHub. Non alzare `version` per un semplice merge della documentazione/HumanSim M0; release solo dopo revisione.
 
 ### 9.2 Criticità da sorvegliare
 
-- \`crates/app/src/assistant.rs\` è molto esteso (oltre 300 KB) e \`vision/detect.rs\` circa 153 KB: necessaria decomposizione progressiva per responsabilità, con test di regressione prima/dopo.
+- `crates/app/src/assistant.rs` è molto esteso (oltre 300 KB) e `vision/detect.rs` circa 153 KB: necessaria decomposizione progressiva per responsabilità, con test di regressione prima/dopo.
 - Il workspace include numerosi giochi e asset pesanti: una modifica al core può rompere GUI, simulatore e regressioni; evitare refactoring massivi nella stessa PR del nuovo modello.
-- Il crate Python RL è fuori dal workspace standard: il test \`cargo test --workspace\` NON copre automaticamente training Python, compatibilità PyTorch, formato reti o dati. Aggiungere CI mirata.
+- Il crate Python RL è fuori dal workspace standard: il test `cargo test --workspace` NON copre automaticamente training Python, compatibilità PyTorch, formato reti o dati. Aggiungere CI mirata.
 - Dati binari di rete e risultati hanno provenance da documentare, con checksum e rapporto di addestramento; verificare peso degli asset e uso di Git LFS o release asset se in crescita.
 - I benchmark storici usano diverse versioni/configurazioni: non aggregarli senza manifest comune.
-- \`unwrap\`/panic su input nelle CLI sperimentali possono essere accettabili nei prototipi ma non nell'import di dati reali non fidati: sostituire con errori strutturati e test di input malformato.
+- `unwrap`/panic su input nelle CLI sperimentali possono essere accettabili nei prototipi ma non nell'import di dati reali non fidati: sostituire con errori strutturati e test di input malformato.
 - Proteggere la regressione a performance: una grande rete umana in ogni rollout può aumentare drasticamente il costo di calcolo. HumanSim va chiamato nei turni del simulatore e benchmark, non indiscriminatamente dentro ogni ramo della ricerca strategica.
 - La CI più importante per HumanSim sarà la **validazione statistica dei dati/test**; aggiungere job dedicato dopo aver definito un dataset piccolo pubblico o sintetico chiaramente etichettato per smoke test.
 
 ### 9.3 Comandi reali verificati nel progetto (non promesse di esecuzione)
 
 Da root del clone:
-\`\`\`bash
+```bash
 cargo test --workspace --release
 cargo build --release -p brismaster
 cargo run --release -p briscola-sim -- --player engine:1000 --opponent heuristic --deals 1000 --seed 20261123
@@ -616,43 +616,43 @@ cargo run --release -p briscola-sim -- --player engine:1000 --opponent humansim:
 cargo run --release -p briscola-sim -- --player engine:1000 --opponent humansim-style:circolo --deals 1000 --seed 20261123
 cargo run --release -p briscola-sim -- --panel --deals 2000 --player engine:1000 --seed 20261022 --out tabella.md
 cargo run --release -p briscola-sim -- gate --player engine:1000 --deals 5000 --seed 20261022
-\`\`\`
+```
 
-I comandi \`humansim:...\` richiedono il **ramo della PR #66 o un merge successivo**. La presenza della CLI non implica che il nuovo profilo sia stato validato su persone reali.
+I comandi `humansim:...` richiedono il **ramo della PR #66 o un merge successivo**. La presenza della CLI non implica che il nuovo profilo sia stato validato su persone reali.
 
 Per la pipeline attuale di partite registrate:
-\`\`\`bash
+```bash
 cargo run --release -p briscola-sim --bin reali -- --partite partite-brismaster.json --out dati-reali
 cargo run --release -p briscola-sim --bin train -- --kind policy --data dati-reali --init crates/core/nets/politica.bin --out politica-reale.bin --epochs 10
-\`\`\`
+```
 Questo processo allena la rete di **deduzione** da ricostruzioni di gioco; **non** è ancora la pipeline statistica dedicata a HumanSim con vere mani/alternative etichettate.
 
 **CLI FUTURA PROPOSTA (DA IMPLEMENTARE):**
-\`\`\`bash
+```bash
 cargo run --release -p briscola-sim -- human-bench --engine infer:20000:1:1000:0.25 --population humansim-v1 --deals 5000 --seed 20261123 --out report/
 cargo run --release -p briscola-sim -- human-audit --dataset data/humans/test.jsonl --policy humansim-v1 --out report/
-\`\`\`
+```
 
 ### 9.4 Come riprendere da un altro PC o con un altro assistente
 
-\`\`\`bash
+```bash
 git clone https://github.com/motthz/BrisMaster.git
 cd BrisMaster
 git fetch origin
 git switch feature/humansim-benchmark-foundation
 git pull --ff-only
 cargo test --workspace --release
-\`\`\`
+```
 
-Se la PR è stata fusa, invece eseguire \`git switch main && git pull --ff-only\`. Su Windows usare PowerShell, installare Rust toolchain e gli strumenti di compilazione Windows richiesti; per installer serve Inno Setup. Controllare che \`cargo\` sia nel PATH. Se una rete/dipendenza non è presente, **non inventare file sostitutivi**: cercare nei tag, negli asset della release e nella cartella \`bench\`.
+Se la PR è stata fusa, invece eseguire `git switch main && git pull --ff-only`. Su Windows usare PowerShell, installare Rust toolchain e gli strumenti di compilazione Windows richiesti; per installer serve Inno Setup. Controllare che `cargo` sia nel PATH. Se una rete/dipendenza non è presente, **non inventare file sostitutivi**: cercare nei tag, negli asset della release e nella cartella `bench`.
 
 **Procedura agentica neutrale** (non dipende da Codex):
-1. leggere questo file, \`docs/HUMANSIM.md\`, \`docs/PARTITE-VERE.md\`, \`bench/0.6.0/README.md\`;
+1. leggere questo file, `docs/HUMANSIM.md`, `docs/PARTITE-VERE.md`, `bench/0.6.0/README.md`;
 2. eseguire test e baseline prima di cambiare codice;
 3. aprire un branch per una milestone e cambiare il minimo indispensabile;
 4. aggiungere test unitari, regressione e benchmark con seed fissato;
-5. scrivere \`docs/HUMANSIM-CHANGELOG.md\` o PR con motivazioni, risultati e limiti;
-6. non toccare \`main\` o pubblicare release senza gate verdi;
+5. scrivere `docs/HUMANSIM-CHANGELOG.md` o PR con motivazioni, risultati e limiti;
+6. non toccare `main` o pubblicare release senza gate verdi;
 7. aggiornare **questo documento** a ogni decisione architetturale sostanziale.
 
 ---
@@ -663,11 +663,11 @@ Se la PR è stata fusa, invece eseguire \`git switch main && git pull --ff-only\
 
 **Output previsto:** PR #66 con policy legale e indipendente, test, documentazione e compilazione verificata.
 
-- [x] Ramo HumanSim separato da \`main\`.
-- [x] API \`distribution\` e \`choose\` con seme e hand-only.
-- [x] Entry point \`humansim:ID\` e \`humansim-style:NAME\` in simulatore.
+- [x] Ramo HumanSim separato da `main`.
+- [x] API `distribution` e `choose` con seme e hand-only.
+- [x] Entry point `humansim:ID` e `humansim-style:NAME` in simulatore.
 - [x] Test unitari scritti nel branch; **esito CI da verificare**.
-- [x] Specifica \`docs/HUMANSIM.md\`.
+- [x] Specifica `docs/HUMANSIM.md`.
 - [x] Masterplan di progetto (questo file).
 - [ ] Verifica finale verde dei job GitHub e degli eventuali warnings.
 - [ ] Benchmark riproducibile di 1000+ mazzi contro stili storici.
@@ -678,9 +678,9 @@ Se la PR è stata fusa, invece eseguire \`git switch main && git pull --ff-only\
 
 ### M1 — Osservazioni umane affidabili
 
-**Output previsto:** \`Human Lab\`, recorder V2, schema JSONL, manifest dati, validatore.
+**Output previsto:** `Human Lab`, recorder V2, schema JSONL, manifest dati, validatore.
 
-- [ ] Aggiungere \`human_lab\` o tab laboratorio nell'app con modalità senza consigli.
+- [ ] Aggiungere `human_lab` o tab laboratorio nell'app con modalità senza consigli.
 - [ ] Registrare mano e alternative vere di ciascun giocatore volontario, eventi e scelta.
 - [ ] Aggiungere identificativi pseudonimi, sessione, consent, condizioni e ruleset.
 - [ ] Provenienza/qualità per ogni osservazione; controllare anomalie e correzioni.
@@ -693,7 +693,7 @@ Se la PR è stata fusa, invece eseguire \`git switch main && git pull --ff-only\
 
 ### M2 — Baseline empirica e analisi descrittiva
 
-**Output previsto:** \`human-audit\` funzionante su dataset con mano nota.
+**Output previsto:** `human-audit` funzionante su dataset con mano nota.
 
 - [ ] Analisi condizionata per categoria carta, giocatore, fase, punteggio, briscole.
 - [ ] Regole per escludere mosse obbligate dalle metriche primarie.
@@ -709,8 +709,8 @@ Se la PR è stata fusa, invece eseguire \`git switch main && git pull --ff-only\
 
 **Output previsto:** stesso profilo stabile su partite diverse e stato episodico coerente.
 
-- [ ] Definire \`HumanIdentity\` con parametri individuali e prior stimato.
-- [ ] Definire \`HumanEpisode\` e aggiornamento da soli eventi pubblici.
+- [ ] Definire `HumanIdentity` con parametri individuali e prior stimato.
+- [ ] Definire `HumanEpisode` e aggiornamento da soli eventi pubblici.
 - [ ] Separare memoria dei carichi, semi, briscole e conteggio generale.
 - [ ] Gestire errori dipendenti dalla difficoltà della scelta, non da coin flip costante.
 - [ ] Confrontare stabilità e variabilità con giocatori veri ripetuti.
@@ -750,7 +750,7 @@ Se la PR è stata fusa, invece eseguire \`git switch main && git pull --ff-only\
 
 ### M6 — Popolazione benchmark congelata per Massima
 
-**Output previsto:** \`HumanSim Population v1\`, runner CI, manifest e report.
+**Output previsto:** `HumanSim Population v1`, runner CI, manifest e report.
 
 - [ ] Distribuzione calibrata per classi di abilità e stili osservati.
 - [ ] 2+ batterie: nominale, worst-case; congelare RNG e weights.
@@ -768,7 +768,7 @@ Se la PR è stata fusa, invece eseguire \`git switch main && git pull --ff-only\
 - [ ] Aggiungere nuovi tipi di giocatori solo se osservati.
 - [ ] Audit per drift di comportamento fra piattaforme, tornei, versioni delle regole.
 - [ ] Evitare che Massima sovra-ottimizzi una popolazione fissa: valutare una seconda popolazione **tenuta fuori dallo sviluppo**.
-- [ ] Monitorare performance e testare nuova popolazione \`v2\` senza sovrascrivere \`v1\`.
+- [ ] Monitorare performance e testare nuova popolazione `v2` senza sovrascrivere `v1`.
 - [ ] Archiviare dataset manifest, check, report, hash, parametri per riproducibilità.
 
 ---
@@ -777,8 +777,8 @@ Se la PR è stata fusa, invece eseguire \`git switch main && git pull --ff-only\
 
 | Exp | Ipotesi | Modifica | Confronto | Esito utile |
 |---|---|---|---|---|
-| EXP-01 | i profili manuali non predicono le persone | NLL \`Persona\` e baseline B1 | dataset reale out-of-player | quantificare il gap |
-| EXP-02 | bias da consigli di Massima | isolare \`advice_visible\` | mosse consigliate vs no-hint | separare contaminazione |
+| EXP-01 | i profili manuali non predicono le persone | NLL `Persona` e baseline B1 | dataset reale out-of-player | quantificare il gap |
+| EXP-02 | bias da consigli di Massima | isolare `advice_visible` | mosse consigliate vs no-hint | separare contaminazione |
 | EXP-03 | memoria dei carichi è diversa dalla memoria di carte minori | tre pesi memoria | held-out e partite intere | modello più credibile |
 | EXP-04 | l'identità conta oltre la skill | gerarchico vs modello globale | sessioni longitudinali | variazione intra/inter |
 | EXP-05 | rete sequenziale batte B1 | GRU/Transformer piccolo | split identico | miglioramento reale, non overfit |
@@ -788,7 +788,7 @@ Se la PR è stata fusa, invece eseguire \`git switch main && git pull --ff-only\
 | EXP-09 | modelli grandi offrono poco oltre B1 | ablation di dimensione | p95 CPU + NLL | scegliere costo giusto |
 | EXP-10 | confronto troppo facile vs stessi modelli | test OOD, human-vs-human | valutazione cieca | prova onesta di realismo |
 
-Per ogni esperimento salvare: \`experiment_id\`, \`claim\`, dataset split manifest, commit, codice, args, seed, hardware, metriche primarie, IC, metriche negative, limite, decisione finale.
+Per ogni esperimento salvare: `experiment_id`, `claim`, dataset split manifest, commit, codice, args, seed, hardware, metriche primarie, IC, metriche negative, limite, decisione finale.
 
 ---
 
@@ -796,7 +796,7 @@ Per ogni esperimento salvare: \`experiment_id\`, \`claim\`, dataset split manife
 
 | Rischio | Gravità | Rilevazione | Mitigazione |
 |---|---|---|---|
-| Dataset non umano/assistito | Critico | provenance, \`advice_visible\` | esclusione/test separati |
+| Dataset non umano/assistito | Critico | provenance, `advice_visible` | esclusione/test separati |
 | Leakage di carte nascoste | Critico | metamorphic tests | API a sole osservazioni |
 | Split non indipendenti | Critico | group audit | per persona/sessione |
 | Overfit a pochi giocatori | Alto | new-person holdout | modelli gerarchici + regolarizzazione |
@@ -822,7 +822,7 @@ Per ogni esperimento salvare: \`experiment_id\`, \`claim\`, dataset split manife
 
 **ADR-003 — Popolazione e persona sono concetti diversi.** Accettata. Il modello di popolazione serve per nuovi individui; il modello personalizzato serve per simulare ripetutamente lo stesso individuo.
 
-**ADR-004 — Paired seeds e CI per mazzo.** Accettata. Mantenere la struttura dell'attuale \`arena.rs\`.
+**ADR-004 — Paired seeds e CI per mazzo.** Accettata. Mantenere la struttura dell'attuale `arena.rs`.
 
 **ADR-005 — Baseline storiche conservate.** Accettata. Non riscrivere o eliminare i parametri esistenti prima di avere un confronto con dataset reale.
 
@@ -839,9 +839,9 @@ Per ogni esperimento salvare: \`experiment_id\`, \`claim\`, dataset split manife
 **P0 — fare adesso**
 1. Confermare CI PR #66; correggere qualsiasi failure di compilazione/test e tracciare il commit.
 2. Aggiungere baseline benchmark dei 20 profili con report riproducibile.
-3. Definire e validare schema \`human_decision_v1\` e regole dati reali.
-4. Aggiungere \`advice_visible/advice_followed\` e modalità di raccolta no-hint, senza cambiare il comportamento dell'assistente normale.
-5. Definire i gruppi \`player_id\`, \`session_id\` e test congelato.
+3. Definire e validare schema `human_decision_v1` e regole dati reali.
+4. Aggiungere `advice_visible/advice_followed` e modalità di raccolta no-hint, senza cambiare il comportamento dell'assistente normale.
+5. Definire i gruppi `player_id`, `session_id` e test congelato.
 6. Preparare report della distribuzione delle azioni reali per fase/abilità/contesto prima di scegliere la rete.
 
 **P1 — dopo dati affidabili**
@@ -852,7 +852,7 @@ Per ogni esperimento salvare: \`experiment_id\`, \`claim\`, dataset split manife
 11. Popolazione congelata e integrazione con release.
 
 **P2 — qualità del repository**
-12. Estrarre moduli più piccoli da \`assistant.rs\` e \`vision/detect.rs\`, con test invarianti.
+12. Estrarre moduli più piccoli da `assistant.rs` e `vision/detect.rs`, con test invarianti.
 13. CI Python/Rust per export e inferenza della rete.
 14. Manifest dei pesi binari e documentazione di provenienza.
 15. Smoke test installazione e aggiornamenti Windows.
@@ -879,7 +879,7 @@ Per ogni nuova PR HumanSim chi la riceve deve poter rispondere SÌ a:
 
 ### Regola finale di mantenimento
 
-\`PROJECT-MASTERPLAN.md\` è la **mappa principale**; \`docs/HUMANSIM.md\` contiene la specifica in sintesi, i file nel core contengono la verità del codice, \`bench/\` conserva prove riproducibili. In caso di contraddizione: **codice e report con commit/seed verificati prevalgono sulle frasi narrative**. Annotare esplicitamente la contraddizione e correggerla, non cancellare dati storici.
+`PROJECT-MASTERPLAN.md` è la **mappa principale**; `docs/HUMANSIM.md` contiene la specifica in sintesi, i file nel core contengono la verità del codice, `bench/` conserva prove riproducibili. In caso di contraddizione: **codice e report con commit/seed verificati prevalgono sulle frasi narrative**. Annotare esplicitamente la contraddizione e correggerla, non cancellare dati storici.
 
 ---
 

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Briscola contro Massima</title>
+<style>
+  :root {
+    --sfondo: #f4f1ea; --testo: #1f1d1a; --tenue: #6b665c; --pannello: #fffdf8; --bordo: #d9d3c5;
+    --tavolo: #2f6b4f; --tavolo-testo: #f4f1ea; --carta: #fffdf8; --accento: #b5452b;
+    --denari: #b8860b; --coppe: #b5452b; --spade: #2b4f8a; --bastoni: #3d7a3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --sfondo: #1b1a18; --testo: #ece8df; --tenue: #a39d90; --pannello: #262421; --bordo: #3a3732;
+      --tavolo: #1f4a37; --carta: #f6f2e8; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--sfondo); color: var(--testo); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  h1 { font-family: Georgia, "Times New Roman", serif; font-weight: 400; font-size: 1.8rem; margin: 8px 0 0; }
+  p { margin: 0; }
+  .tenue { color: var(--tenue); font-size: .9rem; }
+  .pannello { background: var(--pannello); border: 1px solid var(--bordo); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  button { font: inherit; border-radius: 8px; border: 1px solid var(--bordo); background: var(--pannello); color: var(--testo); padding: 10px 16px; cursor: pointer; }
+  button.primario { background: var(--accento); border-color: var(--accento); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  label { display: flex; gap: 10px; align-items: flex-start; }
+  label input { margin-top: 5px; }
+  .tavolo { background: var(--tavolo); color: var(--tavolo-testo); border-radius: 14px; padding: 16px; display: grid; gap: 14px;
+    grid-template-columns: 1fr auto; grid-template-areas: "avv avv" "centro lato" "mia mia" "stato stato"; }
+  .riga { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; min-height: 112px; align-items: center; }
+  .avv { grid-area: avv; } .centro { grid-area: centro; } .mia { grid-area: mia; }
+  .lato { grid-area: lato; display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: .85rem; }
+  .stato { grid-area: stato; text-align: center; min-height: 1.5em; }
+  .carta { width: 72px; height: 108px; border-radius: 8px; background: var(--carta); color: #1f1d1a; border: 1px solid rgba(0,0,0,.25);
+    display: flex; flex-direction: column; justify-content: space-between; padding: 6px; box-shadow: 0 2px 4px rgba(0,0,0,.25); user-select: none; }
+  .carta .v { font-family: Georgia, serif; font-size: 1.6rem; line-height: 1; font-weight: 700; }
+  .carta .s { font-size: .72rem; text-align: right; font-weight: 600; }
+  .carta .simbolo { align-self: center; width: 26px; height: 26px; border-radius: 50%; }
+  .carta.dorso { background: repeating-linear-gradient(45deg, #7a2e1f 0 6px, #94402c 6px 12px); border-color: #f4f1ea; }
+  .carta.piccola { width: 54px; height: 81px; } .carta.piccola .v { font-size: 1.15rem; } .carta.piccola .simbolo { width: 18px; height: 18px; }
+  button.carta { padding: 6px; cursor: pointer; }
+  button.carta:hover:not(:disabled), button.carta:focus-visible { outline: 3px solid #f2c94c; outline-offset: 2px; }
+  button.carta:disabled { opacity: 1; cursor: default; }
+  .vuoto { width: 72px; height: 108px; border-radius: 8px; border: 1px dashed rgba(255,255,255,.35); }
+  .esito { font-family: Georgia, serif; font-size: 1.5rem; }
+  .nascosto { display: none !important; }
+  @media (max-width: 420px) { .carta { width: 62px; height: 93px; } .vuoto { width: 62px; height: 93px; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Briscola contro Massima</h1>
+    <p class="tenue">Partite a due con 40 carte, contro il motore Massima. Nessun consiglio: giochi tu.</p>
+  </header>
+
+  <section class="pannello" id="intro">
+    <p>Questa pagina raccoglie partite vere per studiare come giocano le persone. Ogni carta che giochi viene salvata insieme a quello che vedevi in quel momento: la tua mano, la carta sul tavolo, la briscola e il tempo che ci hai messo.</p>
+    <p>Non chiediamo nome né email. Il tuo browser riceve un codice casuale, <b id="codice">—</b>, così le tue partite restano insieme. Puoi giocare quante partite vuoi.</p>
+    <label><input type="checkbox" id="consenso"> <span>Accetto che le mie partite siano salvate in forma anonima e usate per la ricerca sul motore di briscola.</span></label>
+    <div><button class="primario" id="inizia" disabled>Inizia a giocare</button></div>
+    <p class="tenue" id="caricamento">Carico il motore…</p>
+  </section>
+
+  <section class="tavolo nascosto" id="tavolo" aria-label="Tavolo di gioco">
+    <div class="riga avv" id="avv" aria-label="Carte di Massima"></div>
+    <div class="riga centro" id="centro" aria-label="Carte sul tavolo"></div>
+    <div class="lato"><div id="briscola"></div><span id="mazzo">—</span></div>
+    <div class="riga mia" id="mia" aria-label="Le tue carte"></div>
+    <div class="stato" id="stato" aria-live="polite">—</div>
+  </section>
+
+  <section class="pannello nascosto" id="fine">
+    <p class="esito" id="esito">—</p>
+    <p id="punti">—</p>
+    <p class="tenue" id="invio">—</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="primario" id="ancora">Gioca un'altra partita</button>
+      <button id="scarica">Scarica le mie partite (CSV)</button>
+    </div>
+  </section>
+
+  <p class="tenue">Partite giocate da questo browser: <span id="contatore">0</span>.</p>
+</main>
+<script src="config.js"></script>
+<script src="gioco.js"></script>
+</body>
+</html>

@@ -5746,6 +5746,70 @@ mod tests {
         play_on_screen_with_light(seed, style, look, linger, flicker, [1.0; 3], false, false)
     }
 
+    thread_local! {
+        /// Dell'ultima partita di `play_on_screen_with_light`: carte segnate al giocatore
+        /// sbagliato (anche per poco) e controlli in cui l'app era indietro o sbagliata.
+        static LAST_GAME: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
+    }
+
+    /// Banco dei tavoli diversi dal solito: posizione del mazzo e della briscola, carte giocate
+    /// affiancate, sovrapposte o storte, schermo in bassa risoluzione. Più partite per variante
+    /// (`VARIANTI_SEMI`, 4 per difetto), con tutte le misure: partite perfette (nessun intervento
+    /// e nessun ritardo), interventi, carte segnate al giocatore sbagliato, partite fallite.
+    /// `VARIANTE=nome` ne prova una sola.
+    ///
+    /// `cargo test --release -p brismaster tavoli_varianti -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn tavoli_varianti() {
+        use crate::vision::synth::{Look, Table};
+        let d = Look::default();
+        let cases: Vec<(&str, Look)> = vec![
+            ("normale", d),
+            ("mazzo-destra", Look { pile_at: [0.86, 0.5], ..d }),
+            ("briscola-mio-lato", Look { pile_at: [0.13, 0.8], ..d }),
+            ("briscola-lato-avversario", Look { pile_at: [0.14, 0.2], ..d }),
+            ("briscola-in-piedi", Look { trump_upright: true, cover: 0.3, ..d }),
+            ("briscola-in-piedi-destra", Look { trump_upright: true, cover: 0.3, pile_at: [0.86, 0.5], ..d }),
+            ("affiancate", Look { table: Table::SideBySide, ..d }),
+            ("sovrapposte", Look { table: Table::Overlap, ..d }),
+            ("storte", Look { table: Table::Tilted, ..d }),
+            ("bassa-risoluzione", Look { lowres: 0.5, ..d }),
+            ("bassissima-risoluzione", Look { lowres: 0.38, ..d }),
+            ("piccole-bassa-risoluzione", Look { card_h: 110.0, lowres: 0.6, ..d }),
+            ("sovrapposte-bassa-risoluzione", Look { table: Table::Overlap, lowres: 0.5, ..d }),
+            ("tutto-insieme", Look { table: Table::Tilted, pile_at: [0.13, 0.8], trump_upright: true, cover: 0.3, lowres: 0.55, ..d }),
+        ];
+        let seeds = std::env::var("VARIANTI_SEMI").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(4);
+        let only = std::env::var("VARIANTE").ok();
+        let (mut tot_perfect, mut tot_games, mut tot_failed, mut tot_wrong, mut tot_help) = (0, 0, 0, 0, 0);
+        for (name, look) in cases {
+            if only.as_ref().is_some_and(|o| o != name) { continue; }
+            let (mut perfect, mut failed, mut wrong, mut help, mut late) = (0, 0, 0, 0, 0);
+            for k in 0..seeds {
+                let seed = 77_000 + k * 31;
+                LAST_GAME.with(|l| l.set((0, 0)));
+                let result = play_on_screen_with_light(seed, (k % 3) as usize, look, k % 2 == 0, false, [1.0; 3], false, true);
+                let (w, delays) = LAST_GAME.with(|l| l.get());
+                wrong += w;
+                late += delays;
+                match result {
+                    Ok((_, confirms)) => {
+                        help += confirms;
+                        if confirms == 0 && delays == 0 && w == 0 { perfect += 1; }
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        println!("{name} seed={seed}: FALLITA {e}");
+                    }
+                }
+            }
+            println!("VARIANTE {name}: perfette {perfect}/{seeds}, fallite {failed}, interventi {help}, attribuzioni sbagliate {wrong}, controlli in ritardo {late}");
+            tot_perfect += perfect; tot_games += seeds; tot_failed += failed; tot_wrong += wrong; tot_help += help;
+        }
+        println!("== VARIANTI: perfette {tot_perfect}/{tot_games}, fallite {tot_failed}, interventi {tot_help}, attribuzioni sbagliate {tot_wrong}");
+    }
+
     fn play_on_screen_with_light(
         seed: u64, style: usize, look: crate::vision::synth::Look,
         linger: bool, flicker: bool, gain: [f32; 3], gray: bool, allow_recovery: bool,
@@ -5770,6 +5834,8 @@ mod tests {
         let reduction = std::env::var("BRIS_STRESS_RIDUZIONE").ok()
             .and_then(|value| value.parse::<usize>().ok()).unwrap_or(1).clamp(1, 8);
         let mut frame = 0;
+        // Carte giocate segnate (anche solo per un momento) al giocatore sbagliato.
+        let wrong_owner: std::cell::RefCell<std::collections::BTreeSet<Card>> = Default::default();
         let mut look_at = |a: &mut Assistant, hand: &[Card], opp: Option<Card>, mine: Option<Card>, g: &Game, what: &str| -> Result<(), String> {
             let trump = (g.deck_len > 0).then(|| &imgs[g.trump_card as usize]);
             let deal = Deal {
@@ -5867,6 +5933,17 @@ mod tests {
                 a.accept_vision();
                 show(a, &scene);
             }
+            {
+                let plays = true_plays.borrow();
+                for e in &a.rec.events {
+                    if let Event::Giocata { chi, carta, .. } = e {
+                        let owner = if plays[ME as usize].contains(&carta.id) { Some(ME) } else if plays[OPP as usize].contains(&carta.id) { Some(OPP) } else { None };
+                        if owner.is_some_and(|o| record::who(o) != *chi) && wrong_owner.borrow_mut().insert(carta.id) {
+                            println!("seed={seed}; {what}: {} segnata a {chi} (vera di {})", cards::name(carta.id), record::who(owner.unwrap()));
+                        }
+                    }
+                }
+            }
             if allow_recovery && a.vision.inconsistent && a.vision.confirm.is_none() {
                 let step = a.pos.step();
                 let requested = match step {
@@ -5963,6 +6040,7 @@ mod tests {
         }
         let (played, identified) = a.played_coverage();
         println!("seed={seed}; copertura {identified}/{played}; giocate reali={}", g.played.len());
+        LAST_GAME.with(|l| l.set((wrong_owner.borrow().len() as u32, delays.len() as u32)));
         if !delays.is_empty() {
             println!("seed={seed}; checkpoint in ritardo={}; primo={}", delays.len(), delays[0]);
         }

@@ -42,6 +42,29 @@ pub struct Look {
     pub writing: bool,
     /// Loghi e scritte stampati sul tavolo, sotto le carte (opacità 0..1; 0 niente).
     pub logo: f32,
+    /// Centro del mazzo (frazioni dello schermo): a sinistra, a destra, dal mio lato (in basso),
+    /// dal lato dell'avversario (in alto).
+    pub pile_at: [f32; 2],
+    /// Briscola in piedi accanto al mazzo invece che di traverso sotto il mazzo.
+    pub trump_upright: bool,
+    /// Dove stanno le due carte giocate.
+    pub table: Table,
+    /// Schermo a bassa risoluzione: le carte si disegnano a questa frazione della risoluzione e
+    /// poi si riportano alla misura (pixel grossi e sfocati, come un sito rimpicciolito).
+    pub lowres: f32,
+}
+
+/// Disposizione delle carte giocate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Table {
+    /// Avversario in alto, io in basso un po' a destra.
+    Classic,
+    /// Una accanto all'altra alla stessa altezza: avversario a sinistra, io a destra.
+    SideBySide,
+    /// La mia sopra quella dell'avversario, coprendone una parte (come una presa raccolta).
+    Overlap,
+    /// Avversario in alto e io in basso, tutte e due un po' storte.
+    Tilted,
 }
 
 impl Default for Look {
@@ -59,6 +82,10 @@ impl Default for Look {
             cover: 0.45,
             writing: false,
             logo: 0.0,
+            pile_at: [0.14, 0.5],
+            trump_upright: false,
+            table: Table::Classic,
+            lowres: 1.0,
         }
     }
 }
@@ -250,31 +277,70 @@ pub fn table(deal: &Deal, look: &Look) -> Img {
     }
     // Il mazzo e la briscola di traverso, a sinistra: la briscola sporge a destra del mazzo.
     let (ph, pw) = (h * look.pile, w * look.pile);
-    let (deck_x, deck_y) = (W as f32 * 0.14, H as f32 * 0.5);
+    let (deck_x, deck_y) = (W as f32 * look.pile_at[0], H as f32 * look.pile_at[1]);
     if let Some(t) = deal.trump {
-        // La briscola è lunga ph: ne resta coperta la frazione `cover`, sotto il mazzo.
-        let left = deck_x + pw / 2.0 - look.cover * ph;
-        let paint_h = ph;
-        let tw = paint_h * look.aspect.unwrap_or(t.w as f32 / t.h as f32);
-        // Girata di 90 gradi: la testa a destra.
         let paint = |u: f32, v: f32| tint(t.sample(u * (t.w - 1) as f32, v * (t.h - 1) as f32), look);
-        draw(&mut img, left + paint_h / 2.0, deck_y, tw, paint_h, 90.0, &paint);
+        if look.trump_upright {
+            // In piedi accanto al mazzo, verso il centro dello schermo, coperta in parte.
+            let tw = ph * look.aspect.unwrap_or(t.w as f32 / t.h as f32);
+            let side = if deck_x < W as f32 / 2.0 { 1.0 } else { -1.0 };
+            let cx = deck_x + side * (pw / 2.0 + tw / 2.0 - look.cover * tw);
+            draw(&mut img, cx, deck_y, tw, ph, 0.0, &paint);
+        } else {
+            // La briscola è lunga ph: ne resta coperta la frazione `cover`, sotto il mazzo.
+            let left = deck_x + pw / 2.0 - look.cover * ph;
+            let paint_h = ph;
+            let tw = paint_h * look.aspect.unwrap_or(t.w as f32 / t.h as f32);
+            // Girata di 90 gradi: la testa a destra.
+            draw(&mut img, left + paint_h / 2.0, deck_y, tw, paint_h, 90.0, &paint);
+        }
     }
     if deal.deck {
         draw_back(&mut img, deck_x, deck_y, pw, ph);
     }
-    // Le carte giocate al centro: quella dell'avversario più in alto, la tua più in basso.
+    let (mx, my) = (W as f32 / 2.0, H as f32 / 2.0);
+    let (opp_at, mine_at) = match look.table {
+        Table::Classic => (([mx, my - h * 0.45], 0.0), ([mx + w * 0.3, my + h * 0.5], 0.0)),
+        Table::SideBySide => (([mx - w * 0.6, my], 0.0), ([mx + w * 0.6, my], 0.0)),
+        Table::Overlap => (([mx - w * 0.2, my - h * 0.2], 0.0), ([mx + w * 0.2, my + h * 0.25], 0.0)),
+        Table::Tilted => (([mx - w * 0.1, my - h * 0.45], -9.0), ([mx + w * 0.3, my + h * 0.5], 8.0)),
+    };
     if let Some(c) = deal.opp {
-        draw_card(&mut img, c, look, W as f32 / 2.0, H as f32 / 2.0 - h * 0.45, h, 0.0);
+        draw_card(&mut img, c, look, opp_at.0[0], opp_at.0[1], h, opp_at.1);
     }
     if let Some(c) = deal.mine {
-        draw_card(&mut img, c, look, W as f32 / 2.0 + w * 0.3, H as f32 / 2.0 + h * 0.5, h, 0.0);
+        draw_card(&mut img, c, look, mine_at.0[0], mine_at.0[1], h, mine_at.1);
     }
     // La mano in basso, a ventaglio.
     let n = deal.hand.len() as f32;
     for (k, c) in deal.hand.iter().enumerate() {
         let off = k as f32 - (n - 1.0) / 2.0;
         draw_card(&mut img, c, look, W as f32 / 2.0 + off * (w + 12.0), H as f32 - h * 0.55 - 10.0, h, off * look.fan);
+    }
+    if look.lowres < 0.99 {
+        // Giù a bassa risoluzione (media dei punti) e di nuovo su (punto più vicino).
+        let (lw, lh) = ((W as f32 * look.lowres) as usize, (H as f32 * look.lowres) as usize);
+        let mut small = Img::new(lw, lh);
+        for y in 0..lh {
+            for x in 0..lw {
+                let (x0, x1) = (x * W / lw, ((x + 1) * W / lw).max(x * W / lw + 1));
+                let (y0, y1) = (y * H / lh, ((y + 1) * H / lh).max(y * H / lh + 1));
+                let mut acc = [0u32; 3];
+                for yy in y0..y1 {
+                    for xx in x0..x1 {
+                        let p = img.at(xx, yy);
+                        (0..3).for_each(|c| acc[c] += p[c] as u32);
+                    }
+                }
+                let n = ((x1 - x0) * (y1 - y0)) as u32;
+                small.px[y * lw + x] = acc.map(|a| (a / n) as u8);
+            }
+        }
+        for y in 0..H {
+            for x in 0..W {
+                img.px[y * W + x] = small.at((x * lw / W).min(lw - 1), (y * lh / H).min(lh - 1));
+            }
+        }
     }
     if look.blur {
         let src = img.clone();

@@ -3090,7 +3090,7 @@ fn assign_briscola(img: &Img, mut a: Analysis) -> Scene {
 /// trovata: si vedono la striscia in alto (fino all'altra carta) e la striscia laterale (fino al
 /// fondo). Il confronto è la media dei due, pesata dalla loro area.
 fn corner_covered(img: &Img, blob: &Blob, known: &[Found], card_l: f32, card_w: f32) -> Option<Found> {
-    if std::env::var_os("SENZA_ANGOLO").is_some() {
+    if off("SENZA_ANGOLO") {
         return None;
     }
     let r = &blob.rect;
@@ -3140,7 +3140,7 @@ fn corner_covered(img: &Img, blob: &Blob, known: &[Found], card_l: f32, card_w: 
 /// carta ma più stretta, attaccata a un dorso grande come una carta. Si legge come una carta
 /// vista solo in parte (la striscia di larghezza fuori dal mazzo).
 fn trump_beside_deck(img: &Img, blobs: &[Blob], cards: &[Found], card_l: f32, card_w: f32) -> Option<Found> {
-    if std::env::var_os("SENZA_BRISCOLA_DRITTA").is_some() {
+    if off("SENZA_BRISCOLA_DRITTA") {
         return None;
     }
     for b in blobs.iter().filter(|b| b.light() && !b.rect.landscape()) {

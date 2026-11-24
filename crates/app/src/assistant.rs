@@ -369,6 +369,11 @@ const AUTO_MARGIN: f32 = 1.4;
 /// Quanto conta il distacco di una carta in tavola vista solo in parte (vedi `Sightings::update`).
 const PARTIAL_TABLE: f32 = 0.6;
 
+/// (Prove: spegne una regola per misurare quanto vale; fuori dalle prove non fa niente.)
+fn switched_off(name: &str) -> bool {
+    cfg!(test) && std::env::var_os(name).is_some()
+}
+
 /// Letture con una carta in attesa di conferma prima di accettarla da soli.
 const AUTO_ACCEPT: u32 = 6;
 
@@ -4238,7 +4243,7 @@ impl Sightings {
             _ => false,
         };
         let best_on_table = |v: &CardView| {
-            let partly = (v.partial || overlap) && std::env::var_os("SENZA_TAVOLA_PARZIALE").is_none();
+            let partly = (v.partial || overlap) && !switched_off("SENZA_TAVOLA_PARZIALE");
             v.best(CardSet::FULL).map(|(c, m)| (c, if partly { m * PARTIAL_TABLE } else { m }))
         };
         // (In tavola si tengono anche le letture incerte: se si ripetono, si propone la carta da
@@ -4277,7 +4282,7 @@ impl Sightings {
         // Una carta sola nella mia casella è dell'avversario se lì resta per qualche lettura; se
         // non l'ho mai vista in mano non può essere mia, e basta una lettura (le carte affiancate
         // a metà tavolo, dove la casella si decide per pochi pixel).
-        let need = if self.hand[c as usize].count == 0 && std::env::var_os("SENZA_SOLA_MAI_IN_MANO").is_none() { 1 } else { 3 };
+        let need = if self.hand[c as usize].count == 0 && !switched_off("SENZA_SOLA_MAI_IN_MANO") { 1 } else { 3 };
         if l.count < need {
             return o;
         }
@@ -4418,8 +4423,8 @@ impl Sightings {
         // (Una carta vista con sicurezza prima in mano e poi in tavola, anche una volta sola per
         // parte, l'ho giocata io: non serve aspettare la lettura dopo.)
         let mine_now = |c: Card| {
-            std::env::var_os("SENZA_APERTURA_SUBITO").is_none()
-                && std::env::var_os("SENZA_APERTURA_MIA").is_none()
+            !switched_off("SENZA_APERTURA_SUBITO")
+                && !switched_off("SENZA_APERTURA_MIA")
                 && self.hand[c as usize].count >= 1
                 && self.hand[c as usize].margin >= AUTO_MARGIN
                 && self.hand[c as usize].first < self.table[c as usize].first
@@ -4431,11 +4436,11 @@ impl Sightings {
         // (Solo se la mano si legge pulita: tre carte sicure, tutte viste nell'ultima lettura. Una
         // carta letta in mano solo prima, magari per sbaglio, fa aspettare la lettura dopo.)
         let held: Vec<Card> = (0..40u8).filter(|&c| self.in_hand(c)).collect();
-        let hand_clear = std::env::var_os("SENZA_MANO_PULITA").is_some()
+        let hand_clear = switched_off("SENZA_MANO_PULITA")
             || (held.len() == 3 && held.iter().all(|&c| self.hand[c as usize].last == self.frame));
         let theirs_now = |c: Card| {
-            std::env::var_os("SENZA_APERTURA_SUBITO").is_none()
-                && std::env::var_os("SENZA_APERTURA_SUA").is_none()
+            !switched_off("SENZA_APERTURA_SUBITO")
+                && !switched_off("SENZA_APERTURA_SUA")
                 && self.hand[c as usize].count == 0
                 && self.hand_at_first_play == Some(3)
                 && hand_clear
@@ -4547,7 +4552,7 @@ impl Sightings {
             .filter(|&c| {
                 let (t, h) = (&self.table[c as usize], &self.hand[c as usize]);
                 // (Una carta della mia mano vista in tavola con sicurezza basta anche una volta.)
-                let once = std::env::var_os("SENZA_APERTURA_SUBITO").is_none() && std::env::var_os("SENZA_UNA_VOLTA").is_none() && t.count >= 1 && t.margin >= AUTO_MARGIN && t.last == self.frame;
+                let once = !switched_off("SENZA_APERTURA_SUBITO") && !switched_off("SENZA_UNA_VOLTA") && t.count >= 1 && t.margin >= AUTO_MARGIN && t.last == self.frame;
                 (self.on_table(c) || once) && t.last >= h.first && t.last >= h.last
             })
             .min_by_key(|&c| self.table[c as usize].first)
@@ -4619,7 +4624,7 @@ impl Sightings {
         // Una mia carta nuova (vista in mano, non fra quelle che so di avere) già comparsa in tavola:
         // la presa in corso è finita e io gioco già nella dopo; una carta dell'avversario vista da
         // lì in poi non è la sua risposta di questa presa (che non si è vista).
-        let my_next = (std::env::var_os("SENZA_PRESA_DOPO").is_none())
+        let my_next = (!switched_off("SENZA_PRESA_DOPO"))
             .then(|| {
                 (0..40u8)
                     .filter(|&c| {

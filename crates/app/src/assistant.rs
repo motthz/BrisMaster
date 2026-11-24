@@ -4428,11 +4428,17 @@ impl Sightings {
         };
         // (E una carta mai vista in mano, in tavola con sicurezza mentre in mano ne ho ancora tre,
         // l'ha giocata l'avversario.)
+        // (Solo se la mano si legge pulita: tre carte sicure, tutte viste nell'ultima lettura. Una
+        // carta letta in mano solo prima, magari per sbaglio, fa aspettare la lettura dopo.)
+        let held: Vec<Card> = (0..40u8).filter(|&c| self.in_hand(c)).collect();
+        let hand_clear = std::env::var_os("SENZA_MANO_PULITA").is_some()
+            || (held.len() == 3 && held.iter().all(|&c| self.hand[c as usize].last == self.frame));
         let theirs_now = |c: Card| {
             std::env::var_os("SENZA_APERTURA_SUBITO").is_none()
                 && std::env::var_os("SENZA_APERTURA_SUA").is_none()
                 && self.hand[c as usize].count == 0
                 && self.hand_at_first_play == Some(3)
+                && hand_clear
                 && self.table[c as usize].count >= 1
                 && self.table[c as usize].margin >= AUTO_MARGIN
         };

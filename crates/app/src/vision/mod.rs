@@ -650,6 +650,62 @@ pub enum Reading<S> {
 
 /// Lettura per la briscola: trova le carte e le riconosce (None se non c'è nessuna carta scoperta).
 /// La memoria resta bloccata solo mentre si confrontano le carte trovate, non durante la ricerca.
+/// Esperimento E6 (`SPER_SBIADITE=1`, solo nelle prove): a fine presa alcuni siti sbiadiscono le
+/// carte giocate nel colore del tavolo (una carta al 30-50%), e la carta giocata per seconda può
+/// comparire già sbiadita. Se in tavola non si trova niente ma c'è la mano, si ricostruisce la
+/// schermata togliendo la fusione col colore del tavolo, `p' = T + (p - T) / a`, e si cercano lì
+/// le carte giocate (solo carte che somigliano chiaramente a un mazzo noto).
+fn faded_table(img: &Img, scene: &mut Scene) {
+    if std::env::var_os("SPER_SBIADITE_LOG").is_some() {
+        eprintln!("sbiadite? A {} T {} mano {}", scene.opp_slot.is_some(), scene.my_slot.is_some(), scene.hand.len());
+    }
+    if scene.opp_slot.is_some() || scene.my_slot.is_some() || scene.hand.is_empty() {
+        return;
+    }
+    // Il colore del tavolo: il più frequente (a passi di 8).
+    let mut count = std::collections::HashMap::<[u8; 3], usize>::new();
+    // (Né i pannelli bianchi né le bande scure: il panno.)
+    for p in img.px.iter().step_by(7) {
+        let sum = p.iter().map(|&v| v as u32).sum::<u32>();
+        if (90..600).contains(&sum) {
+            *count.entry(p.map(|v| v / 8)).or_default() += 1;
+        }
+    }
+    let Some((&t, _)) = count.iter().max_by_key(|(_, n)| **n) else { return };
+    let t = t.map(|v| v as f32 * 8.0 + 4.0);
+    // (Un tavolo chiaro non sbiadisce niente di visibile.)
+    if t.iter().sum::<f32>() > 3.0 * 170.0 {
+        return;
+    }
+    let top_hand = scene.hand.iter().map(|v| v.at[1]).fold(1.0f32, f32::min);
+    for a in [0.35f32, 0.5] {
+        let mut out = img.clone();
+        for p in out.px.iter_mut() {
+            *p = std::array::from_fn(|c| (t[c] + (p[c] as f32 - t[c]) / a).clamp(0.0, 255.0) as u8);
+        }
+        let s = detect::scene(&out);
+        if std::env::var_os("SPER_SBIADITE_LOG").is_some() {
+            if std::env::var_os("SPER_SBIADITE_SALVA").is_some() {
+                let _ = out.save_png(std::path::Path::new(&format!("{}/sbiadita_{a}.png", std::env::var("SPER_SBIADITE_SALVA").unwrap())));
+            }
+            let show = |v: &Option<CardView>| v.as_ref().map(|v| (v.best(CardSet::FULL), v.sim.iter().copied().fold(f32::MIN, f32::max), v.at));
+            eprintln!("prova sbiadite a={a} tavolo {t:?}: A {:?} T {:?} mano {}", show(&s.opp_slot), show(&s.my_slot), s.hand.len());
+        }
+        let keep = |v: &Option<CardView>| {
+            v.clone().filter(|v| v.at[3] < top_hand + 0.02 && v.sim.iter().copied().fold(f32::MIN, f32::max) >= 0.8)
+        };
+        let (o, m) = (keep(&s.opp_slot), keep(&s.my_slot));
+        if o.is_some() || m.is_some() {
+            if std::env::var_os("SPER_SBIADITE_LOG").is_some() {
+                eprintln!("sbiadite a={a}: {:?} {:?}", o.as_ref().and_then(|v| v.best(CardSet::FULL)), m.as_ref().and_then(|v| v.best(CardSet::FULL)));
+            }
+            scene.opp_slot = o;
+            scene.my_slot = m;
+            return;
+        }
+    }
+}
+
 pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
     let recovered = exposure::recover(img);
     let img = recovered.as_ref().unwrap_or(img);
@@ -659,6 +715,9 @@ pub fn read_briscola(img: &Img, mem: &Mutex<Memory>) -> Option<Scene> {
     let profile = std::env::var_os("BRIS_PROFILO_CARTE").is_some();
     let started = std::time::Instant::now();
     let mut scene = focused_scene(img);
+    if cfg!(test) && std::env::var_os("SPER_SBIADITE").is_some() {
+        faded_table(img, &mut scene);
+    }
     let detected = started.elapsed();
     if profile { eprintln!("profilo briscola rilevamento {} us", detected.as_micros()); }
     let classify_at = std::time::Instant::now();

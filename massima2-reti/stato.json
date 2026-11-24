@@ -1,0 +1,55 @@
+{
+    "aggiornato":  "2026-11-24T15:30:49Z",
+    "reti":  [
+                 {
+                     "hidden":  1024,
+                     "stato":  "in corso",
+                     "partite":  15327232,
+                     "obiettivo":  17000000,
+                     "partite_min":  62455,
+                     "ore_rimaste":  0.45,
+                     "inizio":  "2026-11-24T11:54:04Z",
+                     "fine":  null
+                 },
+                 {
+                     "hidden":  256,
+                     "stato":  "in coda",
+                     "partite":  0,
+                     "obiettivo":  17000000,
+                     "partite_min":  null,
+                     "ore_rimaste":  null,
+                     "inizio":  null,
+                     "fine":  null
+                 },
+                 {
+                     "hidden":  2048,
+                     "stato":  "in coda",
+                     "partite":  0,
+                     "obiettivo":  17000000,
+                     "partite_min":  null,
+                     "ore_rimaste":  null,
+                     "inizio":  null,
+                     "fine":  null
+                 },
+                 {
+                     "hidden":  512,
+                     "stato":  "in coda",
+                     "partite":  0,
+                     "obiettivo":  17000000,
+                     "partite_min":  null,
+                     "ore_rimaste":  null,
+                     "inizio":  null,
+                     "fine":  null
+                 },
+                 {
+                     "hidden":  128,
+                     "stato":  "in coda",
+                     "partite":  0,
+                     "obiettivo":  17000000,
+                     "partite_min":  null,
+                     "ore_rimaste":  null,
+                     "inizio":  null,
+                     "fine":  null
+                 }
+             ]
+}

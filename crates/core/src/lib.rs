@@ -8,6 +8,7 @@ pub mod net;
 pub mod rl;
 pub mod stats;
 pub mod style;
+pub mod humansim;
 
 pub use ai::{evaluate, EngineConfig, EnginePlayer, HeuristicPlayer, MoveEval, Player, RandomPlayer};
 pub use cards::{Card, CardSet};

@@ -163,6 +163,48 @@ ritorno anticipato in `nn::log_probs` (un `return Some(one);`).
 2. Rete da 0.85 solo sulle carte viste per intero.
 3. Inizio partita (u13): la prima mano letta male costa da sola 7–8 carte a mano.
 
+### 3.5 Secondo giro (0.6.17)
+
+I tre passi di §3.4, provati sulla 0.6.16 + E2b.
+
+| id | cosa | risultato | decisione |
+|---|---|---|---|
+| E6b | carte sbiadite cercate solo nelle caselle del tavolo già imparate (centro entro 5% dello schermo, somiglianza ≥ 0.85) | u06: carte mancate da 6 a 4, ma ancora 2 scritte a mano; u01: 4 conferme e 4 a mano (prima 0 e 0), 26 letture sicure sbagliate (prima 0) | **REVERT** |
+| E2c | rete da 0.85 solo sulle carte viste per intero (`NN_DA_INTERE=0.85`) | `sovrapposte_2` ancora con 3 carte a mano: la carta letta male risulta intera | **REVERT** |
+| R1 | inizio partita: alla distribuzione si pescano prima le carte viste nell'ultima lettura | vedi sotto | **KEEP** |
+
+**R1, la causa di u13.** Nelle prime schermate un pezzo del pannello bianco dei punti (in alto a
+destra) viene letto come "Asso di Spade" in mano, mentre le tre carte vere sono ancora in
+animazione. La pescata iniziale prendeva le carte viste in mano da più tempo: entrava l'asso
+finto, e quando comparivano le tre carte vere la quarta faceva dedurre "asso giocato, presa chiusa,
+pescata": una presa in più, mazzo a 32, e la partita persa dal primo minuto (8 carte a mano).
+Correzione in `next_draw`: solo alla prima distribuzione (`tricks == 0`), una carta che non c'è
+nell'ultima lettura e non è mai comparsa in tavola passa dopo quelle viste adesso.
+
+Risultati della 0.6.17 (E2b + R1) contro 0.6.16:
+
+| banco | 0.6.16 | 0.6.17 |
+|---|---|---|
+| u20 partite perfette | 8/20 | **14/20** |
+| u20 conferme chieste | 14 | **6** |
+| u20 carte scritte a mano | 10 | **3** |
+| u13 | 8 a mano | 1 a mano (la briscola letta male alla prima schermata) |
+| spoglio / display | 20/20 · 19/20 | 20/20 · 19/20 (identici partita per partita) |
+| estreme | 17/17 | 17/17 |
+| prove unitarie | 129 | 129 |
+
+Rollback di R1: togliere il filtro `stale` in `next_draw` (`assistant.rs`).
+
+### 3.6 Dati reali (passo 4)
+
+Non fatto da qui, di proposito: servono schermate di siti veri con la verità controllata da chi
+gioca, e per scelta dell'utente schermate e immagini dei siti restano sul suo computer. Procedura
+locale: registrare le schermate di una partita in una cartella (`0000.png`, ...), scrivere
+`verita.json` nello stesso formato delle partite registrate (per schermata: `frame`, `hand`,
+`trump`, `trick`), poi lanciare `partite_registrate` e `prima_lettura` sulla cartella e
+`scripts/prima-lettura.py`. Solo i numeri riassuntivi, non le immagini, servono per confrontare
+le versioni.
+
 ## 4. Riproduzione
 
 ```
@@ -174,4 +216,5 @@ python3 scripts/prima-lettura.py cartella letture.csv [--finestra 10]
 MAZZI=cartella ./BIN vision::other_sites::mazzi_sconosciuti --ignored --exact --nocapture
 ```
 Interruttori (solo nelle prove): `SENZA_TTA=1`, `NN_DA=0.85`, `SPER_MIGLIORE=1`,
-`SPER_STRETTE=0.48`, `SPER_SBIADITE=1`.
+`SPER_STRETTE=0.48`, `SPER_SBIADITE=1`, `NN_DA_INTERE=0.85`. Diagnosi: `DEBUG_PASSI=1`
+(ogni passo dedotto dagli avvistamenti), `DEBUG_TAVOLA=1`.

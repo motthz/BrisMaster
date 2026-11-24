@@ -4403,9 +4403,15 @@ impl Sightings {
         let opening = pos.tricks == 0 && pos.first == Some(ME) && pos.table.is_none();
         let lead = if opening { self.first_table_card(pos) } else { None };
         let phantom = |c: Card| self.phantoms.get(c as usize).is_some_and(|&n| n >= 2);
-        let sure = (0..40u8)
-            .filter(|&c| allowed.contains(c) && self.in_hand(c) && !phantom(c))
-            .min_by_key(|&c| self.hand[c as usize].first);
+        // Alla distribuzione iniziale una carta vista in mano solo prima che arrivassero le altre,
+        // che non si vede più e non è mai comparsa in tavola, era una lettura falsa (per esempio un
+        // pezzo di un pannello bianco letto come carta): si pescano prima le carte viste
+        // nell'ultima lettura.
+        let held: Vec<Card> = (0..40u8).filter(|&c| allowed.contains(c) && self.in_hand(c) && !phantom(c)).collect();
+        let newest = held.iter().map(|&c| self.hand[c as usize].last).max().unwrap_or(0);
+        let stale = |c: Card| pos.tricks == 0 && self.hand[c as usize].last < newest && !self.glimpsed(c);
+        let fresh = held.iter().any(|&c| !stale(c));
+        let sure = held.iter().copied().filter(|&c| !(fresh && stale(c))).min_by_key(|&c| self.hand[c as usize].first);
         // Devo ancora pescare ma la presa dopo è già cominciata: per l'ordine di gioco la mia carta
         // è la prima comparsa in tavola se apro io, la seconda se apre l'avversario. Se non è fra
         // quelle che so di avere, è proprio la pescata (giocata prima che la vedessi in mano).

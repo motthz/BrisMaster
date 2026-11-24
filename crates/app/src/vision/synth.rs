@@ -63,6 +63,8 @@ pub enum Table {
     SideBySide,
     /// La mia sopra quella dell'avversario, coprendone una parte (come una presa raccolta).
     Overlap,
+    /// La mia sopra quella dell'avversario, coprendone solo un angolo.
+    LightOverlap,
     /// Avversario in alto e io in basso, tutte e due un po' storte.
     Tilted,
 }
@@ -304,6 +306,7 @@ pub fn table(deal: &Deal, look: &Look) -> Img {
         Table::SideBySide => (([mx - w * 0.6, my], 0.0), ([mx + w * 0.6, my], 0.0)),
         Table::Overlap => (([mx - w * 0.2, my - h * 0.2], 0.0), ([mx + w * 0.2, my + h * 0.25], 0.0)),
         Table::Tilted => (([mx - w * 0.1, my - h * 0.45], -9.0), ([mx + w * 0.3, my + h * 0.5], 8.0)),
+        Table::LightOverlap => (([mx - w * 0.4, my - h * 0.35], 0.0), ([mx + w * 0.4, my + h * 0.4], 0.0)),
     };
     if let Some(c) = deal.opp {
         draw_card(&mut img, c, look, opp_at.0[0], opp_at.0[1], h, opp_at.1);

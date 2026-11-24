@@ -4226,8 +4226,20 @@ impl Sightings {
         // meno sicurezza: il distacco conta meno, perché i simboli che distinguono due carte
         // vicine (il sei e il sette) possono stare proprio nella parte coperta. Così una lettura
         // appena sopra la soglia non entra da sola: si conferma o si aspetta di vederla tutta.
+        // (Anche due carte giocate che si sovrappongono: la sagoma di quella sotto ha la misura
+        // giusta, ma un angolo è coperto.)
+        let overlap = match (&scene.opp_slot, &scene.my_slot) {
+            (Some(o), Some(m)) => {
+                let w = (o.at[2].min(m.at[2]) - o.at[0].max(m.at[0])).max(0.0);
+                let h = (o.at[3].min(m.at[3]) - o.at[1].max(m.at[1])).max(0.0);
+                let area = ((o.at[2] - o.at[0]) * (o.at[3] - o.at[1])).max(1e-6);
+                w * h / area > 0.10
+            }
+            _ => false,
+        };
         let best_on_table = |v: &CardView| {
-            v.best(CardSet::FULL).map(|(c, m)| (c, if v.partial && std::env::var_os("SENZA_TAVOLA_PARZIALE").is_none() { m * PARTIAL_TABLE } else { m }))
+            let partly = (v.partial || overlap) && std::env::var_os("SENZA_TAVOLA_PARZIALE").is_none();
+            v.best(CardSet::FULL).map(|(c, m)| (c, if partly { m * PARTIAL_TABLE } else { m }))
         };
         // (In tavola si tengono anche le letture incerte: se si ripetono, si propone la carta da
         // confermare invece di chiederla da scrivere.)

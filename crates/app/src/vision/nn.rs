@@ -149,11 +149,12 @@ fn log_softmax(v: &[f32]) -> Vec<f32> {
     v.iter().map(|x| x - s).collect()
 }
 
-/// Esperimento (solo nelle prove, `SPER_TTA=1`): la rete guarda anche la carta capovolta (le
-/// carte italiane sono quasi simmetriche) e si fa la media delle due risposte.
+/// La rete guarda anche la carta capovolta (le carte italiane sono quasi simmetriche) e si fa la
+/// media delle due risposte: più partite lette per intero senza conferme (esperimento E2b in
+/// `docs/SPERIMENTAZIONE-RICONOSCIMENTO.md`). Nelle prove `SENZA_TTA=1` torna alla sola carta.
 pub fn log_probs(card: &Img) -> Option<[f32; 40]> {
     let one = log_probs_once(card)?;
-    if !(cfg!(test) && std::env::var_os("SPER_TTA").is_some()) {
+    if cfg!(test) && std::env::var_os("SENZA_TTA").is_some() {
         return Some(one);
     }
     let mut flipped = card.clone();

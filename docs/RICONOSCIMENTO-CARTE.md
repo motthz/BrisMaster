@@ -292,6 +292,10 @@ Note: one point of score is worth about 1/8 of similarity. A lead of 1.4 (`AUTO_
   particular deck. The current weights come from 60 epochs with the exported views.
 - **Measuring on unknown decks**: `allena.py` takes a folder of test decks, used only to print
   how many cards it recognises, never to train. Those decks stay local.
+- **Upside-down view (since the experiments of `docs/SPERIMENTAZIONE-RICONOSCIMENTO.md`, E2b)**:
+  the network also looks at the card rotated by 180° and the two probabilities are averaged.
+  Italian cards are almost symmetric, so the second look is a free second opinion: on the 20
+  recorded games, perfect games go from 8 to 14 with no game worse, and no other benchmark changes.
 - To change the network, also change `Net::load` in `nn.rs` (the order of the layers and their
   sizes must match `esporta.py`).
 
@@ -437,11 +441,15 @@ much it is worth:
 | `SENZA_NOTO`, `SENZA_NOTO_SCONOSCIUTE` | treats every deck as unknown, or keeps the unknown-deck cards on known decks too |
 | `SENZA_DECISIVA`, `SENZA_MEMORIA`, `SENZA_MEMORIA_BASE` | decisive memory, all memory, base memory only |
 | `SENZA_SIMBOLI`, `SENZA_STILE` | symbol count, the site's style |
+| `SENZA_TTA` | the network's upside-down view (only the card as it is) |
 
 Other variables:
 
 - `NN_DA` and `NN_K`: from what similarity downwards the network counts, and how much.
 - `ADOPT`: the last-resort delay, in ticks.
+- Experiments kept switched off (results in `docs/SPERIMENTAZIONE-RICONOSCIMENTO.md`):
+  `SPER_MIGLIORE`, `SPER_STRETTE`, `SPER_SBIADITE`; `PRIMA_CSV` with the `prima_lettura` benchmark
+  writes every reading, analysed by `scripts/prima-lettura.py`.
 
 Diagnostics: `SCARTI=1` prints the rejected rectangles and why, `VEDI_RILETTURA=1` prints when
 the reread kicks in, `TEMPI=1` prints the times of the attempts, `NN_LOG=1` prints the network's

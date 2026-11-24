@@ -3,14 +3,12 @@ name = "briscola-lab"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Laboratorio delle partite umane: partita contro Massima senza consigli, registrazione delle decisioni (human_decision_v1) e validatore."
+description = "Partite umane: formato delle decisioni (human_decision_v1), tavolo di prova contro Massima e validatore."
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [dependencies]
 briscola-core = { path = "../core" }
 rand = { version = "0.8", features = ["small_rng"] }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.2", features = ["custom"] }

@@ -8,31 +8,18 @@ e non viene usato come bot umano.
 
 Obiettivo di raccolta deciso: **50 persone, 2.000 partite**.
 
+**Cambio di piano (24/11/2026):** le partite arrivano dal sito che Motthz ha già; il sito e il
+server Cloudflare preparati in un primo momento sono stati tolti. Restano il formato, il
+validatore e il tavolo di prova, su cui si appoggerà l'importazione dei dati di quel sito.
+Niente partite ricavate in automatico da video di tavoli online.
+
 ## Cosa c'è nel repo
 
 | Percorso | Cosa fa |
 |---|---|
-| `crates/lab/src/tavolo.rs` | Arbitra una partita persona contro Massima e registra ogni carta giocata con quello che vedeva chi l'ha giocata. |
+| `crates/lab/src/tavolo.rs` | Tavolo di prova: arbitra una partita contro Massima e scrive le righe nel formato (usato nei test). |
 | `crates/lab/src/riga.rs` | Il formato `human_decision_v1`: una riga CSV per carta giocata. |
 | `crates/lab/src/valida.rs` | Il validatore: rigioca ogni partita dall'ordine del mazzo e scarta, spiegando perché, ogni partita che non torna. |
-| `crates/lab/src/wasm.rs` | Le funzioni che il sito chiama: lo stesso codice compilato in WebAssembly, senza dipendenze esterne. |
-| `crates/lab/web/` | Il sito: `index.html`, `gioco.js`, `worker.js`, `config.js` e `lab.wasm` già compilato. |
-| `crates/lab/costruisci.sh` | Ricompila `lab.wasm` dopo una modifica al motore. |
-
-## Il motore nel sito
-
-Massima nel sito è quella dell'app alla precisione "Massima": ISMCTS potenziato a 20.000
-iterazioni, deduzione delle carte avversarie con 1.000 mani (`ai::evaluate_with_log`),
-finale esatto. Gira in un Web Worker, quindi la pagina non si blocca mentre pensa.
-
-Tempo per mossa misurato in WebAssembly (Node 22, una partita intera): **0,15–0,17 s di media,
-massimo 0,3 s**, contro circa 0,12 s del codice nativo. La pagina aspetta comunque almeno 0,7 s
-prima di mostrare la carta di Massima, solo per far vedere la mossa.
-
-Il mazzo si mescola con un generatore portabile: dallo stesso seme esce lo stesso mazzo nel
-browser e nel codice nativo. Le scelte di Massima invece usano `SmallRng`, che a 32 bit
-(WebAssembly) è un generatore diverso da quello a 64 bit: l'algoritmo è identico, ma con lo
-stesso seme le simulazioni casuali non coincidono carta per carta.
 
 ## Il formato `human_decision_v1`
 
@@ -45,10 +32,10 @@ ricostruire per intero. Le carte sono numeri da 0 a 39: seme = carta / 10 (0 Den
 |---|---|
 | `schema` | sempre `human_decision_v1` |
 | `partita` | codice casuale della partita |
-| `giocatore` | codice casuale del browser (mai nome, email o IP) |
-| `sessione` | codice casuale della visita al sito |
+| `giocatore` | codice del giocatore (mai nome, email o IP) |
+| `sessione` | codice della sessione di gioco |
 | `regole` | `briscola-1v1-v1` |
-| `fonte` | da `config.js`, per esempio `sito-laboratorio` |
+| `fonte` | da dove viene la partita |
 | `origine` | `umano` o `massima` |
 | `mossa` | da 0 a 39 |
 | `presa` | da 0 a 19 |
@@ -61,13 +48,13 @@ ricostruire per intero. Le carte sono numeri da 0 a 39: seme = carta / 10 (0 Den
 | `legali` | carte giocabili (nella briscola, tutta la mano) |
 | `scelta` | la carta giocata |
 | `storia` | tutte le carte giocate prima, in ordine |
-| `consigli_visibili` | sempre `false`: il sito non dà consigli |
-| `tempo_ms` | tempo della decisione della persona, misurato dalla pagina; vuoto per Massima |
+| `consigli_visibili` | `false` per le partite senza consigli (le altre sono scartate) |
+| `tempo_ms` | tempo della decisione della persona, se misurato; vuoto per Massima |
 | `qualita` | `exact`: lo stato viene dall'arbitro, non da una lettura dello schermo |
 | `mazzo` | ordine completo del mazzo, solo sulla mossa 0 |
 | `motore` | versione e impostazioni di Massima |
 
-Il server può aggiungere colonne (per esempio `codice_ip`): il validatore le ignora.
+Colonne in più (per esempio `codice_ip`) sono ignorate dal validatore.
 
 ## Il validatore
 
@@ -82,54 +69,14 @@ Una partita inviata due volte identica conta una volta. Ogni partita scartata ha
 Stampa anche persone diverse, decisioni umane (e quante obbligate, con una sola carta in mano)
 e partite vinte, pari e perse dalle persone.
 
-## Mettere online il sito (Cloudflare)
-
-`crates/lab/web/` è un sito statico; `crates/lab/cloudflare/` lo pubblica su Cloudflare
-Workers insieme a un piccolo server (`src/index.js`) che salva le partite in un Durable Object
-con SQLite. Non c'è nessuna risorsa da creare a mano e tutto sta nel piano gratuito.
-
-| Indirizzo | Cosa fa |
-|---|---|
-| `POST /api/partita` | Riceve il CSV di una partita finita (intestazione + 40 righe), fa un controllo leggero e lo salva. L'IP diventa subito un codice (`HMAC-SHA256` con il segreto `SALE`, 12 cifre esadecimali): l'IP non viene mai salvato. Una partita già ricevuta non si duplica. Al massimo 200 partite al giorno per rete. |
-| `GET /api/conteggio` | Solo numeri: partite, giocatori, reti diverse. |
-| `GET /api/esporta?chiave=…` | Tutte le partite in un CSV, con la colonna `codice_ip` davanti. Serve la chiave `CHIAVE_EXPORT`. |
-
-La pubblicazione la fa il workflow GitHub **Laboratorio su Cloudflare**
-(`.github/workflows/lab-cloudflare.yml`): a ogni modifica di `crates/lab` su `main`, o a mano
-da Actions → Laboratorio su Cloudflare → Run workflow. Ricompila `lab.wasm`, pubblica e
-imposta i segreti. Segreti del repository (Settings → Secrets and variables → Actions):
-
-| Segreto | Da dove |
-|---|---|
-| `CLOUDFLARE_API_TOKEN` | Cloudflare → My Profile → API Tokens → Create Token → modello "Edit Cloudflare Workers" |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare → Workers & Pages → Account ID nella colonna di destra |
-| `LAB_SALE` | un testo casuale lungo, da non cambiare più (altrimenti gli stessi IP cambiano codice) |
-| `LAB_CHIAVE_EXPORT` | un'altra parola segreta, per scaricare le partite |
-
-L'indirizzo del sito compare nel riepilogo del workflow (`https://briscola-lab.<nome>.workers.dev`).
-
-Prova in locale: `cd crates/lab/cloudflare && npm ci && npx wrangler dev` con un file
-`.dev.vars` che contiene `SALE=...` e `CHIAVE_EXPORT=...`. Senza server basta
-`python3 -m http.server -d crates/lab/web 8000`: le partite restano nel browser.
-
 ## Privacy
 
-La pagina chiede il consenso prima della prima partita. Non chiede nome né email: il
-giocatore è un codice casuale salvato nel browser. Gli IP, se il server li vede, vanno
-trasformati in codici prima di salvarli e mai pubblicati. I dati raccolti non vanno nel repo.
-
-## Limiti noti
-
-- La partita è nel browser della persona: chi sa usare gli strumenti del browser potrebbe
-  leggere la memoria del motore e vedere le carte di Massima. Per un laboratorio fra persone
-  invitate è accettabile; nell'analisi conviene guardare le persone con risultati anomali.
-- Durante la partita la pagina non mostra i punti, come al tavolo vero: si vedono a fine partita.
-- `tempo_ms` parte quando le carte della persona diventano cliccabili, dopo la pausa che
-  mostra la presa appena chiusa.
+Il giocatore è sempre un codice, mai nome, email o IP (gli IP vanno trasformati in codici
+prima di arrivare qui). I dati raccolti non vanno nel repo.
 
 ## Passi successivi
 
-1. Mettere online il sito e cominciare la raccolta.
+1. Importare le partite del sito di Motthz in questo formato e validarle.
 2. Analisi delle partite vere: carichi, tagli, assi e tre tenuti, errori per fase della partita.
 3. Bot umano allenato sui dati veri, con test su persone mai viste in allenamento.
 4. Validazione del bot umano su 100.000 partite: il riferimento è la percentuale di Massima

@@ -7,15 +7,11 @@
 //! per ogni carta giocata, sia dalla persona sia da Massima, così che ogni partita si possa
 //! ricostruire e controllare per intero con [`valida`].
 //!
-//! Lo stesso codice gira nel sito (compilato in WebAssembly, vedi `wasm`) e nel validatore
-//! da riga di comando (`cargo run -p briscola-lab --bin lab-valida -- FILE.csv`).
+//! Validatore da riga di comando: `cargo run -p briscola-lab --bin lab-valida -- FILE.csv`.
 
 pub mod riga;
 pub mod tavolo;
 pub mod valida;
-
-#[cfg(target_arch = "wasm32")]
-mod wasm;
 
 pub use riga::{Origine, Riga, INTESTAZIONE, SCHEMA};
 pub use tavolo::{Tavolo, Vista};

@@ -4419,6 +4419,7 @@ impl Sightings {
         // parte, l'ho giocata io: non serve aspettare la lettura dopo.)
         let mine_now = |c: Card| {
             std::env::var_os("SENZA_APERTURA_SUBITO").is_none()
+                && std::env::var_os("SENZA_APERTURA_MIA").is_none()
                 && self.hand[c as usize].count >= 1
                 && self.hand[c as usize].margin >= AUTO_MARGIN
                 && self.hand[c as usize].first < self.table[c as usize].first
@@ -4429,6 +4430,7 @@ impl Sightings {
         // l'ha giocata l'avversario.)
         let theirs_now = |c: Card| {
             std::env::var_os("SENZA_APERTURA_SUBITO").is_none()
+                && std::env::var_os("SENZA_APERTURA_SUA").is_none()
                 && self.hand[c as usize].count == 0
                 && self.hand_at_first_play == Some(3)
                 && self.table[c as usize].count >= 1
@@ -4539,7 +4541,7 @@ impl Sightings {
             .filter(|&c| {
                 let (t, h) = (&self.table[c as usize], &self.hand[c as usize]);
                 // (Una carta della mia mano vista in tavola con sicurezza basta anche una volta.)
-                let once = std::env::var_os("SENZA_APERTURA_SUBITO").is_none() && t.count >= 1 && t.margin >= AUTO_MARGIN && t.last == self.frame;
+                let once = std::env::var_os("SENZA_APERTURA_SUBITO").is_none() && std::env::var_os("SENZA_UNA_VOLTA").is_none() && t.count >= 1 && t.margin >= AUTO_MARGIN && t.last == self.frame;
                 (self.on_table(c) || once) && t.last >= h.first && t.last >= h.last
             })
             .min_by_key(|&c| self.table[c as usize].first)

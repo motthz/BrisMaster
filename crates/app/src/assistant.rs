@@ -4471,6 +4471,14 @@ impl Sightings {
         let newest = held.iter().map(|&c| self.hand[c as usize].last).max().unwrap_or(0);
         let stale = |c: Card| pos.tricks == 0 && self.hand[c as usize].last < newest && !self.glimpsed(c);
         let fresh = held.iter().any(|&c| !stale(c));
+        // Anche dopo la prima presa: una carta mai vista in tavola, letta in mano solo prima che
+        // comparissero tre altre carte tutte nuove, non era in mano (una lettura falsa di prima
+        // della distribuzione, che a bassa risoluzione sopravvive alla prima presa).
+        let ghost = |c: Card| {
+            !switched_off("SENZA_FANTASMA")
+                && !self.glimpsed(c)
+                && (0..40u8).filter(|&o| o != c && self.in_hand(o) && self.hand[o as usize].first > self.hand[c as usize].last).count() >= 3
+        };
         // Alla distribuzione una carta vista in mano (anche con poca sicurezza) e poi comparsa in
         // tavola è una delle mie tre: l'ho giocata. Conta come le altre, nell'ordine in cui l'ho
         // vista, così la pescata dopo la prima presa non prende il suo posto (per esempio quando
@@ -4482,7 +4490,7 @@ impl Sightings {
         let sure = held
             .iter()
             .copied()
-            .filter(|&c| !(fresh && stale(c)))
+            .filter(|&c| !(fresh && stale(c)) && !ghost(c))
             .chain(played_from_hand)
             .min_by_key(|&c| self.hand[c as usize].first);
         // Devo ancora pescare ma la presa dopo è già cominciata: per l'ordine di gioco la mia carta

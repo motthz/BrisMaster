@@ -411,9 +411,9 @@ dependencies = [
 
 [[package]]
 name = "briscola-lab"
-version = "0.6.16"
+version = "0.6.17"
 dependencies = [
- "briscola-core 0.6.16",
+ "briscola-core 0.6.17",
  "rand 0.8.8",
  "serde_json",
 ]

@@ -205,6 +205,43 @@ locale: registrare le schermate di una partita in una cartella (`0000.png`, ...)
 `scripts/prima-lettura.py`. Solo i numeri riassuntivi, non le immagini, servono per confrontare
 le versioni.
 
+### 3.7 Tavoli diversi, bassa risoluzione e attribuzioni (0.6.18)
+
+Banco nuovo `tavoli_varianti`: partite intere generate su 15 disposizioni del tavolo, 4 partite
+ciascuna. Conta le partite perfette, le fallite, gli interventi chiesti all'utente e le giocate
+segnate al giocatore sbagliato (contate anche nelle partite fallite, a differenza della prima
+versione del banco).
+
+| versione | perfette | fallite | interventi | giocate al giocatore sbagliato |
+|---|---|---|---|---|
+| 0.6.15 (56 partite) | 23/56 | 4 | 47 | 12 |
+| 0.6.17 (56 partite) | 24/56 | 4 | 40 | 15 |
+| 0.6.18 (60 partite) | 39/60 | 0 | 50 | 0 |
+
+Per disposizione (0.6.17 → 0.6.18, partite perfette su 4): briscola in piedi 1 → 3, briscola in
+piedi a destra 0 → 3, carte affiancate 0 → 4, storte 0 → 1, tutto insieme 0 → 1; nuova
+"sovrapposte poco" 4/4. Le carte molto sovrapposte restano a 1/4: chi le guarda non vede
+abbastanza della carta e l'app chiede invece di sbagliare in silenzio (da qui gli interventi in
+più, e nessuna partita fallita).
+
+Regole entrate (ognuna si spegne nelle prove, vedi `docs/RICONOSCIMENTO-CARTE.md` §10.3):
+
+- briscola dritta accanto al mazzo e carta con un angolo coperto da un'altra (`detect.rs`);
+- carte in tavola coperte o sovrapposte contano meno (margine × 0,6);
+- carta sola dalla mia parte mai vista in mano: dell'avversario dopo una lettura (solo se la mano
+  si sta leggendo);
+- una carta dell'avversario vista dopo la mia carta della presa successiva non è la sua risposta;
+- chi apre deciso alla prima lettura sicura; per l'apertura dell'avversario solo se la mano si
+  legge pulita (senza questa condizione la partita u13 perdeva il passo per una lettura falsa
+  della mano);
+- carta letta in mano solo prima che comparisse una mano intera nuova, mai vista in tavola: è una
+  lettura falsa anche dopo la prima presa (u13 a bassa risoluzione: carte scritte a mano da 9 a 5).
+
+Gli altri banchi non peggiorano partita per partita: 20 partite registrate identiche alla
+0.6.17 (14 perfette, 6 conferme, 3 carte scritte a mano), spoglio 20/20, display 19/20, 17
+partite estreme seguite, 129 prove automatiche. Sei partite registrate rimpicciolite al 60%:
+0.6.15 0/6 perfette (9 conferme, 8 a mano), 0.6.18 4/6 (2 conferme, 7 a mano).
+
 ## 4. Riproduzione
 
 ```

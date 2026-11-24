@@ -2876,7 +2876,21 @@ fn assign_briscola(img: &Img, mut a: Analysis) -> Scene {
             if cut - top < 0.35 * card_l || bottom - cut < 3.0 { continue; }
             let rect = RotRect { cx: (left + right) / 2.0, cy: (top + cut) / 2.0,
                 hw: (right - left) / 2.0, hh: (cut - top) / 2.0, u: (1.0, 0.0), v: (0.0, 1.0) };
-            if let Some(card) = as_partial(img, &rect, card_l, card_w) {
+            // Coperta solo in un angolo (una carta giocata sopra l'altra, spostata di lato): oltre
+            // alla striscia in alto si vede anche la striscia laterale fino in fondo. Si
+            // confrontano tutte e due e si fa la media, pesata da quanto si vede di ciascuna.
+            let corner = corner_covered(img, blob, &known, card_l, card_w);
+            let partial = as_partial(img, &rect, card_l, card_w);
+            let margin = |f: &Found| {
+                let mut s = f.view.sim;
+                s.sort_by(|a, b| b.total_cmp(a));
+                s[0] - s[1]
+            };
+            let card = match (corner, partial) {
+                (Some(c), Some(p)) => Some(if margin(&c) > margin(&p) { c } else { p }),
+                (c, p) => c.or(p),
+            };
+            if let Some(card) = card {
                 if !a.cards.iter().any(|c| c.rect.dist(&card.rect) < 0.5 * card_w) {
                     a.cards.push(card);
                 }
@@ -3020,6 +3034,11 @@ fn assign_briscola(img: &Img, mut a: Analysis) -> Scene {
         .or_else(|| (aside.len() == 1).then(|| aside[0]));
     if let Some(t) = trump {
         scene.trump = Some(t.view.clone());
+    } else if !hand.is_empty() {
+        let card_w = hand.iter().map(|f| f.rect.short()).sum::<f32>() / hand.len() as f32;
+        if let Some(t) = trump_beside_deck(img, &a.blobs, &a.cards, card_l, card_w) {
+            scene.trump = Some(t.view);
+        }
     }
     // Le carte dell'avversario coperte, in alto: servono a dividere il tavolo a metà.
     let backs_y = a
@@ -3065,6 +3084,93 @@ fn assign_briscola(img: &Img, mut a: Analysis) -> Scene {
     uncover_fan(img, &mut hand, card_l);
     scene.hand = hand.iter().map(|f| f.view.clone()).collect();
     scene
+}
+
+/// Una carta in piedi grande come le altre coperta in un angolo in basso da una carta già
+/// trovata: si vedono la striscia in alto (fino all'altra carta) e la striscia laterale (fino al
+/// fondo). Il confronto è la media dei due, pesata dalla loro area.
+fn corner_covered(img: &Img, blob: &Blob, known: &[Found], card_l: f32, card_w: f32) -> Option<Found> {
+    if off("SENZA_ANGOLO") {
+        return None;
+    }
+    let r = &blob.rect;
+    if r.landscape() || !(0.85..1.15).contains(&(r.long() / card_l)) || !(0.8..1.25).contains(&(r.short() / card_w)) {
+        return None;
+    }
+    let [l, t, rr, b] = r.bounds(img);
+    let (l, t, rr, b) = (l * img.w as f32, t * img.h as f32, rr * img.w as f32, b * img.h as f32);
+    let (w, h) = (rr - l, b - t);
+    for k in known.iter().filter(|k| !k.rect.landscape()) {
+        let [kl, kt, kr, kb] = k.rect.bounds(img);
+        let (kl, kt, kr, kb) = (kl * img.w as f32, kt * img.h as f32, kr * img.w as f32, kb * img.h as f32);
+        // L'altra carta comincia dentro, in basso, e arriva fino al fondo; copre un lato solo.
+        if !(kt > t + 0.25 * h && kt < b - 0.05 * h && kb >= b - 0.05 * h) {
+            continue;
+        }
+        let cover_right = kl > l + 0.25 * w && kl < rr - 0.1 * w && kr >= rr - 0.05 * w;
+        let cover_left = kr < rr - 0.25 * w && kr > l + 0.1 * w && kl <= l + 0.05 * w;
+        if !(cover_right || cover_left) {
+            continue;
+        }
+        let rows = ((kt - t) / h).clamp(0.0, 1.0);
+        let cols = if cover_right { [0.0, ((kl - l) / w).clamp(0.0, 1.0)] } else { [((kr - l) / w).clamp(0.0, 1.0), 1.0] };
+        let rect = RotRect { cx: (l + rr) / 2.0, cy: (t + b) / 2.0, u: (1.0, 0.0), v: (0.0, 1.0), hw: card_w / 2.0, hh: card_l / 2.0 };
+        let top = Try::with_cols(img, rect, [0.0, rows], WHOLE);
+        let side = Try::with_cols(img, rect, WHOLE, cols);
+        let (a_top, a_side) = (rows, (cols[1] - cols[0]) * (1.0 - rows));
+        let card = top.card.clone();
+        let (f_top, f_side) = (top.finish(img), side.finish(img));
+        let sim: [f32; 40] = std::array::from_fn(|c| (a_top * f_top.view.sim[c] + a_side * f_side.view.sim[c]) / (a_top + a_side));
+        let mut view = CardView::new(card, [0.0, 1.0], sim);
+        view.partial = true;
+        view.vis_cols = WHOLE;
+        view.styles = f_top.view.styles.clone();
+        view.px = f_top.view.px;
+        view.at = f_top.view.at;
+        let score = sim.iter().copied().fold(f32::MIN, f32::max);
+        let f = Found { rect, view, score, inside: f_top.inside, apart: f_top.apart, alone: false };
+        if f.accepted(ACCEPT_PARTIAL) {
+            return Some(f);
+        }
+    }
+    None
+}
+
+/// La briscola dritta accanto al mazzo e coperta di lato dal mazzo: una zona chiara alta come una
+/// carta ma più stretta, attaccata a un dorso grande come una carta. Si legge come una carta
+/// vista solo in parte (la striscia di larghezza fuori dal mazzo).
+fn trump_beside_deck(img: &Img, blobs: &[Blob], cards: &[Found], card_l: f32, card_w: f32) -> Option<Found> {
+    if off("SENZA_BRISCOLA_DRITTA") {
+        return None;
+    }
+    for b in blobs.iter().filter(|b| b.light() && !b.rect.landscape()) {
+        let (long, short) = (b.rect.long(), b.rect.short());
+        if !(0.85..1.15).contains(&(long / card_l)) || !(0.3..0.85).contains(&(short / card_w)) {
+            continue;
+        }
+        if cards.iter().any(|c| c.rect.dist(&b.rect) < 0.5 * card_w) {
+            continue;
+        }
+        let deck = blobs.iter().find(|k| {
+            k.white <= 0.3
+                && (0.85..1.2).contains(&(k.rect.long() / card_l))
+                && (k.rect.cy - b.rect.cy).abs() < 0.2 * card_l
+                && ((k.rect.cx - b.rect.cx).abs() - (k.rect.short() + short) / 2.0).abs() < 0.15 * card_w
+        });
+        let Some(deck) = deck else { continue };
+        // Il mazzo copre la parte della carta dalla sua parte.
+        let right_covered = deck.rect.cx > b.rect.cx;
+        let seen = (short / card_w).min(0.95);
+        let missing = card_w - short;
+        let cx = b.rect.cx + if right_covered { missing / 2.0 } else { -missing / 2.0 };
+        let rect = RotRect { cx, cy: b.rect.cy, u: (1.0, 0.0), v: (0.0, 1.0), hw: card_w / 2.0, hh: card_l / 2.0 };
+        let cols = if right_covered { [0.0, seen] } else { [1.0 - seen, 1.0] };
+        let f = Try::with_cols(img, rect, WHOLE, cols).finish(img);
+        if f.accepted(ACCEPT_PARTIAL) {
+            return Some(f);
+        }
+    }
+    None
 }
 
 /// Quello che si vede sul tavolo della scopa in un istante.

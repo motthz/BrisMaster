@@ -23,6 +23,7 @@
 use crate::opponents::*;
 use crate::persona::{Chameleon, Clock, Persona, Tilt};
 use briscola_core::style::Adapt;
+use briscola_core::humansim::HumanSimPlayer;
 use briscola_core::ai::*;
 use briscola_core::cards::Card;
 use briscola_core::infer::{Belief, Exact, Log};
@@ -643,6 +644,17 @@ pub fn make_player(spec: &str) -> Result<Box<dyn Player>, String> {
         "umano-smemorato" => Box::new(Persona::new("Umano medio che non ricorda le carte".into(), briscola_core::style::Knobs { memoria: 0.0, ..briscola_core::style::Knobs::MEDIO }, 7)),
         s if s.starts_with("stile:") => Box::new(Persona::style(&s[6..]).ok_or(format!("stile sconosciuto: {}", &s[6..]))?),
         s if s.starts_with("persona:") => Box::new(Persona::numbered(num(&s[8..], "numero del personaggio")? as u64)),
+        s if s.starts_with("humansim:") => {
+            let id = s["humansim:".len()..]
+                .parse::<u64>()
+                .map_err(|_| format!("id HumanSim non valido in '{spec}'"))?;
+            Box::new(HumanSimPlayer::numbered(id))
+        }
+        s if s.starts_with("humansim-style:") => {
+            let name = &s["humansim-style:".len()..];
+            Box::new(HumanSimPlayer::style(name)
+                .ok_or_else(|| format!("stile HumanSim sconosciuto: '{name}'"))?)
+        },
         s if s.starts_with("fretta:") || s.starts_with("tilt:") => {
             let (kind, rest) = s.split_once(':').unwrap();
             let (err, base) = rest.split_once(':').ok_or(format!("serve {kind}:ERRORE:SPEC, non '{s}'"))?;
@@ -1009,7 +1021,7 @@ mod tests {
 
     #[test]
     fn specs_parse() {
-        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "v0.2.0/engine:20", "v0.2.1/engine:20", "v0.3.0/engine:20", "v0.3.0/ismcts+:20", "v0.3.0/ismcts:20", "v0.4.0/ismcts+:20", "v0.4.1/ismcts+:20", "v0.4.7/ismcts+:20", "v0.5.0/ismcts+:20", "v0.5.0/engine:20", "v0.6.0/ismcts+:20", "v0.6.0/engine:20", "v0.2.0/ismcts:20", "followsuit", "peek:20", "vedetutto:20", "misto:20", "stile:nonno", "persona:7", "fretta:0.4:counter", "tilt:0.3:stile:circolo", "camaleonte:3", "politica"] {
+        for s in ["heuristic", "noisy:0.2:engine:20", "v0.1.1/engine:20", "v0.2.0/engine:20", "v0.2.1/engine:20", "v0.3.0/engine:20", "v0.3.0/ismcts+:20", "v0.3.0/ismcts:20", "v0.4.0/ismcts+:20", "v0.4.1/ismcts+:20", "v0.4.7/ismcts+:20", "v0.5.0/ismcts+:20", "v0.5.0/engine:20", "v0.6.0/ismcts+:20", "v0.6.0/engine:20", "v0.2.0/ismcts:20", "followsuit", "peek:20", "vedetutto:20", "misto:20", "stile:nonno", "persona:7", "humansim:7", "humansim-style:circolo", "fretta:0.4:counter", "tilt:0.3:stile:circolo", "camaleonte:3", "politica"] {
             assert!(make_agent(s).is_ok(), "{s}");
         }
         assert!(make_agent("v9.9.9/engine:20").is_err());

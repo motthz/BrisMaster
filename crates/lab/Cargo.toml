@@ -1,0 +1,15 @@
+[package]
+name = "briscola-lab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Partite umane: formato delle decisioni (human_decision_v1), tavolo di prova contro Massima e validatore."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+briscola-core = { path = "../core" }
+rand = { version = "0.8", features = ["small_rng"] }
+serde_json = "1"
+

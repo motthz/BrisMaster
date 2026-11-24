@@ -366,6 +366,14 @@ fn can_match_hand(slots: &[u8], available: u8) -> bool {
 /// Distacco minimo fra la carta più probabile e la seconda per inserirla senza chiedere.
 const AUTO_MARGIN: f32 = 1.4;
 
+/// Quanto conta il distacco di una carta in tavola vista solo in parte (vedi `Sightings::update`).
+const PARTIAL_TABLE: f32 = 0.6;
+
+/// (Prove: spegne una regola per misurare quanto vale; fuori dalle prove non fa niente.)
+fn switched_off(name: &str) -> bool {
+    cfg!(test) && std::env::var_os(name).is_some()
+}
+
 /// Letture con una carta in attesa di conferma prima di accettarla da soli.
 const AUTO_ACCEPT: u32 = 6;
 
@@ -4219,10 +4227,29 @@ impl Sightings {
         if !table.is_empty() && self.hand_at_first_play.is_none() {
             self.hand_at_first_play = Some(scene.hand.len());
         }
+        // Una carta in tavola vista solo in parte (coperta dall'altra carta giocata) si legge con
+        // meno sicurezza: il distacco conta meno, perché i simboli che distinguono due carte
+        // vicine (il sei e il sette) possono stare proprio nella parte coperta. Così una lettura
+        // appena sopra la soglia non entra da sola: si conferma o si aspetta di vederla tutta.
+        // (Anche due carte giocate che si sovrappongono: la sagoma di quella sotto ha la misura
+        // giusta, ma un angolo è coperto.)
+        let overlap = match (&scene.opp_slot, &scene.my_slot) {
+            (Some(o), Some(m)) => {
+                let w = (o.at[2].min(m.at[2]) - o.at[0].max(m.at[0])).max(0.0);
+                let h = (o.at[3].min(m.at[3]) - o.at[1].max(m.at[1])).max(0.0);
+                let area = ((o.at[2] - o.at[0]) * (o.at[3] - o.at[1])).max(1e-6);
+                w * h / area > 0.10
+            }
+            _ => false,
+        };
+        let best_on_table = |v: &CardView| {
+            let partly = (v.partial || overlap) && !switched_off("SENZA_TAVOLA_PARZIALE");
+            v.best(CardSet::FULL).map(|(c, m)| (c, if partly { m * PARTIAL_TABLE } else { m }))
+        };
         // (In tavola si tengono anche le letture incerte: se si ripetono, si propone la carta da
         // confermare invece di chiederla da scrivere.)
         for v in table {
-            if let Some((c, m)) = v.best(CardSet::FULL).filter(|b| b.1 >= 0.3) {
+            if let Some((c, m)) = best_on_table(v).filter(|b| b.1 >= 0.3) {
                 if cfg!(test) && std::env::var_os("DEBUG_TAVOLA").is_some() {
                     eprintln!("TAVOLA f{f} {} {m:.2} at {:?}", cards::short(c), v.at);
                 }
@@ -4230,16 +4257,16 @@ impl Sightings {
                 self.views[c as usize] = Some((v.img.clone(), v.vis));
             }
         }
-        if let Some((c, m)) = scene.opp_slot.as_ref().and_then(|v| v.best(CardSet::FULL)).filter(|b| b.1 >= 0.3) {
+        if let Some((c, m)) = scene.opp_slot.as_ref().and_then(best_on_table).filter(|b| b.1 >= 0.3) {
             self.opponents[c as usize].bump(f, m);
             self.their_side[c as usize].bump(f, m);
         }
-        if let Some((c, m)) = scene.my_slot.as_ref().and_then(|v| v.best(CardSet::FULL)).filter(|b| b.1 >= 0.3) {
+        if let Some((c, m)) = scene.my_slot.as_ref().and_then(best_on_table).filter(|b| b.1 >= 0.3) {
             self.my_side[c as usize].bump(f, m);
         }
         // Con due carte in tavola una è dell'avversario, da qualunque parte stia (la mia si
         // riconosce perché era in mano). Una carta sola dalla mia parte si tiene a parte.
-        if let Some((c, m)) = scene.my_slot.as_ref().and_then(|v| v.best(CardSet::FULL)).filter(|b| b.1 >= 0.3) {
+        if let Some((c, m)) = scene.my_slot.as_ref().and_then(best_on_table).filter(|b| b.1 >= 0.3) {
             if scene.opp_slot.is_some() {
                 self.opponents[c as usize].bump(f, m);
             } else {
@@ -4252,7 +4279,13 @@ impl Sightings {
     /// in tavola insieme a un'altra, o da sola dalla mia parte se ci è rimasta (tre letture).
     fn opp_sight(&self, c: Card) -> Sighting {
         let (o, l) = (self.opponents[c as usize], self.lone_mine[c as usize]);
-        if l.count < 3 {
+        // Una carta sola nella mia casella è dell'avversario se lì resta per qualche lettura; se
+        // non l'ho mai vista in mano non può essere mia, e basta una lettura (le carte affiancate
+        // a metà tavolo, dove la casella si decide per pochi pixel). Vale solo se la mano si sta
+        // leggendo: senza letture della mano non si sa quali carte ho.
+        let reading_hand = self.hand.iter().any(|h| h.count > 0);
+        let need = if reading_hand && self.hand[c as usize].count == 0 && !switched_off("SENZA_SOLA_MAI_IN_MANO") { 1 } else { 3 };
+        if l.count < need {
             return o;
         }
         if o.count == 0 {
@@ -4389,7 +4422,34 @@ impl Sightings {
     /// Chi ha aperto la partita: la prima carta comparsa in tavola (anche letta male) era mia se
     /// l'avevo vista in mano, o se in quel momento in mano me ne restavano due.
     fn first_player(&self, pos: &Position) -> Option<u8> {
-        if !(0..40u8).any(|c| Some(c) != pos.trump_card && self.on_table(c)) {
+        // (Una carta vista con sicurezza prima in mano e poi in tavola, anche una volta sola per
+        // parte, l'ho giocata io: non serve aspettare la lettura dopo.)
+        let mine_now = |c: Card| {
+            !switched_off("SENZA_APERTURA_SUBITO")
+                && !switched_off("SENZA_APERTURA_MIA")
+                && self.hand[c as usize].count >= 1
+                && self.hand[c as usize].margin >= AUTO_MARGIN
+                && self.hand[c as usize].first < self.table[c as usize].first
+                && self.table[c as usize].count >= 1
+                && self.table[c as usize].margin >= AUTO_MARGIN
+        };
+        // (E una carta mai vista in mano, in tavola con sicurezza mentre in mano ne ho ancora tre,
+        // l'ha giocata l'avversario.)
+        // (Solo se la mano si legge pulita: tre carte sicure, tutte viste nell'ultima lettura. Una
+        // carta letta in mano solo prima, magari per sbaglio, fa aspettare la lettura dopo.)
+        let held: Vec<Card> = (0..40u8).filter(|&c| self.in_hand(c)).collect();
+        let hand_clear = switched_off("SENZA_MANO_PULITA")
+            || (held.len() == 3 && held.iter().all(|&c| self.hand[c as usize].last == self.frame));
+        let theirs_now = |c: Card| {
+            !switched_off("SENZA_APERTURA_SUBITO")
+                && !switched_off("SENZA_APERTURA_SUA")
+                && self.hand[c as usize].count == 0
+                && self.hand_at_first_play == Some(3)
+                && hand_clear
+                && self.table[c as usize].count >= 1
+                && self.table[c as usize].margin >= AUTO_MARGIN
+        };
+        if !(0..40u8).any(|c| Some(c) != pos.trump_card && (self.on_table(c) || mine_now(c) || theirs_now(c))) {
             return None;
         }
         let lead = self.first_table_card(pos)?;
@@ -4411,7 +4471,28 @@ impl Sightings {
         let newest = held.iter().map(|&c| self.hand[c as usize].last).max().unwrap_or(0);
         let stale = |c: Card| pos.tricks == 0 && self.hand[c as usize].last < newest && !self.glimpsed(c);
         let fresh = held.iter().any(|&c| !stale(c));
-        let sure = held.iter().copied().filter(|&c| !(fresh && stale(c))).min_by_key(|&c| self.hand[c as usize].first);
+        // Anche dopo la prima presa: una carta mai vista in tavola, letta in mano solo prima che
+        // comparissero tre altre carte tutte nuove, non era in mano (una lettura falsa di prima
+        // della distribuzione, che a bassa risoluzione sopravvive alla prima presa).
+        let ghost = |c: Card| {
+            !switched_off("SENZA_FANTASMA")
+                && !self.glimpsed(c)
+                && (0..40u8).filter(|&o| o != c && self.in_hand(o) && self.hand[o as usize].first > self.hand[c as usize].last).count() >= 3
+        };
+        // Alla distribuzione una carta vista in mano (anche con poca sicurezza) e poi comparsa in
+        // tavola è una delle mie tre: l'ho giocata. Conta come le altre, nell'ordine in cui l'ho
+        // vista, così la pescata dopo la prima presa non prende il suo posto (per esempio quando
+        // la partita riparte dopo che l'utente ha scritto la briscola).
+        let played_from_hand = (0..40u8).filter(|&c| {
+            let (h, t) = (&self.hand[c as usize], &self.table[c as usize]);
+            pos.tricks == 0 && allowed.contains(c) && !phantom(c) && !held.contains(&c) && h.count >= 1 && self.glimpsed(c) && h.first < t.first
+        });
+        let sure = held
+            .iter()
+            .copied()
+            .filter(|&c| !(fresh && stale(c)) && !ghost(c))
+            .chain(played_from_hand)
+            .min_by_key(|&c| self.hand[c as usize].first);
         // Devo ancora pescare ma la presa dopo è già cominciata: per l'ordine di gioco la mia carta
         // è la prima comparsa in tavola se apro io, la seconda se apre l'avversario. Se non è fra
         // quelle che so di avere, è proprio la pescata (giocata prima che la vedessi in mano).
@@ -4480,7 +4561,9 @@ impl Sightings {
             // (una carta rivista in mano dopo non era stata giocata: le carte in mano non tornano)
             .filter(|&c| {
                 let (t, h) = (&self.table[c as usize], &self.hand[c as usize]);
-                self.on_table(c) && t.last >= h.first && t.last >= h.last
+                // (Una carta della mia mano vista in tavola con sicurezza basta anche una volta.)
+                let once = !switched_off("SENZA_APERTURA_SUBITO") && !switched_off("SENZA_UNA_VOLTA") && t.count >= 1 && t.margin >= AUTO_MARGIN && t.last == self.frame;
+                (self.on_table(c) || once) && t.last >= h.first && t.last >= h.last
             })
             .min_by_key(|&c| self.table[c as usize].first)
         {
@@ -4548,9 +4631,26 @@ impl Sightings {
         // Una carta comparsa in tavola dopo che avevo già pescato apre la presa dopo: non è la
         // risposta (non vista) alla mia carta.
         let cut = self.draw_seen(pos);
+        // Una mia carta nuova (vista in mano, non fra quelle che so di avere) già comparsa in tavola:
+        // la presa in corso è finita e io gioco già nella dopo; una carta dell'avversario vista da
+        // lì in poi non è la sua risposta di questa presa (che non si è vista).
+        let my_next = (!switched_off("SENZA_PRESA_DOPO"))
+            .then(|| {
+                (0..40u8)
+                    .filter(|&c| {
+                        Some(c) != pos.table && !pos.played.contains(c) && !pos.hand.contains(c)
+                            && self.hand[c as usize].count >= 1 && self.glimpsed(c)
+                            && self.hand[c as usize].first < self.table[c as usize].first
+                            && self.my_side[c as usize].count >= 1 && self.their_side[c as usize].count == 0
+                    })
+                    .map(|c| self.table[c as usize].first)
+                    .min()
+            })
+            .flatten();
         let candidates = (0..40u8)
             .filter(|&c| allowed.contains(c) && !self.in_hand(c))
-            .filter(|&c| cut.is_none_or(|f| self.opp_sight(c).first < f));
+            .filter(|&c| cut.is_none_or(|f| self.opp_sight(c).first < f))
+            .filter(|&c| my_next.is_none_or(|f| self.opp_sight(c).first < f));
         if let Some(c) = candidates.clone().filter(|&c| {
             let sight = self.opp_sight(c);
             sight.sure() || (sight.count >= 1 && sight.margin >= AUTO_MARGIN && sight.last < self.frame)
@@ -5746,6 +5846,71 @@ mod tests {
         play_on_screen_with_light(seed, style, look, linger, flicker, [1.0; 3], false, false)
     }
 
+    thread_local! {
+        /// Dell'ultima partita di `play_on_screen_with_light`: carte segnate al giocatore
+        /// sbagliato (anche per poco) e controlli in cui l'app era indietro o sbagliata.
+        static LAST_GAME: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
+    }
+
+    /// Banco dei tavoli diversi dal solito: posizione del mazzo e della briscola, carte giocate
+    /// affiancate, sovrapposte o storte, schermo in bassa risoluzione. Più partite per variante
+    /// (`VARIANTI_SEMI`, 4 per difetto), con tutte le misure: partite perfette (nessun intervento
+    /// e nessun ritardo), interventi, carte segnate al giocatore sbagliato, partite fallite.
+    /// `VARIANTE=nome` ne prova una sola.
+    ///
+    /// `cargo test --release -p brismaster tavoli_varianti -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn tavoli_varianti() {
+        use crate::vision::synth::{Look, Table};
+        let d = Look::default();
+        let cases: Vec<(&str, Look)> = vec![
+            ("normale", d),
+            ("mazzo-destra", Look { pile_at: [0.86, 0.5], ..d }),
+            ("briscola-mio-lato", Look { pile_at: [0.13, 0.8], ..d }),
+            ("briscola-lato-avversario", Look { pile_at: [0.14, 0.2], ..d }),
+            ("briscola-in-piedi", Look { trump_upright: true, cover: 0.3, ..d }),
+            ("briscola-in-piedi-destra", Look { trump_upright: true, cover: 0.3, pile_at: [0.86, 0.5], ..d }),
+            ("affiancate", Look { table: Table::SideBySide, ..d }),
+            ("sovrapposte-poco", Look { table: Table::LightOverlap, ..d }),
+            ("sovrapposte", Look { table: Table::Overlap, ..d }),
+            ("storte", Look { table: Table::Tilted, ..d }),
+            ("bassa-risoluzione", Look { lowres: 0.5, ..d }),
+            ("bassissima-risoluzione", Look { lowres: 0.38, ..d }),
+            ("piccole-bassa-risoluzione", Look { card_h: 110.0, lowres: 0.6, ..d }),
+            ("sovrapposte-bassa-risoluzione", Look { table: Table::Overlap, lowres: 0.5, ..d }),
+            ("tutto-insieme", Look { table: Table::Tilted, pile_at: [0.13, 0.8], trump_upright: true, cover: 0.3, lowres: 0.55, ..d }),
+        ];
+        let seeds = std::env::var("VARIANTI_SEMI").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(4);
+        let only = std::env::var("VARIANTE").ok();
+        let (mut tot_perfect, mut tot_games, mut tot_failed, mut tot_wrong, mut tot_help) = (0, 0, 0, 0, 0);
+        for (name, look) in cases {
+            if only.as_ref().is_some_and(|o| o != name) { continue; }
+            let (mut perfect, mut failed, mut wrong, mut help, mut late) = (0, 0, 0, 0, 0);
+            for k in 0..seeds {
+                let seed = 77_000 + k * 31;
+                LAST_GAME.with(|l| l.set((0, 0)));
+                let result = play_on_screen_with_light(seed, (k % 3) as usize, look, k % 2 == 0, false, [1.0; 3], false, true);
+                let (w, delays) = LAST_GAME.with(|l| l.get());
+                wrong += w;
+                late += delays;
+                match result {
+                    Ok((_, confirms)) => {
+                        help += confirms;
+                        if confirms == 0 && delays == 0 && w == 0 { perfect += 1; }
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        println!("{name} seed={seed}: FALLITA {e}");
+                    }
+                }
+            }
+            println!("VARIANTE {name}: perfette {perfect}/{seeds}, fallite {failed}, interventi {help}, attribuzioni sbagliate {wrong}, controlli in ritardo {late}");
+            tot_perfect += perfect; tot_games += seeds; tot_failed += failed; tot_wrong += wrong; tot_help += help;
+        }
+        println!("== VARIANTI: perfette {tot_perfect}/{tot_games}, fallite {tot_failed}, interventi {tot_help}, attribuzioni sbagliate {tot_wrong}");
+    }
+
     fn play_on_screen_with_light(
         seed: u64, style: usize, look: crate::vision::synth::Look,
         linger: bool, flicker: bool, gain: [f32; 3], gray: bool, allow_recovery: bool,
@@ -5770,6 +5935,8 @@ mod tests {
         let reduction = std::env::var("BRIS_STRESS_RIDUZIONE").ok()
             .and_then(|value| value.parse::<usize>().ok()).unwrap_or(1).clamp(1, 8);
         let mut frame = 0;
+        // Carte giocate segnate (anche solo per un momento) al giocatore sbagliato.
+        let wrong_owner: std::cell::RefCell<std::collections::BTreeSet<Card>> = Default::default();
         let mut look_at = |a: &mut Assistant, hand: &[Card], opp: Option<Card>, mine: Option<Card>, g: &Game, what: &str| -> Result<(), String> {
             let trump = (g.deck_len > 0).then(|| &imgs[g.trump_card as usize]);
             let deal = Deal {
@@ -5867,6 +6034,19 @@ mod tests {
                 a.accept_vision();
                 show(a, &scene);
             }
+            {
+                let plays = true_plays.borrow();
+                for e in &a.rec.events {
+                    if let Event::Giocata { chi, carta, .. } = e {
+                        let owner = if plays[ME as usize].contains(&carta.id) { Some(ME) } else if plays[OPP as usize].contains(&carta.id) { Some(OPP) } else { None };
+                        if owner.is_some_and(|o| record::who(o) != *chi) && wrong_owner.borrow_mut().insert(carta.id) {
+                            println!("seed={seed}; {what}: {} segnata a {chi} (vera di {})", cards::name(carta.id), record::who(owner.unwrap()));
+                            // (Contata subito: anche se poi la partita si ferma.)
+                            LAST_GAME.with(|l| l.set((wrong_owner.borrow().len() as u32, l.get().1)));
+                        }
+                    }
+                }
+            }
             if allow_recovery && a.vision.inconsistent && a.vision.confirm.is_none() {
                 let step = a.pos.step();
                 let requested = match step {
@@ -5963,6 +6143,7 @@ mod tests {
         }
         let (played, identified) = a.played_coverage();
         println!("seed={seed}; copertura {identified}/{played}; giocate reali={}", g.played.len());
+        LAST_GAME.with(|l| l.set((wrong_owner.borrow().len() as u32, delays.len() as u32)));
         if !delays.is_empty() {
             println!("seed={seed}; checkpoint in ritardo={}; primo={}", delays.len(), delays[0]);
         }

@@ -424,6 +424,7 @@ All of them are run with `cargo test --release -p brismaster NAME -- --ignored -
 | `partite_registrate` (assistant.rs) | games recorded from a real table, one screenshot every 350 ms, with the real situation. Prints confirmations, cards written by hand and errors | `PARTITE=folder`, `VERBOSO=1` prints every reading |
 | `mazzi_sconosciuti` (vision/mod.rs) | percentage of correct cards on never-seen decks, on many tables in two orders | `MAZZI=folder` (one subfolder per deck, `00.png`..`39.png`), `MEMORIA=1` for the first game teaches and the second measures |
 | `banco_siti`, `banco`, `banco_partite` | tables and games on fake sites | |
+| `tavoli_varianti` (assistant.rs) | whole games on 15 table layouts: deck or trump elsewhere, upright trump, cards side by side, overlapped or tilted, low resolution; counts perfect games, interventions and plays given to the wrong player | `VARIANTE=name` for one layout only, `VARIANTI_SEMI=n` games per layout, `SALVA=folder` keeps the screenshots |
 | `diagnosi_immagine` | what the reading finds in any screenshot | `IMG=screenshot.png` |
 | `prova_rete` | the network's 3 most likely cards for a card | `RETE=card.png` |
 | `esporta_riferimenti`, `esporta_viste` | data for training the network | section 6 |
@@ -442,6 +443,12 @@ much it is worth:
 | `SENZA_DECISIVA`, `SENZA_MEMORIA`, `SENZA_MEMORIA_BASE` | decisive memory, all memory, base memory only |
 | `SENZA_SIMBOLI`, `SENZA_STILE` | symbol count, the site's style |
 | `SENZA_TTA` | the network's upside-down view (only the card as it is) |
+| `SENZA_SOLA_MAI_IN_MANO` | a card never seen in my hand and seen on the opponent's side counts as theirs after one sure reading (instead of three) |
+| `SENZA_APERTURA_SUBITO` (or `SENZA_APERTURA_MIA`, `SENZA_APERTURA_SUA`, `SENZA_UNA_VOLTA`) | who opened the game decided at the first sure reading of the table: my card, the opponent's card, my play seen once |
+| `SENZA_MANO_PULITA` | the opponent's opening decided at once even when the hand is not read clean (three sure cards, all in the last reading) |
+| `SENZA_PRESA_DOPO` | an opponent card seen after my card of the next trick is not their answer in this trick |
+| `SENZA_TAVOLA_PARZIALE` | covered or overlapping table cards count less (margin × 0.6) |
+| `SENZA_ANGOLO`, `SENZA_BRISCOLA_DRITTA` | a card with a corner covered by another; the trump upright beside the deck |
 
 Other variables:
 

@@ -4281,8 +4281,10 @@ impl Sightings {
         let (o, l) = (self.opponents[c as usize], self.lone_mine[c as usize]);
         // Una carta sola nella mia casella è dell'avversario se lì resta per qualche lettura; se
         // non l'ho mai vista in mano non può essere mia, e basta una lettura (le carte affiancate
-        // a metà tavolo, dove la casella si decide per pochi pixel).
-        let need = if self.hand[c as usize].count == 0 && !switched_off("SENZA_SOLA_MAI_IN_MANO") { 1 } else { 3 };
+        // a metà tavolo, dove la casella si decide per pochi pixel). Vale solo se la mano si sta
+        // leggendo: senza letture della mano non si sa quali carte ho.
+        let reading_hand = self.hand.iter().any(|h| h.count > 0);
+        let need = if reading_hand && self.hand[c as usize].count == 0 && !switched_off("SENZA_SOLA_MAI_IN_MANO") { 1 } else { 3 };
         if l.count < need {
             return o;
         }

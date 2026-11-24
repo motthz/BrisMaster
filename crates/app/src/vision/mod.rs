@@ -464,7 +464,14 @@ pub fn recognize(view: &mut CardView, mem: &Memory) {
     // anche la rete (vedi `nn`), che riconosce seme e valore anche di un mazzo mai visto. Più la
     // carta è sconosciuta, più conta la rete; sui mazzi noti non cambia niente.
     let top = view.sim.iter().copied().fold(f32::MIN, f32::max);
-    let (from, k) = nn_params();
+    let (mut from, k) = nn_params();
+    // Esperimento E2c (solo nelle prove, `NN_DA_INTERE=0.85`): la rete conta da una somiglianza
+    // più alta, ma solo sulle carte viste per intero (non coperte né tagliate).
+    if cfg!(test) && !view.partial && view.vis[0] <= 0.0 && view.vis[1] >= 1.0 {
+        if let Some(v) = std::env::var("NN_DA_INTERE").ok().and_then(|v| v.parse::<f32>().ok()) {
+            from = from.max(v);
+        }
+    }
     let w = ((from - top) / 0.25).clamp(0.0, 1.0);
     if cfg!(test) && std::env::var_os("NN_LOG").is_some() {
         let lp = nn::log_probs(&view.img).unwrap_or([0.0; 40]);
@@ -655,6 +662,11 @@ pub enum Reading<S> {
 /// comparire già sbiadita. Se in tavola non si trova niente ma c'è la mano, si ricostruisce la
 /// schermata togliendo la fusione col colore del tavolo, `p' = T + (p - T) / a`, e si cercano lì
 /// le carte giocate (solo carte che somigliano chiaramente a un mazzo noto).
+/// Esperimento E6: quanto vicino alla casella imparata e quanto simile a un mazzo noto deve essere
+/// una carta ritrovata togliendo il colore del tavolo.
+const FADED_NEAR: f32 = 0.05;
+const FADED_SIM: f32 = 0.85;
+
 fn faded_table(img: &Img, scene: &mut Scene) {
     if std::env::var_os("SPER_SBIADITE_LOG").is_some() {
         eprintln!("sbiadite? A {} T {} mano {}", scene.opp_slot.is_some(), scene.my_slot.is_some(), scene.hand.len());
@@ -678,6 +690,17 @@ fn faded_table(img: &Img, scene: &mut Scene) {
         return;
     }
     let top_hand = scene.hand.iter().map(|v| v.at[1]).fold(1.0f32, f32::min);
+    // Le caselle dell'avversario e mia, imparate dalle prese con due carte.
+    let slots = FOCUS.with(|f| {
+        let f = f.borrow();
+        match (f.opp, f.mine) {
+            (Some(o), Some(m)) if f.samples >= 5 => Some((o, m)),
+            _ => None,
+        }
+    });
+    if slots.is_none() {
+        return;
+    }
     for a in [0.35f32, 0.5] {
         let mut out = img.clone();
         for p in out.px.iter_mut() {
@@ -691,10 +714,18 @@ fn faded_table(img: &Img, scene: &mut Scene) {
             let show = |v: &Option<CardView>| v.as_ref().map(|v| (v.best(CardSet::FULL), v.sim.iter().copied().fold(f32::MIN, f32::max), v.at));
             eprintln!("prova sbiadite a={a} tavolo {t:?}: A {:?} T {:?} mano {}", show(&s.opp_slot), show(&s.my_slot), s.hand.len());
         }
-        let keep = |v: &Option<CardView>| {
-            v.clone().filter(|v| v.at[3] < top_hand + 0.02 && v.sim.iter().copied().fold(f32::MIN, f32::max) >= 0.8)
+        // Solo una carta che cade in una casella del tavolo già imparata (centro entro `NEAR`),
+        // assegnata a quella casella: ombre e resti dell'animazione stanno altrove.
+        let near = |v: &CardView, slot: Option<[f32; 2]>| {
+            slot.is_some_and(|p| {
+                let c = center(v);
+                (c[0] - p[0]).abs() < FADED_NEAR && (c[1] - p[1]).abs() < FADED_NEAR
+            })
         };
-        let (o, m) = (keep(&s.opp_slot), keep(&s.my_slot));
+        let good = |v: &CardView| v.at[3] < top_hand + 0.02 && v.sim.iter().copied().fold(f32::MIN, f32::max) >= FADED_SIM;
+        let found: Vec<CardView> = [s.opp_slot.clone(), s.my_slot.clone()].into_iter().flatten().filter(|v| good(v)).collect();
+        let pick = |slot: Option<[f32; 2]>| found.iter().find(|v| near(v, slot)).cloned();
+        let (o, m) = (pick(slots.map(|s| s.0)), pick(slots.map(|s| s.1)));
         if o.is_some() || m.is_some() {
             if std::env::var_os("SPER_SBIADITE_LOG").is_some() {
                 eprintln!("sbiadite a={a}: {:?} {:?}", o.as_ref().and_then(|v| v.best(CardSet::FULL)), m.as_ref().and_then(|v| v.best(CardSet::FULL)));

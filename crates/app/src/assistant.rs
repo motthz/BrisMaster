@@ -2612,6 +2612,9 @@ impl Assistant {
             Step::Trump | Step::Over => None,
             Step::First => {
                 let Some(who) = sights.first_player(&pos) else { return false };
+                if cfg!(test) && std::env::var_os("DEBUG_PASSI").is_some() {
+                    eprintln!("PRIMO f{} chi {who} a_mano_alla_prima {:?} prima {:?}", sights.frame, sights.hand_at_first_play, sights.first_table_card(&pos).map(cards::short));
+                }
                 self.set_first(who);
                 return true;
             }
@@ -2673,6 +2676,9 @@ impl Assistant {
                 sights.next_opp_play(&pos, scene)
             }
         };
+        if cfg!(test) && std::env::var_os("DEBUG_PASSI").is_some() {
+            eprintln!("PASSO f{} {:?} evento {:?}", sights.frame, pos.step(), event.map(|e| (cards::short(e.0), e.1)));
+        }
         let (card, sure) = if let Some(e) = event {
             e
         } else {

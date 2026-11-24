@@ -82,14 +82,35 @@ Una partita inviata due volte identica conta una volta. Ogni partita scartata ha
 Stampa anche persone diverse, decisioni umane (e quante obbligate, con una sola carta in mano)
 e partite vinte, pari e perse dalle persone.
 
-## Mettere online il sito
+## Mettere online il sito (Cloudflare)
 
-`crates/lab/web/` è un sito statico: basta servire quei file da un qualsiasi hosting.
-In `config.js`, `invio` è l'indirizzo che riceve il CSV di ogni partita finita (POST,
-`text/csv`). Se è vuoto, le partite restano nel browser e la persona può scaricarle con
-il pulsante "Scarica le mie partite".
+`crates/lab/web/` è un sito statico; `crates/lab/cloudflare/` lo pubblica su Cloudflare
+Workers insieme a un piccolo server (`src/index.js`) che salva le partite in un Durable Object
+con SQLite. Non c'è nessuna risorsa da creare a mano e tutto sta nel piano gratuito.
 
-Prova in locale: `python3 -m http.server -d crates/lab/web 8000`, poi http://localhost:8000.
+| Indirizzo | Cosa fa |
+|---|---|
+| `POST /api/partita` | Riceve il CSV di una partita finita (intestazione + 40 righe), fa un controllo leggero e lo salva. L'IP diventa subito un codice (`HMAC-SHA256` con il segreto `SALE`, 12 cifre esadecimali): l'IP non viene mai salvato. Una partita già ricevuta non si duplica. Al massimo 200 partite al giorno per rete. |
+| `GET /api/conteggio` | Solo numeri: partite, giocatori, reti diverse. |
+| `GET /api/esporta?chiave=…` | Tutte le partite in un CSV, con la colonna `codice_ip` davanti. Serve la chiave `CHIAVE_EXPORT`. |
+
+La pubblicazione la fa il workflow GitHub **Laboratorio su Cloudflare**
+(`.github/workflows/lab-cloudflare.yml`): a ogni modifica di `crates/lab` su `main`, o a mano
+da Actions → Laboratorio su Cloudflare → Run workflow. Ricompila `lab.wasm`, pubblica e
+imposta i segreti. Segreti del repository (Settings → Secrets and variables → Actions):
+
+| Segreto | Da dove |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare → My Profile → API Tokens → Create Token → modello "Edit Cloudflare Workers" |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare → Workers & Pages → Account ID nella colonna di destra |
+| `LAB_SALE` | un testo casuale lungo, da non cambiare più (altrimenti gli stessi IP cambiano codice) |
+| `LAB_CHIAVE_EXPORT` | un'altra parola segreta, per scaricare le partite |
+
+L'indirizzo del sito compare nel riepilogo del workflow (`https://briscola-lab.<nome>.workers.dev`).
+
+Prova in locale: `cd crates/lab/cloudflare && npm ci && npx wrangler dev` con un file
+`.dev.vars` che contiene `SALE=...` e `CHIAVE_EXPORT=...`. Senza server basta
+`python3 -m http.server -d crates/lab/web 8000`: le partite restano nel browser.
 
 ## Privacy
 

@@ -1,0 +1,53 @@
+name: Laboratorio su Cloudflare
+
+# Pubblica il sito delle partite vere (crates/lab) su Cloudflare Workers.
+# Segreti del repository richiesti: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID,
+# LAB_SALE (testo casuale lungo per trasformare gli IP in codici), LAB_CHIAVE_EXPORT.
+# Senza segreti il job salta la pubblicazione e finisce verde.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["crates/lab/**", "crates/core/**", ".github/workflows/lab-cloudflare.yml"]
+
+jobs:
+  pubblica:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Segreti presenti?
+        id: segreti
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then echo "ok=1" >> "$GITHUB_OUTPUT"; else echo "::notice::Segreti Cloudflare mancanti: niente pubblicazione."; fi
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.segreti.outputs.ok == '1'
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        if: steps.segreti.outputs.ok == '1'
+      - name: Test del laboratorio e motore in WebAssembly
+        if: steps.segreti.outputs.ok == '1'
+        run: |
+          cargo test --release -p briscola-lab
+          ./crates/lab/costruisci.sh
+      - uses: actions/setup-node@v4
+        if: steps.segreti.outputs.ok == '1'
+        with:
+          node-version: 22
+      - name: Pubblica
+        if: steps.segreti.outputs.ok == '1'
+        working-directory: crates/lab/cloudflare
+        env:
+          LAB_SALE: ${{ secrets.LAB_SALE }}
+          LAB_CHIAVE_EXPORT: ${{ secrets.LAB_CHIAVE_EXPORT }}
+        run: |
+          npm ci --no-audit --no-fund
+          npx wrangler deploy | tee deploy.log
+          if [ -n "$LAB_SALE" ]; then printf '%s' "$LAB_SALE" | npx wrangler secret put SALE; fi
+          if [ -n "$LAB_CHIAVE_EXPORT" ]; then printf '%s' "$LAB_CHIAVE_EXPORT" | npx wrangler secret put CHIAVE_EXPORT; fi
+          url=$(grep -o 'https://[^ ]*workers.dev' deploy.log | head -1)
+          echo "Sito pubblicato: $url" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,23 @@
+# Sito del laboratorio su Cloudflare: la cartella ../web come file statici, più un piccolo
+# server (src/index.js) che riceve le partite finite e le salva in un Durable Object con SQLite.
+# Nessuna risorsa da creare a mano: basta `wrangler deploy` (o il workflow GitHub lab-cloudflare).
+name = "briscola-lab"
+main = "src/index.js"
+compatibility_date = "2025-09-24"
+
+[assets]
+directory = "../web"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[durable_objects.bindings]]
+name = "ARCHIVIO"
+class_name = "Archivio"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Archivio"]
+
+# Segreti (wrangler secret put, o il workflow dai segreti GitHub):
+#   SALE           testo casuale lungo: con questo l'IP diventa un codice, e l'IP non si salva mai
+#   CHIAVE_EXPORT  chiave per scaricare le partite da /api/esporta?chiave=...

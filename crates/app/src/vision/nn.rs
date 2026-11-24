@@ -149,8 +149,25 @@ fn log_softmax(v: &[f32]) -> Vec<f32> {
     v.iter().map(|x| x - s).collect()
 }
 
-/// Per ogni carta, il logaritmo della probabilità che la rete le dà (None se la rete non c'è).
+/// La rete guarda anche la carta capovolta (le carte italiane sono quasi simmetriche) e si fa la
+/// media delle due risposte: più partite lette per intero senza conferme (esperimento E2b in
+/// `docs/SPERIMENTAZIONE-RICONOSCIMENTO.md`). Nelle prove `SENZA_TTA=1` torna alla sola carta.
 pub fn log_probs(card: &Img) -> Option<[f32; 40]> {
+    let one = log_probs_once(card)?;
+    if cfg!(test) && std::env::var_os("SENZA_TTA").is_some() {
+        return Some(one);
+    }
+    let mut flipped = card.clone();
+    flipped.px.reverse();
+    let two = log_probs_once(&flipped)?;
+    // Media delle probabilità, rinormalizzata.
+    let p: [f32; 40] = std::array::from_fn(|c| 0.5 * (one[c].exp() + two[c].exp()));
+    let z: f32 = p.iter().sum();
+    Some(p.map(|v| (v / z).max(1e-12).ln()))
+}
+
+/// Per ogni carta, il logaritmo della probabilità che la rete le dà (None se la rete non c'è).
+fn log_probs_once(card: &Img) -> Option<[f32; 40]> {
     let net = net()?;
     if card.w != CARD_W || card.h != CARD_H {
         return None;

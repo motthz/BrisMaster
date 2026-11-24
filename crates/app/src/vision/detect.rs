@@ -734,7 +734,11 @@ const RATIO: f32 = 0.62;
 
 /// Proporzioni (lato corto / lato lungo) accettate per una carta intera.
 fn card_shaped(r: &RotRect) -> bool {
-    (0.52..=0.76).contains(&(r.short() / r.long()))
+    // (Esperimento, solo nelle prove: `SPER_STRETTE=0.48` accetta carte più strette, come le
+    // piacentine e le trevigiane.)
+    static LOW: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    let low = *LOW.get_or_init(|| if cfg!(test) { std::env::var("SPER_STRETTE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.52) } else { 0.52 });
+    (low..=0.76).contains(&(r.short() / r.long()))
 }
 
 /// Come `card_shaped`, per le carte disegnate stirate dal sito (più strette o quasi quadrate).

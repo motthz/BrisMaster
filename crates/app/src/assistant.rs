@@ -467,6 +467,9 @@ struct Vision {
     to_learn: Vec<(Card, Img, [f32; 2])>,
     /// Le carte della lettura prima, dove stavano e i loro punteggi accumulati (vedi `smooth`).
     acc_views: Vec<([f32; 4], [f32; 40], f32)>,
+    /// Esperimento E1 (`SPER_MIGLIORE=1`, solo nelle prove): per ogni carta ferma, la lettura
+    /// della schermata in cui somigliava di più a una carta di riferimento (posto, punteggi, somiglianza).
+    best_views: Vec<([f32; 4], [f32; 40], f32)>,
     /// Le carte della lettura prima (quale e dove) e la misura delle carte ferme.
     prev_views: Vec<(Card, [f32; 4])>,
     card_size: (f32, f32),
@@ -1769,6 +1772,32 @@ impl Assistant {
             next.push((v.at, v.scores, detail));
         }
         self.vision.acc_views = next;
+        // Esperimento E1: la lettura migliore della carta ferma invece della media delle letture.
+        if cfg!(test) && std::env::var_os("SPER_MIGLIORE").is_some() {
+            let prev = std::mem::take(&mut self.vision.best_views);
+            let mut next = Vec::new();
+            for v in out.opp_slot.iter_mut().chain(out.my_slot.iter_mut()).chain(out.hand.iter_mut()) {
+                let (w, h) = size(v);
+                if h <= 0.0 {
+                    continue;
+                }
+                let quality = v.sim.iter().copied().fold(f32::MIN, f32::max);
+                let same = prev.iter().find(|(at, _, _)| {
+                    (at[0] + at[2] - v.at[0] - v.at[2]).abs() < 0.12 * w
+                        && (at[1] + at[3] - v.at[1] - v.at[3]).abs() < 0.12 * h
+                        && ((at[2] - at[0]) / w - 1.0).abs() < 0.06
+                        && ((at[3] - at[1]) / h - 1.0).abs() < 0.06
+                });
+                match same {
+                    Some((_, scores, q)) if *q > quality => {
+                        v.scores = *scores;
+                        next.push((v.at, *scores, *q));
+                    }
+                    _ => next.push((v.at, v.scores, quality)),
+                }
+            }
+            self.vision.best_views = next;
+        }
         // Mentre non si pesca la mano ha solo carte mie: una carta "nuova" dello stesso seme di una
         // mia carta che in questa lettura non si vede è quella, letta male.
         if matches!(self.pos.step(), Step::MyMove | Step::OppMove) && out.hand.len() == self.pos.hand.len() as usize {
@@ -2583,6 +2612,9 @@ impl Assistant {
             Step::Trump | Step::Over => None,
             Step::First => {
                 let Some(who) = sights.first_player(&pos) else { return false };
+                if cfg!(test) && std::env::var_os("DEBUG_PASSI").is_some() {
+                    eprintln!("PRIMO f{} chi {who} a_mano_alla_prima {:?} prima {:?}", sights.frame, sights.hand_at_first_play, sights.first_table_card(&pos).map(cards::short));
+                }
                 self.set_first(who);
                 return true;
             }
@@ -2644,6 +2676,9 @@ impl Assistant {
                 sights.next_opp_play(&pos, scene)
             }
         };
+        if cfg!(test) && std::env::var_os("DEBUG_PASSI").is_some() {
+            eprintln!("PASSO f{} {:?} evento {:?}", sights.frame, pos.step(), event.map(|e| (cards::short(e.0), e.1)));
+        }
         let (card, sure) = if let Some(e) = event {
             e
         } else {
@@ -4368,9 +4403,15 @@ impl Sightings {
         let opening = pos.tricks == 0 && pos.first == Some(ME) && pos.table.is_none();
         let lead = if opening { self.first_table_card(pos) } else { None };
         let phantom = |c: Card| self.phantoms.get(c as usize).is_some_and(|&n| n >= 2);
-        let sure = (0..40u8)
-            .filter(|&c| allowed.contains(c) && self.in_hand(c) && !phantom(c))
-            .min_by_key(|&c| self.hand[c as usize].first);
+        // Alla distribuzione iniziale una carta vista in mano solo prima che arrivassero le altre,
+        // che non si vede più e non è mai comparsa in tavola, era una lettura falsa (per esempio un
+        // pezzo di un pannello bianco letto come carta): si pescano prima le carte viste
+        // nell'ultima lettura.
+        let held: Vec<Card> = (0..40u8).filter(|&c| allowed.contains(c) && self.in_hand(c) && !phantom(c)).collect();
+        let newest = held.iter().map(|&c| self.hand[c as usize].last).max().unwrap_or(0);
+        let stale = |c: Card| pos.tricks == 0 && self.hand[c as usize].last < newest && !self.glimpsed(c);
+        let fresh = held.iter().any(|&c| !stale(c));
+        let sure = held.iter().copied().filter(|&c| !(fresh && stale(c))).min_by_key(|&c| self.hand[c as usize].first);
         // Devo ancora pescare ma la presa dopo è già cominciata: per l'ordine di gioco la mia carta
         // è la prima comparsa in tavola se apro io, la seconda se apre l'avversario. Se non è fra
         // quelle che so di avere, è proprio la pescata (giocata prima che la vedessi in mano).
@@ -6087,6 +6128,120 @@ mod tests {
         }
         assert_eq!(a.pos.table, Some(c(3, 2)));
         assert_eq!(a.pos.trump_card, Some(c(0, 8)));
+    }
+
+    /// Banco della prima lettura (esperimento E0, docs/SPERIMENTAZIONE-RICONOSCIMENTO.md): per
+    /// ogni carta che compare sullo schermo in un ruolo (mano, briscola, tavolo), se la lettura di
+    /// quella stessa schermata la dà giusta, e se la dà giusta con sicurezza (distacco ≥ 1.4, cioè
+    /// entrerebbe senza chiedere). Conta anche gli errori sicuri (una carta sbagliata letta con
+    /// distacco ≥ 1.4) su tutte le letture. Solo visione: niente assistente, niente memoria del
+    /// sito (ogni partita parte da zero), niente utente.
+    /// `PARTITE=cartella cargo test --release -p brismaster prima_lettura -- --ignored --nocapture`
+    /// (PRIMA_CSV=file scrive ogni lettura: partita, schermata, ruolo, carta vera, carta letta, distacco).
+    #[test]
+    #[ignore]
+    fn prima_lettura() {
+        let root = std::path::PathBuf::from(std::env::var("PARTITE").expect("PARTITE=cartella"));
+        let by_name = |n: &str| (0..40u8).find(|&c| cards::name(c) == n);
+        let mut csv = std::env::var("PRIMA_CSV").ok().map(|p| std::fs::File::create(p).unwrap());
+        let mut dirs: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.join("verita.json").exists()).collect();
+        dirs.sort();
+        // Totali: [comparse, giuste subito, sicure e giuste subito, giuste entro 3 letture,
+        // letture, letture giuste, letture sicure sbagliate, carte vere non trovate nella lettura]
+        let mut tot = [0usize; 8];
+        // Per ruolo (mano, briscola, tavolo): comparse, giuste subito, sicure e giuste subito.
+        let mut by_role = [[0usize; 3]; 3];
+        for dir in dirs {
+            let log: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(dir.join("verita.json")).unwrap()).unwrap();
+            crate::vision::detect::forget_reading_state();
+            let mem = Mutex::new(crate::vision::memory::Memory::in_memory());
+            let name = dir.file_name().unwrap().to_string_lossy().to_string();
+            // (ruolo, carta) già comparse; e le comparse in attesa di una lettura giusta (entro 3).
+            let mut seen: std::collections::HashSet<(usize, Card)> = Default::default();
+            let mut pending: Vec<(usize, Card, usize)> = Vec::new();
+            let mut g = [0usize; 8];
+            let mut card_px = 0u32;
+            for (idx, e) in log.iter().enumerate() {
+                let f = e["frame"].as_str().unwrap();
+                let file = [format!("{f}.png"), format!("{f}.jpg")].into_iter().map(|n| dir.join(n)).find(|p| p.exists()).unwrap();
+                let img = crate::vision::capture::load_png(&file).unwrap();
+                let k = crate::vision::shrink_factor(img.w, card_px);
+                let img = crate::vision::shrink_by(img, k);
+                let names = |key: &str| -> Vec<Card> {
+                    e[key].as_array().map(|a| a.iter().filter_map(|v| by_name(v.as_str()?)).collect()).unwrap_or_default()
+                };
+                let hand = names("hand");
+                let table: Vec<Card> = e["trick"].as_array().map(|a| a.iter().filter_map(|t| by_name(t["card"].as_str()?)).collect()).unwrap_or_default();
+                let trump: Vec<Card> = e["trump"].as_str().and_then(by_name).into_iter().collect();
+                let scene = crate::vision::read_briscola(&img, &mem);
+                card_px = (crate::vision::detect::last_card_l() * k as f32).round() as u32;
+                // Le letture per ruolo: (carta, distacco).
+                let mut reads: [Vec<(Card, f32)>; 3] = Default::default();
+                if let Some(s) = &scene {
+                    let best = |v: &CardView| v.best(CardSet::FULL);
+                    reads[0] = s.hand.iter().filter_map(best).collect();
+                    reads[1] = s.trump.iter().filter_map(best).collect();
+                    reads[2] = s.opp_slot.iter().chain(&s.my_slot).filter_map(best).collect();
+                }
+                let truth = [&hand, &trump, &table];
+                for role in 0..3 {
+                    for &(c, m) in &reads[role] {
+                        let right = truth[role].contains(&c);
+                        g[4] += 1;
+                        g[5] += right as usize;
+                        g[6] += (!right && m >= AUTO_MARGIN) as usize;
+                        if let Some(w) = csv.as_mut() {
+                            use std::io::Write;
+                            let _ = writeln!(w, "{name},{f},{role},{},{},{m:.2}", if right { cards::short(c) } else { "?".into() }, cards::short(c));
+                        }
+                    }
+                    for &c in truth[role] {
+                        let got = reads[role].iter().find(|r| r.0 == c);
+                        g[7] += got.is_none() as usize;
+                        if seen.insert((role, c)) {
+                            g[0] += 1;
+                            g[1] += got.is_some() as usize;
+                            g[2] += got.is_some_and(|r| r.1 >= AUTO_MARGIN) as usize;
+                            by_role[role][0] += 1;
+                            by_role[role][1] += got.is_some() as usize;
+                            by_role[role][2] += got.is_some_and(|r| r.1 >= AUTO_MARGIN) as usize;
+                            if got.is_some() {
+                                g[3] += 1;
+                            } else {
+                                pending.push((role, c, idx));
+                            }
+                        }
+                    }
+                }
+                pending.retain(|&(role, c, at)| {
+                    if reads[role].iter().any(|r| r.0 == c) {
+                        g[3] += 1;
+                        false
+                    } else {
+                        idx < at + 2
+                    }
+                });
+            }
+            println!(
+                "{name}: comparse {} · giuste subito {} · sicure subito {} · entro 3 letture {} · letture {} giuste {} · sicure sbagliate {} · non trovate {}",
+                g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]
+            );
+            for i in 0..8 {
+                tot[i] += g[i];
+            }
+        }
+        let pc = |a: usize, b: usize| 100.0 * a as f32 / b.max(1) as f32;
+        println!(
+            "== PRIMA LETTURA: comparse {} · giuste subito {:.1}% · sicure e giuste subito {:.1}% · giuste entro 3 letture {:.1}%",
+            tot[0], pc(tot[1], tot[0]), pc(tot[2], tot[0]), pc(tot[3], tot[0])
+        );
+        println!(
+            "== LETTURE: {} · giuste {:.1}% · sicure sbagliate {} ({:.2}%) · carte vere non trovate {}",
+            tot[4], pc(tot[5], tot[4]), tot[6], pc(tot[6], tot[4]), tot[7]
+        );
+        for (r, label) in ["mano", "briscola", "tavolo"].iter().enumerate() {
+            println!("== {label}: comparse {} · giuste subito {:.1}% · sicure {:.1}%", by_role[r][0], pc(by_role[r][1], by_role[r][0]), pc(by_role[r][2], by_role[r][0]));
+        }
     }
 
     /// Partite registrate dal tavolo di prova (una schermata ogni 350 ms, con la situazione vera):

@@ -1523,8 +1523,8 @@ const MIN_CARD_PX: usize = 110;
 /// perde bordi e angoli (docs/SPERIMENTAZIONE-RICONOSCIMENTO.md §3.8).
 const GROW_BELOW: u32 = 80;
 
-/// Le carte ingrandite diventano lunghe tanto (al più il doppio).
-const GROW_TO: f32 = MIN_CARD_PX as f32;
+/// Le carte ingrandite diventano lunghe tanto (al più il doppio): misurato meglio di 110 (§3.8).
+const GROW_TO: f32 = 150.0;
 
 /// Al più tanti pixel nella schermata ingrandita (la lettura resta veloce).
 const GROW_MAX_PX: f32 = 3_200_000.0;

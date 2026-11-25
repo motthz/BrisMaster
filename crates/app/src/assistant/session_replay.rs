@@ -1,6 +1,6 @@
 //! Banco di replay offline: le verità del tavolo non entrano nell'assistente.
 use super::*;
-use crate::vision::{capture, detect, forget_focus, shrink_by, shrink_factor};
+use crate::vision::{capture, detect, for_reading, forget_focus};
 use briscola_core::Game;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -124,6 +124,7 @@ struct Report {
 struct Session {
     assistant: Assistant,
     card_px: u32,
+    scale: f32,
     sequence: u64,
     capture_size: Option<(usize, usize)>,
     last_image: Option<Img>,
@@ -144,6 +145,7 @@ impl Session {
         Self {
             assistant,
             card_px: 0,
+            scale: 1.0,
             sequence: 0,
             capture_size: None,
             last_image: None,
@@ -155,7 +157,7 @@ impl Session {
 
     fn capture(&mut self, ms: u64, image: Option<&Img>, geometry_changed: bool) {
         let reading = if let Some(img) = image {
-            let k = shrink_factor(img.w, self.card_px);
+
             let size = (img.w, img.h);
             if geometry_changed || self.capture_size != Some(size) {
                 forget_focus();
@@ -163,18 +165,19 @@ impl Session {
                 self.last_image = None;
                 self.last_scene = None;
             }
-            let reduced = shrink_by(img.clone(), k);
+            let (reduced, k) = for_reading(img.clone(), self.card_px, self.scale);
+            self.scale = k;
             let same = self.last_image.as_ref().is_some_and(|old| {
                 old.w == reduced.w && old.h == reduced.h && old.px == reduced.px
             });
             if !same {
                 self.last_scene = read_briscola(&reduced, &self.assistant.vision.memory);
-                if k > 1 {
+                if k > 1.0 {
                     if let Some(scene) = &mut self.last_scene {
                         crate::vision::Located::refine_native(scene, img);
                     }
                 }
-                self.card_px = (detect::last_card_l() * k as f32).round() as u32;
+                self.card_px = (detect::last_card_l() * k).round() as u32;
                 self.last_image = Some(reduced);
             }
             self.sequence += 1;

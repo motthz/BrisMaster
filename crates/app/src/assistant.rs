@@ -6372,12 +6372,13 @@ mod tests {
             let mut pending: Vec<(usize, Card, usize)> = Vec::new();
             let mut g = [0usize; 8];
             let mut card_px = 0u32;
+            let mut scale = 1.0f32;
             for (idx, e) in log.iter().enumerate() {
                 let f = e["frame"].as_str().unwrap();
                 let file = [format!("{f}.png"), format!("{f}.jpg")].into_iter().map(|n| dir.join(n)).find(|p| p.exists()).unwrap();
                 let img = zoomed(crate::vision::capture::load_png(&file).unwrap(), zoom);
-                let k = crate::vision::shrink_factor(img.w, card_px);
-                let img = crate::vision::shrink_by(img, k);
+                let (img, k) = crate::vision::for_reading(img, card_px, scale);
+                scale = k;
                 let names = |key: &str| -> Vec<Card> {
                     e[key].as_array().map(|a| a.iter().filter_map(|v| by_name(v.as_str()?)).collect()).unwrap_or_default()
                 };
@@ -6385,7 +6386,7 @@ mod tests {
                 let table: Vec<Card> = e["trick"].as_array().map(|a| a.iter().filter_map(|t| by_name(t["card"].as_str()?)).collect()).unwrap_or_default();
                 let trump: Vec<Card> = e["trump"].as_str().and_then(by_name).into_iter().collect();
                 let scene = crate::vision::read_briscola(&img, &mem);
-                card_px = (crate::vision::detect::last_card_l() * k as f32).round() as u32;
+                card_px = (crate::vision::detect::last_card_l() * k).round() as u32;
                 // Le letture per ruolo: (carta, distacco).
                 let mut reads: [Vec<(Card, f32)>; 3] = Default::default();
                 if let Some(s) = &scene {
@@ -6434,7 +6435,7 @@ mod tests {
                 });
             }
             println!(
-                "{name}: comparse {} · giuste subito {} · sicure subito {} · entro 3 letture {} · letture {} giuste {} · sicure sbagliate {} · non trovate {}",
+                "{name}: comparse {} · giuste subito {} · sicure subito {} · entro 3 letture {} · letture {} giuste {} · sicure sbagliate {} · non trovate {} · carte {card_px} px",
                 g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]
             );
             for i in 0..8 {
@@ -6604,13 +6605,14 @@ mod tests {
                 }
             };
             let mut card_px = 0u32;
+            let mut scale = 1.0f32;
             for &(idx, extra, at) in &seq {
                 let e = &log[idx];
                 let f = e["frame"].as_str().unwrap();
                 // Come nell'app: le schermate grandi si rimpiccioliscono se le carte restano grandi.
                 let img = load(idx);
-                let k = crate::vision::shrink_factor(img.w, card_px);
-                let img = crate::vision::shrink_by(img, k);
+                let (img, k) = crate::vision::for_reading(img, card_px, scale);
+                scale = k;
                 let truth_hand: Vec<Card> = e["hand"]
                     .as_array()
                     .unwrap()
@@ -6625,7 +6627,7 @@ mod tests {
                     .collect();
                 let trump = by_name(e["trump"].as_str().unwrap()).unwrap();
                 let scene = read_briscola(&img, &a.vision.memory);
-                card_px = (crate::vision::detect::last_card_l() * k as f32).round() as u32;
+                card_px = (crate::vision::detect::last_card_l() * k).round() as u32;
                 if scene.is_none() {
                     a.lost_table();
                 }

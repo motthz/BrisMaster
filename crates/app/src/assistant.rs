@@ -6313,6 +6313,15 @@ mod tests {
 
     /// La schermata come la darebbe il sito ingrandito o rimpicciolito di `zoom` volte.
     fn zoomed(img: Img, zoom: f32) -> Img {
+        let img = zoomed_only(img, zoom);
+        // INGRANDISCI=f: la schermata ingrandita prima della lettura (esperimento).
+        match std::env::var("INGRANDISCI").ok().and_then(|v| v.parse::<f32>().ok()) {
+            Some(f) if f > 1.01 => crate::vision::grow_by(&img, f),
+            _ => img,
+        }
+    }
+
+    fn zoomed_only(img: Img, zoom: f32) -> Img {
         if (zoom - 1.0).abs() <= 0.01 {
             return img;
         }

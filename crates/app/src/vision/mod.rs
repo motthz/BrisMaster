@@ -1517,6 +1517,19 @@ pub fn shrink_factor(w: usize, card_px: u32) -> usize {
 /// Le carte, nella schermata rimpicciolita, restano lunghe almeno tanto.
 const MIN_CARD_PX: usize = 110;
 
+/// Ingrandisce di `f` volte per lato (interpolazione lineare): con le carte piccole il
+/// rilevamento lavora su carte della grandezza per cui è fatto.
+pub fn grow_by(img: &Img, f: f32) -> Img {
+    let (w, h) = ((img.w as f32 * f) as usize, (img.h as f32 * f) as usize);
+    let mut out = Img::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            out.px[y * w + x] = img.sample((x as f32 + 0.5) / f - 0.5, (y as f32 + 0.5) / f - 0.5);
+        }
+    }
+    out
+}
+
 /// Rimpicciolisce di `k` volte per lato.
 pub fn shrink_by(img: Img, k: usize) -> Img {
     if k <= 1 {

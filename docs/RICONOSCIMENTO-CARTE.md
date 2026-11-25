@@ -449,11 +449,16 @@ much it is worth:
 | `SENZA_PRESA_DOPO` | an opponent card seen after my card of the next trick is not their answer in this trick |
 | `SENZA_TAVOLA_PARZIALE` | covered or overlapping table cards count less (margin × 0.6) |
 | `SENZA_ANGOLO`, `SENZA_BRISCOLA_DRITTA` | a card with a corner covered by another; the trump upright beside the deck |
+| `SENZA_FANTASMA` | a card read in my hand only before a new full hand appeared, never seen on the table, is a false reading and is not drawn later |
+| `SENZA_INGRANDIRE` | the screenshot is enlarged before reading when the cards are shorter than 80 px (up to 150 px, at most twice, at most 3.2 Mpx) |
 
 Other variables:
 
 - `NN_DA` and `NN_K`: from what similarity downwards the network counts, and how much.
 - `ADOPT`: the last-resort delay, in ticks.
+- `INGRANDISCI_SOTTO` and `INGRANDISCI_A`: below what card length (px) the screenshot is enlarged, and to what length.
+- `ZOOM=f` (benchmarks `partite_registrate` and `prima_lettura`): the recorded screenshots as the site would give them zoomed by `f`; `INGRANDISCI=f` enlarges them again by `f` before reading.
+- `WARP_MEDIA`, `WARP_CUBICA`, `WARP_NITIDA=amount`: straightening the card with several samples per pixel, bicubic, or sharpened. Measured in 0.6.19 and kept switched off: no gain.
 - Experiments kept switched off (results in `docs/SPERIMENTAZIONE-RICONOSCIMENTO.md`):
   `SPER_MIGLIORE`, `SPER_STRETTE`, `SPER_SBIADITE`; `PRIMA_CSV` with the `prima_lettura` benchmark
   writes every reading, analysed by `scripts/prima-lettura.py`.

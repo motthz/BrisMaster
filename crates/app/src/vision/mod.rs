@@ -1523,6 +1523,9 @@ const MIN_CARD_PX: usize = 110;
 /// perde bordi e angoli (docs/SPERIMENTAZIONE-RICONOSCIMENTO.md §3.8).
 const GROW_BELOW: u32 = 80;
 
+/// Le carte ingrandite diventano lunghe tanto (al più il doppio).
+const GROW_TO: f32 = MIN_CARD_PX as f32;
+
 /// Al più tanti pixel nella schermata ingrandita (la lettura resta veloce).
 const GROW_MAX_PX: f32 = 3_200_000.0;
 
@@ -1541,7 +1544,8 @@ pub fn grow_factor(w: usize, h: usize, card_px: u32, grown: bool) -> f32 {
     if card_px == 0 || card_px >= below + if grown { 10 } else { 0 } {
         return 1.0;
     }
-    let f = (MIN_CARD_PX as f32 / card_px as f32).min(2.0).min((GROW_MAX_PX / (w * h).max(1) as f32).sqrt());
+    let target = if cfg!(test) { std::env::var("INGRANDISCI_A").ok().and_then(|v| v.parse().ok()).unwrap_or(GROW_TO) } else { GROW_TO };
+    let f = (target / card_px as f32).min(2.0).min((GROW_MAX_PX / (w * h).max(1) as f32).sqrt());
     if f < 1.15 { 1.0 } else { f }
 }
 

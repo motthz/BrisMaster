@@ -6373,6 +6373,7 @@ mod tests {
             let mut g = [0usize; 8];
             let mut card_px = 0u32;
             let mut scale = 1.0f32;
+            let (mut max_px, mut grown) = (0u32, 0usize);
             for (idx, e) in log.iter().enumerate() {
                 let f = e["frame"].as_str().unwrap();
                 let file = [format!("{f}.png"), format!("{f}.jpg")].into_iter().map(|n| dir.join(n)).find(|p| p.exists()).unwrap();
@@ -6387,6 +6388,8 @@ mod tests {
                 let trump: Vec<Card> = e["trump"].as_str().and_then(by_name).into_iter().collect();
                 let scene = crate::vision::read_briscola(&img, &mem);
                 card_px = (crate::vision::detect::last_card_l() * k).round() as u32;
+                max_px = max_px.max(card_px);
+                grown += (k < 1.0) as usize;
                 // Le letture per ruolo: (carta, distacco).
                 let mut reads: [Vec<(Card, f32)>; 3] = Default::default();
                 if let Some(s) = &scene {
@@ -6435,7 +6438,7 @@ mod tests {
                 });
             }
             println!(
-                "{name}: comparse {} · giuste subito {} · sicure subito {} · entro 3 letture {} · letture {} giuste {} · sicure sbagliate {} · non trovate {} · carte {card_px} px",
+                "{name}: comparse {} · giuste subito {} · sicure subito {} · entro 3 letture {} · letture {} giuste {} · sicure sbagliate {} · non trovate {} · carte {max_px} px · ingrandite {grown}",
                 g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]
             );
             for i in 0..8 {

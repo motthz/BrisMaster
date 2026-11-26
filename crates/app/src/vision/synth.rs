@@ -52,6 +52,18 @@ pub struct Look {
     /// Schermo a bassa risoluzione: le carte si disegnano a questa frazione della risoluzione e
     /// poi si riportano alla misura (pixel grossi e sfocati, come un sito rimpicciolito).
     pub lowres: f32,
+    /// Raggio degli angoli arrotondati delle carte (frazione della larghezza; 0 angoli vivi).
+    pub rounded: f32,
+    /// Alone colorato attorno alle carte della mano (carte giocabili evidenziate), in pixel.
+    pub glow: f32,
+    /// Carte della mano scurite (non è il mio turno): fattore di luminosità (1 niente).
+    pub dim: f32,
+    /// Ombra morbida sotto le carte: spostamento in pixel (0 solo il filo d'ombra).
+    pub shadow: f32,
+    /// Colore dei dorsi (None: rosso a quadretti).
+    pub back: Option<[u8; 3]>,
+    /// Carte senza bordo bianco: il disegno arriva fino al taglio (ritaglio della frazione).
+    pub bleed: f32,
 }
 
 /// Disposizione delle carte giocate.
@@ -88,6 +100,12 @@ impl Default for Look {
             trump_upright: false,
             table: Table::Classic,
             lowres: 1.0,
+            rounded: 0.0,
+            glow: 0.0,
+            dim: 1.0,
+            shadow: 0.0,
+            back: None,
+            bleed: 0.0,
         }
     }
 }
@@ -153,7 +171,41 @@ fn tint(p: [u8; 3], look: &Look) -> [u8; 3] {
 
 /// Disegna un'immagine (una carta o un dorso) di `w` x `h` centrata in (cx, cy), girata di
 /// `angle` gradi, con un filo d'ombra attorno. `paint` dà il colore di un punto (u, v) in 0..1.
-fn draw(img: &mut Img, cx: f32, cy: f32, w: f32, h: f32, angle: f32, paint: &dyn Fn(f32, f32) -> [u8; 3]) {
+/// Fuori dagli angoli arrotondati di raggio `r` pixel (coordinate u, v in 0..1).
+fn outside_corner(u: f32, v: f32, w: f32, h: f32, r: f32) -> bool {
+    if r <= 0.0 {
+        return false;
+    }
+    let (x, y) = (u * w, v * h);
+    let dx = if x < r { r - x } else if x > w - r { x - (w - r) } else { 0.0 };
+    let dy = if y < r { r - y } else if y > h - r { y - (h - r) } else { 0.0 };
+    dx > 0.0 && dy > 0.0 && dx.hypot(dy) > r
+}
+
+/// Un rettangolo ruotato che scurisce (o tinge) quello che c'è sotto: ombre e aloni.
+fn shade(img: &mut Img, cx: f32, cy: f32, w: f32, h: f32, angle: f32, r: f32, soft: f32, color: [u8; 3], strength: f32) {
+    let (s, c) = angle.to_radians().sin_cos();
+    let ext = ((w + 2.0 * soft).hypot(h + 2.0 * soft) / 2.0 + 2.0) as isize;
+    for y in (cy as isize - ext).max(0)..(cy as isize + ext).min(H as isize) {
+        for x in (cx as isize - ext).max(0)..(cx as isize + ext).min(W as isize) {
+            let (dx, dy) = (x as f32 - cx, y as f32 - cy);
+            let (a, b) = (dx * c + dy * s, -dx * s + dy * c);
+            // Distanza dal rettangolo (arrotondato).
+            let qx = (a.abs() - (w / 2.0 - r)).max(0.0);
+            let qy = (b.abs() - (h / 2.0 - r)).max(0.0);
+            let d = (qx.hypot(qy) - r).max(0.0);
+            if d > soft {
+                continue;
+            }
+            let k = strength * if soft > 0.0 { 1.0 - d / soft } else { 1.0 };
+            let i = y as usize * W + x as usize;
+            let q = img.px[i];
+            img.px[i] = [0, 1, 2].map(|ch| (q[ch] as f32 * (1.0 - k) + color[ch] as f32 * k).round() as u8);
+        }
+    }
+}
+
+fn draw_round(img: &mut Img, cx: f32, cy: f32, w: f32, h: f32, angle: f32, r: f32, paint: &dyn Fn(f32, f32) -> [u8; 3]) {
     let (s, c) = angle.to_radians().sin_cos();
     let ext = (w.hypot(h) / 2.0 + 4.0) as isize;
     for y in (cy as isize - ext).max(0)..(cy as isize + ext).min(H as isize) {
@@ -164,8 +216,10 @@ fn draw(img: &mut Img, cx: f32, cy: f32, w: f32, h: f32, angle: f32, paint: &dyn
             let (u, v) = (a / w + 0.5, b / h + 0.5);
             let i = y as usize * W + x as usize;
             if (0.0..1.0).contains(&u) && (0.0..1.0).contains(&v) {
-                img.px[i] = paint(u, v);
-            } else if (-2.0 / w..1.0 + 2.0 / w).contains(&u) && (-2.0 / h..1.0 + 2.0 / h).contains(&v) {
+                if !outside_corner(u, v, w, h, r) {
+                    img.px[i] = paint(u, v);
+                }
+            } else if r <= 0.0 && (-2.0 / w..1.0 + 2.0 / w).contains(&u) && (-2.0 / h..1.0 + 2.0 / h).contains(&v) {
                 // Ombra di due pixel.
                 img.px[i] = img.px[i].map(|p| (p as f32 * 0.6) as u8);
             }
@@ -174,24 +228,40 @@ fn draw(img: &mut Img, cx: f32, cy: f32, w: f32, h: f32, angle: f32, paint: &dyn
 }
 
 fn draw_card(img: &mut Img, card: &Img, look: &Look, cx: f32, cy: f32, h: f32, angle: f32) {
-    let w = h * look.aspect.unwrap_or(card.w as f32 / card.h as f32);
-    let paint = |u: f32, v: f32| tint(card.sample(u * (card.w - 1) as f32, v * (card.h - 1) as f32), look);
-    draw(img, cx, cy, w, h, angle, &paint);
+    draw_card_lit(img, card, look, cx, cy, h, angle, 1.0)
 }
 
-/// Un dorso rosso col bordo bianco.
-fn draw_back(img: &mut Img, cx: f32, cy: f32, w: f32, h: f32) {
+/// Una carta con gli effetti del sito: ombra, angoli arrotondati, senza bordo, scurita.
+fn draw_card_lit(img: &mut Img, card: &Img, look: &Look, cx: f32, cy: f32, h: f32, angle: f32, light: f32) {
+    let w = h * look.aspect.unwrap_or(card.w as f32 / card.h as f32);
+    let r = look.rounded * w;
+    if look.shadow > 0.0 {
+        let s = look.shadow;
+        shade(img, cx + s * 0.6, cy + s, w, h, angle, r, s * 1.5, [0, 0, 0], 0.55);
+    }
+    let b = look.bleed.clamp(0.0, 0.3);
+    let paint = |u: f32, v: f32| {
+        let (u, v) = (b + u * (1.0 - 2.0 * b), b + v * (1.0 - 2.0 * b));
+        let p = tint(card.sample(u * (card.w - 1) as f32, v * (card.h - 1) as f32), look);
+        if light < 1.0 { p.map(|c| (c as f32 * light) as u8) } else { p }
+    };
+    draw_round(img, cx, cy, w, h, angle, r, &paint);
+}
+
+/// Un dorso col bordo bianco: rosso a quadretti, o del colore del sito.
+fn draw_back_of(img: &mut Img, cx: f32, cy: f32, w: f32, h: f32, color: Option<[u8; 3]>, r: f32) {
     let paint = |u: f32, v: f32| {
         let edge = u.min(1.0 - u) * w < 4.0 || v.min(1.0 - v) * h < 4.0;
-        if edge {
-            [250, 250, 250]
-        } else if ((u * 12.0) as i32 + (v * 18.0) as i32) % 2 == 0 {
-            [170, 30, 40]
-        } else {
-            [140, 20, 32]
+        let check = ((u * 12.0) as i32 + (v * 18.0) as i32) % 2 == 0;
+        match color {
+            _ if edge => [250, 250, 250],
+            None if check => [170, 30, 40],
+            None => [140, 20, 32],
+            Some(c) if check => c,
+            Some(c) => c.map(|v| (v as f32 * 0.8) as u8),
         }
     };
-    draw(img, cx, cy, w, h, 0.0, &paint);
+    draw_round(img, cx, cy, w, h, 0.0, r, &paint);
 }
 
 /// Le scritte di testdata/scritte, con dove metterle (frazioni dello schermo). Il magenta è
@@ -275,30 +345,34 @@ pub fn table(deal: &Deal, look: &Look) -> Img {
     let w = h * look.aspect.unwrap_or(0.62);
     // I dorsi dell'avversario in alto.
     for k in 0..3 {
-        draw_back(&mut img, W as f32 / 2.0 + (k as f32 - 1.0) * (w + 8.0), h * 0.55 + 10.0, w, h);
+        draw_back_of(&mut img, W as f32 / 2.0 + (k as f32 - 1.0) * (w + 8.0), h * 0.55 + 10.0, w, h, look.back, look.rounded * w);
     }
     // Il mazzo e la briscola di traverso, a sinistra: la briscola sporge a destra del mazzo.
     let (ph, pw) = (h * look.pile, w * look.pile);
     let (deck_x, deck_y) = (W as f32 * look.pile_at[0], H as f32 * look.pile_at[1]);
     if let Some(t) = deal.trump {
-        let paint = |u: f32, v: f32| tint(t.sample(u * (t.w - 1) as f32, v * (t.h - 1) as f32), look);
+        let b = look.bleed.clamp(0.0, 0.3);
+        let paint = |u: f32, v: f32| {
+            let (u, v) = (b + u * (1.0 - 2.0 * b), b + v * (1.0 - 2.0 * b));
+            tint(t.sample(u * (t.w - 1) as f32, v * (t.h - 1) as f32), look)
+        };
         if look.trump_upright {
             // In piedi accanto al mazzo, verso il centro dello schermo, coperta in parte.
             let tw = ph * look.aspect.unwrap_or(t.w as f32 / t.h as f32);
             let side = if deck_x < W as f32 / 2.0 { 1.0 } else { -1.0 };
             let cx = deck_x + side * (pw / 2.0 + tw / 2.0 - look.cover * tw);
-            draw(&mut img, cx, deck_y, tw, ph, 0.0, &paint);
+            draw_round(&mut img, cx, deck_y, tw, ph, 0.0, look.rounded * tw, &paint);
         } else {
             // La briscola è lunga ph: ne resta coperta la frazione `cover`, sotto il mazzo.
             let left = deck_x + pw / 2.0 - look.cover * ph;
             let paint_h = ph;
             let tw = paint_h * look.aspect.unwrap_or(t.w as f32 / t.h as f32);
             // Girata di 90 gradi: la testa a destra.
-            draw(&mut img, left + paint_h / 2.0, deck_y, tw, paint_h, 90.0, &paint);
+            draw_round(&mut img, left + paint_h / 2.0, deck_y, tw, paint_h, 90.0, look.rounded * tw, &paint);
         }
     }
     if deal.deck {
-        draw_back(&mut img, deck_x, deck_y, pw, ph);
+        draw_back_of(&mut img, deck_x, deck_y, pw, ph, look.back, look.rounded * pw);
     }
     let (mx, my) = (W as f32 / 2.0, H as f32 / 2.0);
     let (opp_at, mine_at) = match look.table {
@@ -318,7 +392,12 @@ pub fn table(deal: &Deal, look: &Look) -> Img {
     let n = deal.hand.len() as f32;
     for (k, c) in deal.hand.iter().enumerate() {
         let off = k as f32 - (n - 1.0) / 2.0;
-        draw_card(&mut img, c, look, W as f32 / 2.0 + off * (w + 12.0), H as f32 - h * 0.55 - 10.0, h, off * look.fan);
+        let (cx, cy) = (W as f32 / 2.0 + off * (w + 12.0), H as f32 - h * 0.55 - 10.0);
+        if look.glow > 0.0 {
+            let cw = h * look.aspect.unwrap_or(c.w as f32 / c.h as f32);
+            shade(&mut img, cx, cy, cw, h, off * look.fan, look.rounded * cw, look.glow, [255, 215, 40], 0.9);
+        }
+        draw_card_lit(&mut img, c, look, cx, cy, h, off * look.fan, look.dim);
     }
     if look.lowres < 0.99 {
         // Giù a bassa risoluzione (media dei punti) e di nuovo su (punto più vicino).

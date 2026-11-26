@@ -1,5 +1,5 @@
 {
-    "aggiornato":  "2026-11-26T18:01:31Z",
+    "aggiornato":  "2026-11-26T18:34:58Z",
     "reti":  [
                  {
                      "hidden":  1024,
@@ -23,22 +23,22 @@
                  },
                  {
                      "hidden":  2048,
-                     "stato":  "in corso",
-                     "partite":  16834560,
+                     "stato":  "finita",
+                     "partite":  17006592,
                      "obiettivo":  17000000,
-                     "partite_min":  40289,
-                     "ore_rimaste":  0.07,
+                     "partite_min":  40173,
+                     "ore_rimaste":  0,
                      "inizio":  "2026-11-24T19:47:50Z",
-                     "fine":  null
+                     "fine":  "2026-11-26T18:06:23Z"
                  },
                  {
                      "hidden":  512,
-                     "stato":  "in coda",
-                     "partite":  0,
+                     "stato":  "in corso",
+                     "partite":  3276800,
                      "obiettivo":  17000000,
-                     "partite_min":  null,
-                     "ore_rimaste":  null,
-                     "inizio":  null,
+                     "partite_min":  117448,
+                     "ore_rimaste":  1.95,
+                     "inizio":  "2026-11-26T18:06:23Z",
                      "fine":  null
                  },
                  {

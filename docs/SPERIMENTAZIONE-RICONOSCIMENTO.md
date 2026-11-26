@@ -242,6 +242,48 @@ Gli altri banchi non peggiorano partita per partita: 20 partite registrate ident
 partite estreme seguite, 129 prove automatiche. Sei partite registrate rimpicciolite al 60%:
 0.6.15 0/6 perfette (9 conferme, 8 a mano), 0.6.18 4/6 (2 conferme, 7 a mano).
 
+### 3.8 Qualità delle immagini di partenza (0.6.19)
+
+La cattura è già senza perdite e a piena risoluzione (xcap, RGBA): il limite vero è la grandezza
+delle carte sul sito. Con il sito rimpicciolito il rilevamento non trova le carte: sul banco
+`prima_lettura` (5 partite, `ZOOM=0.5`) le carte vere non trovate passano da ~600 a 1300–1700 per
+partita, con fino a 416 letture sicure sbagliate.
+
+Prove (`prima_lettura`, 5 partite u01–u05; giuste subito / sicure sbagliate / non trovate):
+
+| prova | u03 (ZOOM 0.5) | u04 (ZOOM 0.5) | u03 (ZOOM 0.6) |
+|---|---|---|---|
+| come 0.6.18 | 18 / 70 / 1603 | 19 / 416 / 1341 | 15 / 177 / 1672 |
+| raddrizzamento bicubico (`WARP_CUBICA`) | 18 / 84 / 1627 | 19 / 397 / 1352 | |
+| più nitido (`WARP_NITIDA=0.5`) | 18 / 62 / 1637 | 19 / 411 / 1344 | |
+| media su più punti (`WARP_MEDIA`, carte grandi) | nessuna differenza a ZOOM 1.6 | | |
+| schermata ingrandita ×2 (`INGRANDISCI=2`) | 17 / 51 / 1293 | 20 / 39 / 623 | |
+| ingrandita fino a carte di 110 px | 18 / 58 / 1461 | 18 / 35 / 733 | |
+| ingrandita fino a carte di 140–160 px | 17 / 51 / 1250 | 19 / 39 / 624 | 16 / 23 / 736 |
+
+Ritoccare il raddrizzamento della carta non serve: il problema è trovare la carta, non leggerla.
+Ingrandire la schermata prima del rilevamento sì. Con carte già sopra i 90 px ingrandire peggiora
+un poco (u02 a ZOOM 0.5, u01 a ZOOM 0.6, u03 a ZOOM 1), e la soglia di 80 px faceva perdere a
+u16 (ZOOM 0.6, carte proprio intorno agli 80 px) una carta: con 75 px no.
+
+Entrato: con le carte più corte di 75 px la schermata si ingrandisce fino a carte di 150 px (al
+più il doppio, al più 3,2 milioni di pixel), e si smette solo sopra gli 85 px (`grow_factor`,
+`for_reading` in `vision/mod.rs`; si spegne con `SENZA_INGRANDIRE`).
+
+Partite registrate rimpicciolite (6 partite; conferme / carte scritte a mano):
+
+| | seguite fino in fondo | perfette | conferme | a mano |
+|---|---|---|---|---|
+| ZOOM 0.5, 0.6.18 | 3/6 | 0/6 | 20 | 36 |
+| ZOOM 0.5, 0.6.19 | 6/6 | 2/6 | 2 | 5 |
+| ZOOM 0.6, 0.6.18 | 6/6 | 4/6 | 2 | 7 |
+| ZOOM 0.6, 0.6.19 | 6/6 | 4/6 | 1 | 3 |
+
+Partita per partita a ZOOM 0.5 solo u04 ha più carte scritte a mano (da 1 a 3) ma meno
+interventi in tutto (da 4 a 3); le altre migliorano o restano uguali. A piena risoluzione le carte
+sono sopra i 75 px e non cambia niente: 20 partite registrate, spoglio, display, partite estreme e
+banco varianti identici alla 0.6.18.
+
 ## 4. Riproduzione
 
 ```

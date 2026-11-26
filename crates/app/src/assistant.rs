@@ -6311,6 +6311,35 @@ mod tests {
         assert_eq!(a.pos.trump_card, Some(c(0, 8)));
     }
 
+    /// La schermata come la darebbe il sito ingrandito o rimpicciolito di `zoom` volte.
+    fn zoomed(img: Img, zoom: f32) -> Img {
+        let img = zoomed_only(img, zoom);
+        // INGRANDISCI=f: la schermata ingrandita prima della lettura (esperimento).
+        match std::env::var("INGRANDISCI").ok().and_then(|v| v.parse::<f32>().ok()) {
+            Some(f) if f > 1.01 => crate::vision::grow_by(&img, f),
+            _ => img,
+        }
+    }
+
+    fn zoomed_only(img: Img, zoom: f32) -> Img {
+        if (zoom - 1.0).abs() <= 0.01 {
+            return img;
+        }
+        let (w, h) = ((img.w as f32 * zoom) as usize, (img.h as f32 * zoom) as usize);
+        let mut z = Img::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let mut acc = [0u32; 3];
+                for (dx, dy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+                    let p = img.sample((x as f32 + dx) / zoom - 0.5, (y as f32 + dy) / zoom - 0.5);
+                    (0..3).for_each(|c| acc[c] += p[c] as u32);
+                }
+                z.px[y * w + x] = acc.map(|a| (a / 4) as u8);
+            }
+        }
+        z
+    }
+
     /// Banco della prima lettura (esperimento E0, docs/SPERIMENTAZIONE-RICONOSCIMENTO.md): per
     /// ogni carta che compare sullo schermo in un ruolo (mano, briscola, tavolo), se la lettura di
     /// quella stessa schermata la dà giusta, e se la dà giusta con sicurezza (distacco ≥ 1.4, cioè
@@ -6329,6 +6358,7 @@ mod tests {
         dirs.sort();
         // Totali: [comparse, giuste subito, sicure e giuste subito, giuste entro 3 letture,
         // letture, letture giuste, letture sicure sbagliate, carte vere non trovate nella lettura]
+        let zoom = std::env::var("ZOOM").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
         let mut tot = [0usize; 8];
         // Per ruolo (mano, briscola, tavolo): comparse, giuste subito, sicure e giuste subito.
         let mut by_role = [[0usize; 3]; 3];
@@ -6342,12 +6372,14 @@ mod tests {
             let mut pending: Vec<(usize, Card, usize)> = Vec::new();
             let mut g = [0usize; 8];
             let mut card_px = 0u32;
+            let mut scale = 1.0f32;
+            let (mut max_px, mut grown) = (0u32, 0usize);
             for (idx, e) in log.iter().enumerate() {
                 let f = e["frame"].as_str().unwrap();
                 let file = [format!("{f}.png"), format!("{f}.jpg")].into_iter().map(|n| dir.join(n)).find(|p| p.exists()).unwrap();
-                let img = crate::vision::capture::load_png(&file).unwrap();
-                let k = crate::vision::shrink_factor(img.w, card_px);
-                let img = crate::vision::shrink_by(img, k);
+                let img = zoomed(crate::vision::capture::load_png(&file).unwrap(), zoom);
+                let (img, k) = crate::vision::for_reading(img, card_px, scale);
+                scale = k;
                 let names = |key: &str| -> Vec<Card> {
                     e[key].as_array().map(|a| a.iter().filter_map(|v| by_name(v.as_str()?)).collect()).unwrap_or_default()
                 };
@@ -6355,7 +6387,9 @@ mod tests {
                 let table: Vec<Card> = e["trick"].as_array().map(|a| a.iter().filter_map(|t| by_name(t["card"].as_str()?)).collect()).unwrap_or_default();
                 let trump: Vec<Card> = e["trump"].as_str().and_then(by_name).into_iter().collect();
                 let scene = crate::vision::read_briscola(&img, &mem);
-                card_px = (crate::vision::detect::last_card_l() * k as f32).round() as u32;
+                card_px = (crate::vision::detect::last_card_l() * k).round() as u32;
+                max_px = max_px.max(card_px);
+                grown += (k < 1.0) as usize;
                 // Le letture per ruolo: (carta, distacco).
                 let mut reads: [Vec<(Card, f32)>; 3] = Default::default();
                 if let Some(s) = &scene {
@@ -6404,7 +6438,7 @@ mod tests {
                 });
             }
             println!(
-                "{name}: comparse {} · giuste subito {} · sicure subito {} · entro 3 letture {} · letture {} giuste {} · sicure sbagliate {} · non trovate {}",
+                "{name}: comparse {} · giuste subito {} · sicure subito {} · entro 3 letture {} · letture {} giuste {} · sicure sbagliate {} · non trovate {} · carte {max_px} px · ingrandite {grown}",
                 g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]
             );
             for i in 0..8 {
@@ -6486,23 +6520,8 @@ mod tests {
                     .map(|n| dir.join(n))
                     .find(|p| p.exists())
                     .unwrap();
-                let mut img = crate::vision::capture::load_png(&file).unwrap();
                 // Il sito ingrandito o rimpicciolito (zoom del browser o di Windows).
-                if (zoom - 1.0).abs() > 0.01 {
-                    let (w, h) = ((img.w as f32 * zoom) as usize, (img.h as f32 * zoom) as usize);
-                    let mut z = Img::new(w, h);
-                    for y in 0..h {
-                        for x in 0..w {
-                            let mut acc = [0u32; 3];
-                            for (dx, dy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
-                                let p = img.sample((x as f32 + dx) / zoom - 0.5, (y as f32 + dy) / zoom - 0.5);
-                                (0..3).for_each(|c| acc[c] += p[c] as u32);
-                            }
-                            z.px[y * w + x] = acc.map(|a| (a / 4) as u8);
-                        }
-                    }
-                    img = z;
-                }
+                let img = zoomed(crate::vision::capture::load_png(&file).unwrap(), zoom);
                 let Some(w) = desk.filter(|&w| w > img.w) else {
                     return img;
                 };
@@ -6589,13 +6608,14 @@ mod tests {
                 }
             };
             let mut card_px = 0u32;
+            let mut scale = 1.0f32;
             for &(idx, extra, at) in &seq {
                 let e = &log[idx];
                 let f = e["frame"].as_str().unwrap();
                 // Come nell'app: le schermate grandi si rimpiccioliscono se le carte restano grandi.
                 let img = load(idx);
-                let k = crate::vision::shrink_factor(img.w, card_px);
-                let img = crate::vision::shrink_by(img, k);
+                let (img, k) = crate::vision::for_reading(img, card_px, scale);
+                scale = k;
                 let truth_hand: Vec<Card> = e["hand"]
                     .as_array()
                     .unwrap()
@@ -6610,7 +6630,7 @@ mod tests {
                     .collect();
                 let trump = by_name(e["trump"].as_str().unwrap()).unwrap();
                 let scene = read_briscola(&img, &a.vision.memory);
-                card_px = (crate::vision::detect::last_card_l() * k as f32).round() as u32;
+                card_px = (crate::vision::detect::last_card_l() * k).round() as u32;
                 if scene.is_none() {
                     a.lost_table();
                 }

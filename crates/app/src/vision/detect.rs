@@ -480,19 +480,95 @@ pub fn same_table(a: [u8; 3], b: [u8; 3]) -> bool {
 /// Raddrizza la carta: il rettangolo diventa un'immagine CARD_W x CARD_H con il lato -v in alto.
 pub fn warp(img: &Img, r: &RotRect) -> Img {
     let mut out = Img::new(CARD_W, CARD_H);
-    let cols: [(f32, f32); CARD_W] = std::array::from_fn(|i| {
-        let a = ((i as f32 + 0.5) / CARD_W as f32 * 2.0 - 1.0) * r.hw;
-        (r.cx + r.u.0 * a, r.cy + r.u.1 * a)
-    });
+    // Quanti pixel dello schermo cadono in un pixel della carta raddrizzata, per lato.
+    let (su, sv) = (2.0 * r.hw / CARD_W as f32, 2.0 * r.hh / CARD_H as f32);
+    let mode = warp_mode();
+    // Carta grande: la media di più punti per pixel (senza, i dettagli sottili saltano a caso).
+    let n = if mode.aa { su.max(sv).ceil().clamp(1.0, 4.0) as usize } else { 1 };
+    // Carta piccola: interpolazione bicubica, che sfoca meno della lineare.
+    let cubic = mode.cubic && su.max(sv) < 0.95;
     for j in 0..CARD_H {
-        let b = ((j as f32 + 0.5) / CARD_H as f32 * 2.0 - 1.0) * r.hh;
-        let (dx, dy) = (r.v.0 * b, r.v.1 * b);
-        for (i, &(x, y)) in cols.iter().enumerate() {
-            out.px[j * CARD_W + i] = img.sample(x + dx, y + dy);
+        for i in 0..CARD_W {
+            let mut acc = [0f32; 3];
+            for q in 0..n {
+                for p in 0..n {
+                    let fu = (i as f32 + (p as f32 + 0.5) / n as f32) / CARD_W as f32 * 2.0 - 1.0;
+                    let fv = (j as f32 + (q as f32 + 0.5) / n as f32) / CARD_H as f32 * 2.0 - 1.0;
+                    let (a, b) = (fu * r.hw, fv * r.hh);
+                    let (x, y) = (r.cx + r.u.0 * a + r.v.0 * b, r.cy + r.u.1 * a + r.v.1 * b);
+                    let px = if cubic { sample_cubic(img, x, y) } else { img.sample(x, y).map(|v| v as f32) };
+                    (0..3).for_each(|c| acc[c] += px[c]);
+                }
+            }
+            let k = (n * n) as f32;
+            out.px[j * CARD_W + i] = acc.map(|v| (v / k).round().clamp(0.0, 255.0) as u8);
         }
+    }
+    if mode.sharp > 0.0 && su.max(sv) < 0.95 {
+        sharpen(&mut out, mode.sharp * (1.0 - su.max(sv)).min(0.6) / 0.6);
     }
     balance(&mut out);
     out
+}
+
+/// Come raddrizzare le carte (nelle prove si cambia per misurare).
+#[derive(Clone, Copy)]
+struct WarpMode {
+    aa: bool,
+    cubic: bool,
+    sharp: f32,
+}
+
+fn warp_mode() -> WarpMode {
+    let mut m = WarpMode { aa: false, cubic: false, sharp: 0.0 };
+    if cfg!(test) {
+        m.aa = std::env::var_os("WARP_MEDIA").is_some();
+        m.cubic = std::env::var_os("WARP_CUBICA").is_some();
+        m.sharp = std::env::var("WARP_NITIDA").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    }
+    m
+}
+
+/// Interpolazione bicubica (Catmull-Rom); bianco fuori dall'immagine.
+fn sample_cubic(img: &Img, x: f32, y: f32) -> [f32; 3] {
+    if x < 1.0 || y < 1.0 || x > (img.w - 3) as f32 || y > (img.h - 3) as f32 {
+        return img.sample(x, y).map(|v| v as f32);
+    }
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = (x - x0, y - y0);
+    let w = |t: f32| -> [f32; 4] {
+        let (t2, t3) = (t * t, t * t * t);
+        [-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1.0, -1.5 * t3 + 2.0 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2]
+    };
+    let (wx, wy) = (w(fx), w(fy));
+    let mut out = [0f32; 3];
+    for (m, &ky) in wy.iter().enumerate() {
+        let yy = y0 as usize + m - 1;
+        for (n, &kx) in wx.iter().enumerate() {
+            let p = img.at(x0 as usize + n - 1, yy);
+            (0..3).for_each(|c| out[c] += p[c] as f32 * kx * ky);
+        }
+    }
+    out
+}
+
+/// Maschera di contrasto leggera: ridà un po' di bordo ai tratti sfocati da un ingrandimento.
+fn sharpen(card: &mut Img, amount: f32) {
+    let src = card.clone();
+    let (w, h) = (card.w, card.h);
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let mut blur = [0f32; 3];
+            for dy in 0..3 {
+                for dx in 0..3 {
+                    let p = src.at(x + dx - 1, y + dy - 1);
+                    (0..3).for_each(|c| blur[c] += p[c] as f32 / 9.0);
+                }
+            }
+            let p = src.at(x, y);
+            card.px[y * w + x] = std::array::from_fn(|c| (p[c] as f32 + amount * (p[c] as f32 - blur[c])).round().clamp(0.0, 255.0) as u8);
+        }
+    }
 }
 
 /// Bilancia i colori della carta raddrizzata sul suo bianco (i punti più chiari e poco colorati:

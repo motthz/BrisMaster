@@ -1034,7 +1034,7 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
         let last_result = Arc::new(Mutex::new(std::time::Instant::now()));
         let work = Arc::new(Mutex::new(None::<std::time::Instant>));
         let last = Arc::new(Mutex::new(None::<Img>));
-        type FrameInfo = (usize, Option<Place>, u64, Option<Arc<Img>>);
+        type FrameInfo = (f32, Option<Place>, u64, Option<Arc<Img>>);
         let queue: Arc<(Mutex<Frames<FrameInfo>>, Condvar)> =
             Arc::new((Mutex::new(Frames::new(every)), Condvar::new()));
         // Quanto sono lunghe le carte sullo schermo, in pixel veri (0 se non si sa ancora).
@@ -1057,6 +1057,7 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
             std::thread::spawn(move || {
                 let mut chosen = None;
                 let mut frame_id = 0u64;
+                let mut scale = 1.0f32;
                 while !flag.load(Ordering::Relaxed) {
                     let t0 = std::time::Instant::now();
                     let area = *screen::area().lock().unwrap_or_else(|e| e.into_inner());
@@ -1078,13 +1079,13 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                                 Some((table.clone(), (geom, area), captured));
                             follow(&spot, &table, (geom, area), captured);
                             ctx.request_repaint();
-                            let k = shrink_factor(table.w, card_px.load(Ordering::Relaxed));
-                            let reduced = shrink_by((*table).clone(), k);
+                            let (reduced, k) = for_reading((*table).clone(), card_px.load(Ordering::Relaxed), scale);
+                            scale = k;
                             let (lock, cv) = &*queue;
                             let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
                             // Conserva l'originale solo entro il budget della coda. Una
                             // cattura più recente non è un sostituto per questa.
-                            let native = if k > 1 {
+                            let native = if k > 1.0 {
                                 let buffered: usize = q.frames.iter()
                                     .filter_map(|(_, _, info, _, _)| info.3.as_ref())
                                     .map(|image| image.px.len()).sum();
@@ -1149,7 +1150,7 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                         }
                         // Due facce possono avere la stessa luminosità media in ogni cella.
                         // Riusa una lettura solo per pixel identici alla stessa risoluzione.
-                        let same = k == 1 && seen.as_ref().is_some_and(|(_, n)| *n < 8)
+                        let same = k == 1.0 && seen.as_ref().is_some_and(|(_, n)| *n < 8)
                             && frame.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
                                 .is_some_and(|old| old.w == table.w && old.h == table.h && old.px == table.px);
                         let scene = if same {
@@ -1168,7 +1169,7 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                             r
                         };
                         // La misura delle carte decide quanto rimpicciolire le schermate dopo.
-                        card_px.store((detect::last_card_l() * k as f32).round() as u32, Ordering::Relaxed);
+                        card_px.store((detect::last_card_l() * k).round() as u32, Ordering::Relaxed);
                         *frame.lock().unwrap_or_else(|e| e.into_inner()) = Some(table.clone());
                         age.store(captured.elapsed().as_millis().min(u64::MAX as u128) as u64, Ordering::Relaxed);
                         match scene {
@@ -1516,6 +1517,67 @@ pub fn shrink_factor(w: usize, card_px: u32) -> usize {
 
 /// Le carte, nella schermata rimpicciolita, restano lunghe almeno tanto.
 const MIN_CARD_PX: usize = 110;
+
+/// Con le carte più corte di tanto (pixel dello schermo) la schermata si ingrandisce prima di
+/// leggerla: il rilevamento è fatto per carte di un centinaio di pixel, e sulle carte piccole
+/// perde bordi e angoli (docs/SPERIMENTAZIONE-RICONOSCIMENTO.md §3.8).
+const GROW_BELOW: u32 = 75;
+
+/// Le carte ingrandite diventano lunghe tanto (al più il doppio): misurato meglio di 110 (§3.8).
+const GROW_TO: f32 = 150.0;
+
+/// Al più tanti pixel nella schermata ingrandita (la lettura resta veloce).
+const GROW_MAX_PX: f32 = 3_200_000.0;
+
+/// Di quanto ingrandire una schermata `w` x `h` con carte lunghe `card_px` pixel (1 se non serve,
+/// o se non si sa ancora quanto sono grandi le carte). `grown`: la schermata prima era ingrandita
+/// (allora si smette solo con le carte un po' più lunghe, così non si cambia a ogni lettura).
+pub fn grow_factor(w: usize, h: usize, card_px: u32, grown: bool) -> f32 {
+    let below = if cfg!(test) {
+        if std::env::var_os("SENZA_INGRANDIRE").is_some() {
+            return 1.0;
+        }
+        std::env::var("INGRANDISCI_SOTTO").ok().and_then(|v| v.parse().ok()).unwrap_or(GROW_BELOW)
+    } else {
+        GROW_BELOW
+    };
+    if card_px == 0 || card_px >= below + if grown { 10 } else { 0 } {
+        return 1.0;
+    }
+    let target = if cfg!(test) { std::env::var("INGRANDISCI_A").ok().and_then(|v| v.parse().ok()).unwrap_or(GROW_TO) } else { GROW_TO };
+    let f = (target / card_px as f32).min(2.0).min((GROW_MAX_PX / (w * h).max(1) as f32).sqrt());
+    if f < 1.15 { 1.0 } else { f }
+}
+
+/// La schermata alla grandezza per leggerla: rimpicciolita se è molto grande (`shrink_factor`),
+/// ingrandita se le carte sono piccole (`grow_factor`). Con quanti pixel dello schermo fanno un
+/// pixel della schermata da leggere (più di 1 se rimpicciolita, meno se ingrandita). `was`: lo
+/// stesso per la schermata prima.
+pub fn for_reading(img: Img, card_px: u32, was: f32) -> (Img, f32) {
+    let k = shrink_factor(img.w, card_px);
+    if k > 1 {
+        return (shrink_by(img, k), k as f32);
+    }
+    let f = grow_factor(img.w, img.h, card_px, was < 1.0);
+    if f > 1.0 {
+        (grow_by(&img, f), 1.0 / f)
+    } else {
+        (img, 1.0)
+    }
+}
+
+/// Ingrandisce di `f` volte per lato (interpolazione lineare): con le carte piccole il
+/// rilevamento lavora su carte della grandezza per cui è fatto.
+pub fn grow_by(img: &Img, f: f32) -> Img {
+    let (w, h) = ((img.w as f32 * f) as usize, (img.h as f32 * f) as usize);
+    let mut out = Img::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            out.px[y * w + x] = img.sample((x as f32 + 0.5) / f - 0.5, (y as f32 + 0.5) / f - 0.5);
+        }
+    }
+    out
+}
 
 /// Rimpicciolisce di `k` volte per lato.
 pub fn shrink_by(img: Img, k: usize) -> Img {

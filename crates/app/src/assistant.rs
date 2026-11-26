@@ -1891,6 +1891,11 @@ impl Assistant {
         };
         let keep_table = |v: &CardView| !is_trump(v) && (still(v) || normal_table(v) || in_slot(v) || size(v).1 <= 0.0);
         let moved = scene.hand.iter().chain(&scene.opp_slot).chain(&scene.my_slot).find(|v| is_trump(v)).cloned();
+        if cfg!(test) && std::env::var_os("DEBUG_PASSI").is_some() {
+            for v in scene.hand.iter().filter(|v| !keep(v)) {
+                eprintln!("SCARTATA mano {:?} at {:?} misura {:?} attesa {:?} briscola {}", id(v).map(cards::short), v.at, size(v), hand_size, is_trump(v));
+            }
+        }
         let mut out = Scene {
             trump: scene.trump.clone().or(moved),
             opp_slot: scene.opp_slot.clone().filter(|v| keep_table(v)),
@@ -1923,7 +1928,10 @@ impl Assistant {
         let update = |cur: (f32, f32), views: Vec<&CardView>| {
             let mut sizes: Vec<(f32, f32)> = views.into_iter().filter(|v| still(v)).map(size).collect();
             sizes.sort_by(|a, b| a.1.total_cmp(&b.1));
-            match sizes.get(sizes.len() / 2) {
+            // (Con due carte la mediana è la più piccola: una carta letta storta o ingrandita ha il
+            // riquadro più grande, e non deve spostare la misura delle carte vere.)
+            let mid = if switched_off("SENZA_MEDIANA_BASSA") { sizes.len() / 2 } else { sizes.len().saturating_sub(1) / 2 };
+            match sizes.get(mid) {
                 Some(&(w, h)) if cur.1 > 0.0 && (h / cur.1 - 1.0).abs() < 0.1 => (0.7 * cur.0 + 0.3 * w, 0.7 * cur.1 + 0.3 * h),
                 Some(&s) => s,
                 None => cur,
@@ -4226,6 +4234,9 @@ impl Sightings {
         let table: Vec<&CardView> = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().collect();
         if !table.is_empty() && self.hand_at_first_play.is_none() {
             self.hand_at_first_play = Some(scene.hand.len());
+            if cfg!(test) && std::env::var_os("DEBUG_PASSI").is_some() {
+                eprintln!("PRIMA GIOCATA f{f} mano {:?} tavolo {:?}/{:?}", scene.hand.iter().map(|v| v.best(CardSet::FULL).map(|b| cards::short(b.0))).collect::<Vec<_>>(), scene.opp_slot.as_ref().and_then(|v| v.best(CardSet::FULL)).map(|b| cards::short(b.0)), scene.my_slot.as_ref().and_then(|v| v.best(CardSet::FULL)).map(|b| cards::short(b.0)));
+            }
         }
         // Una carta in tavola vista solo in parte (coperta dall'altra carta giocata) si legge con
         // meno sicurezza: il distacco conta meno, perché i simboli che distinguono due carte
@@ -4453,7 +4464,11 @@ impl Sightings {
             return None;
         }
         let lead = self.first_table_card(pos)?;
-        Some(if self.in_hand(lead) || self.hand_at_first_play == Some(2) { ME } else { OPP })
+        // (La carta vista prima in mano e poi in tavola è mia anche se in mano non si è ancora
+        // vista due volte: la mano letta in quel momento può aver perso una carta, letta solo in
+        // parte e scartata come carta in movimento, e il conto delle carte in mano non basta.)
+        let mine_first = !switched_off("SENZA_APERTURA_VISTA") && mine_now(lead);
+        Some(if self.in_hand(lead) || mine_first || self.hand_at_first_play == Some(2) { ME } else { OPP })
     }
 
     /// La prossima pescata: la carta vista in mano da più tempo fra quelle non ancora inserite.
@@ -5849,6 +5864,9 @@ mod tests {
     thread_local! {
         /// Il mazzo con cui giocare al posto di quelli dell'app (banco `siti_possibili`).
         static DECK: std::cell::RefCell<Option<Vec<Img>>> = const { std::cell::RefCell::new(None) };
+        /// La memoria del sito condivisa fra le partite dello stesso mazzo (`SITI_MEMORIA=1`):
+        /// come chi gioca più partite sullo stesso sito.
+        static SITE_MEMORY: std::cell::RefCell<Option<Arc<Mutex<Memory>>>> = const { std::cell::RefCell::new(None) };
     }
 
     /// Banco "su ogni sito possibile": partite intere con mazzi che l'app non conosce (cartelle di
@@ -5879,8 +5897,8 @@ mod tests {
             ("tutto", Look { rounded: 0.1, glow: 5.0, dim: 0.75, shadow: 6.0, back: Some([40, 110, 60]), lowres: 0.7, writing: true, ..d }),
         ];
         let mut decks: Vec<(String, Vec<Img>)> = Vec::new();
+        let wanted: Option<Vec<String>> = std::env::var("SITI_MAZZI").ok().map(|v| v.split(',').map(str::to_owned).collect());
         if let Ok(root) = std::env::var("MAZZI") {
-            let wanted: Option<Vec<String>> = std::env::var("SITI_MAZZI").ok().map(|v| v.split(',').map(str::to_owned).collect());
             let mut dirs: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
             dirs.sort();
             for dir in dirs {
@@ -5896,14 +5914,17 @@ mod tests {
             }
         } else {
             for style in 0..crate::vision::reference::STYLE_COUNT {
+                if wanted.as_ref().is_some_and(|w| !w.contains(&format!("app{style}"))) { continue; }
                 decks.push((format!("app{style}"), (0..40u8).map(|c| crate::vision::reference::card_image(style, c)).collect()));
             }
         }
         let seeds = std::env::var("SITI_SEMI").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(2);
         let only = std::env::var("SITO").ok();
         let (mut all_perfect, mut all_games, mut all_failed, mut all_help, mut all_wrong) = (0, 0, 0, 0, 0);
+        let shared = std::env::var_os("SITI_MEMORIA").is_some();
         for (deck_name, deck) in &decks {
             DECK.with(|d| *d.borrow_mut() = Some(deck.clone()));
+            SITE_MEMORY.with(|m| *m.borrow_mut() = shared.then(|| Arc::new(Mutex::new(Memory::in_memory()))));
             for (site, look) in &sites {
                 if only.as_ref().is_some_and(|o| o != site) { continue; }
                 let (mut perfect, mut failed, mut help, mut wrong) = (0, 0, 0, 0);
@@ -5929,6 +5950,7 @@ mod tests {
             }
         }
         DECK.with(|d| *d.borrow_mut() = None);
+        SITE_MEMORY.with(|m| *m.borrow_mut() = None);
         println!("== SITI: perfette {all_perfect}/{all_games}, fallite {all_failed}, interventi {all_help}, attribuzioni sbagliate {all_wrong}");
     }
 
@@ -5957,6 +5979,13 @@ mod tests {
             ("briscola-lato-avversario", Look { pile_at: [0.14, 0.2], ..d }),
             ("briscola-in-piedi", Look { trump_upright: true, cover: 0.3, ..d }),
             ("briscola-in-piedi-destra", Look { trump_upright: true, cover: 0.3, pile_at: [0.86, 0.5], ..d }),
+            // La briscola (col mazzo) accanto alle carte di chi apre, a sinistra del suo lato: in
+            // basso a sinistra accanto alla mia mano, o specchiata in alto a destra accanto ai
+            // dorsi dell'avversario.
+            ("briscola-accanto-mia-mano", Look { pile_at: [0.22, 0.89], ..d }),
+            ("briscola-accanto-mia-mano-in-piedi", Look { pile_at: [0.22, 0.89], trump_upright: true, cover: 0.3, ..d }),
+            ("briscola-accanto-sua-mano", Look { pile_at: [0.74, 0.11], ..d }),
+            ("briscola-accanto-sua-mano-in-piedi", Look { pile_at: [0.78, 0.11], trump_upright: true, cover: 0.3, ..d }),
             ("affiancate", Look { table: Table::SideBySide, ..d }),
             ("sovrapposte-poco", Look { table: Table::LightOverlap, ..d }),
             ("sovrapposte", Look { table: Table::Overlap, ..d }),
@@ -6014,7 +6043,7 @@ mod tests {
         let mut confirms = 0;
         let mut delays = Vec::new();
         a.rec.off = true;
-        a.vision.memory = Arc::new(Mutex::new(Memory::in_memory()));
+        a.vision.memory = SITE_MEMORY.with(|m| m.borrow().clone()).unwrap_or_else(|| Arc::new(Mutex::new(Memory::in_memory())));
         // La mano sullo schermo, nell'ordine in cui il sito la disegna.
         let mut hand: Vec<Card> = g.hands[0].iter().collect();
         let true_draws = std::cell::RefCell::new(hand.clone());
@@ -6233,6 +6262,11 @@ mod tests {
         LAST_GAME.with(|l| l.set((wrong_owner.borrow().len() as u32, delays.len() as u32)));
         if !delays.is_empty() {
             println!("seed={seed}; checkpoint in ritardo={}; primo={}", delays.len(), delays[0]);
+            if std::env::var_os("TUTTI_RITARDI").is_some() {
+                delays.iter().for_each(|d| println!("   ritardo: {d}"));
+                for e in &a.rec.events { println!("   evento: {e:?}"); }
+                println!("   vere: io {:?} · lui {:?}", true_plays.borrow()[ME as usize].iter().map(|&c| cards::name(c)).collect::<Vec<_>>(), true_plays.borrow()[OPP as usize].iter().map(|&c| cards::name(c)).collect::<Vec<_>>());
+            }
         }
         if a.pos.tricks != 20 || a.pos.points != g.points || a.pos.played != g.played || !a.pos.hand.is_empty() || a.pos.deck_len != 0 || a.pos.opp_hand_len != 0 {
             return Err(format!("fine partita: {} prese, punti {:?} (veri {:?}), mano {}, mazzo {}",

@@ -1322,6 +1322,15 @@ impl Assistant {
             }
             self.check_mismatch(scene);
         }
+        if self.vision.sightings.tricks_seen != self.pos.tricks {
+            self.vision.sightings.tricks_seen = self.pos.tricks;
+            let next = self.vision.sightings.frame + 1;
+            let closes = &mut self.vision.sightings.closes;
+            closes.push((next, 0));
+            if closes.len() > 24 {
+                closes.remove(0);
+            }
+        }
         self.vision.sightings.update(scene);
         if self.vision.gap && prev == sig {
             self.recover_reply_after_gap(scene);
@@ -2689,7 +2698,14 @@ impl Assistant {
                         return true;
                     }
                 }
-                sights.next_opp_play(&pos, scene)
+                // (Una carta che l'utente ha detto sbagliata per la mossa dell'avversario, che si
+                // continua a vedere, per esempio la presa di prima ancora in tavola letta di nuovo
+                // nello stesso modo sbagliato, non deve nascondere la carta vera giocata dopo.)
+                let doubts = &self.vision.doubts;
+                let skip = |c: Card| {
+                    !switched_off("SENZA_SALTA_DUBBI") && doubts.contains(&(Step::OppMove, c)) && !sights.clearly_seen(Step::OppMove, c)
+                };
+                sights.next_opp_play_skipping(&pos, scene, &skip)
             }
         };
         if cfg!(test) && std::env::var_os("DEBUG_PASSI").is_some() {
@@ -4160,6 +4176,13 @@ impl Sighting {
 #[derive(Default, Clone)]
 struct Sightings {
     frame: u64,
+    /// Carte in tavola che l'utente ha detto sbagliate: la stessa lettura sbagliata (la presa di
+    /// prima ancora in tavola) non le fa tornare "viste in tavola", se non si vedono chiaramente.
+    doubted_table: Vec<Card>,
+    /// Le prese della partita alla lettura prima; per le ultime prese chiuse, la lettura in cui si
+    /// sono chiuse e la prima lettura dopo con il tavolo vuoto (0 se non c'è ancora stata).
+    tricks_seen: u8,
+    closes: Vec<(u64, u64)>,
     hand: Vec<Sighting>,
     table: Vec<Sighting>,
     /// Solo carte dalla parte dell'avversario: una mia carta letta male non
@@ -4232,6 +4255,12 @@ impl Sightings {
             }
         }
         let table: Vec<&CardView> = [&scene.opp_slot, &scene.my_slot].into_iter().flatten().collect();
+        if table.is_empty() {
+            for c in self.closes.iter_mut().filter(|c| c.1 == 0 && f >= c.0) {
+                c.1 = f;
+            }
+        }
+
         if !table.is_empty() && self.hand_at_first_play.is_none() {
             self.hand_at_first_play = Some(scene.hand.len());
             if cfg!(test) && std::env::var_os("DEBUG_PASSI").is_some() {
@@ -4369,6 +4398,9 @@ impl Sightings {
 
     /// Dimentica gli avvistamenti di `c` che hanno portato a proporla per il passo `step`.
     fn forget(&mut self, step: Step, c: Card) {
+        if matches!(step, Step::OppMove | Step::MyMove) && !self.doubted_table.contains(&c) {
+            self.doubted_table.push(c);
+        }
         let list = match step {
             Step::Draw(_) => &mut self.hand,
             Step::OppMove | Step::MyMove => &mut self.table,
@@ -4402,6 +4434,9 @@ impl Sightings {
     /// Vista in tavola: due volte con sicurezza, o una volta sola se poi è sparita (il sito ha
     /// chiuso la presa prima della lettura dopo).
     fn on_table(&self, c: Card) -> bool {
+        if self.doubted_table.contains(&c) && !switched_off("SENZA_SALTA_DUBBI") && !self.clearly_seen(Step::OppMove, c) {
+            return false;
+        }
         self.table.get(c as usize).is_some_and(|s| s.sure() || (s.count >= 1 && s.margin >= AUTO_MARGIN && s.last < self.frame))
     }
 
@@ -4513,7 +4548,7 @@ impl Sightings {
         // quelle che so di avere, è proprio la pescata (giocata prima che la vedessi in mano).
         if pos.tricks > 0 && pos.table.is_none() && sure.is_none() {
             let mut new: Vec<Card> = (0..40u8)
-                .filter(|&c| !pos.played.contains(c) && Some(c) != pos.trump_card && self.on_table(c))
+                .filter(|&c| !pos.played.contains(c) && Some(c) != pos.trump_card && self.on_table(c) && !self.before_clear(&self.table[c as usize]))
                 .collect();
             new.sort_by_key(|&c| self.table[c as usize].first);
             // (Se in tavola c'è una carta che so di avere, è quella la mia di questa presa: ne gioco
@@ -4640,7 +4675,20 @@ impl Sightings {
 
     /// La prossima giocata dell'avversario: una carta mai stata in mano mia comparsa in tavola,
     /// la prima in ordine di tempo.
+    /// In tavola già quando una presa si è chiusa, e mai più dopo che il tavolo si è visto vuoto:
+    /// era una carta di quella presa (letta in un altro modo), non una giocata nuova.
+    fn before_clear(&self, s: &Sighting) -> bool {
+        !switched_off("SENZA_TAVOLO_VUOTO")
+            && s.count > 0
+            && self.closes.iter().any(|&(closed, cleared)| cleared > 0 && closed >= s.first && s.last < cleared)
+    }
+
     fn next_opp_play(&self, pos: &Position, scene: &Scene) -> Option<(Card, bool)> {
+        self.next_opp_play_skipping(pos, scene, &|_| false)
+    }
+
+    /// Come `next_opp_play`, saltando le carte `skip` (quelle che l'utente ha detto sbagliate).
+    fn next_opp_play_skipping(&self, pos: &Position, scene: &Scene, skip: &dyn Fn(Card) -> bool) -> Option<(Card, bool)> {
         let allowed = pos.allowed();
         let _ = scene;
         // Una carta comparsa in tavola dopo che avevo già pescato apre la presa dopo: non è la
@@ -4663,14 +4711,23 @@ impl Sightings {
             })
             .flatten();
         let candidates = (0..40u8)
-            .filter(|&c| allowed.contains(c) && !self.in_hand(c))
+            .filter(|&c| allowed.contains(c) && !self.in_hand(c) && !skip(c) && !self.before_clear(&self.opp_sight(c)))
             .filter(|&c| cut.is_none_or(|f| self.opp_sight(c).first < f))
             .filter(|&c| my_next.is_none_or(|f| self.opp_sight(c).first < f));
         if let Some(c) = candidates.clone().filter(|&c| {
             let sight = self.opp_sight(c);
             sight.sure() || (sight.count >= 1 && sight.margin >= AUTO_MARGIN && sight.last < self.frame)
         }).min_by_key(|&c| self.opp_sight(c).first) {
-            return Some((c, true));
+            // (Se nello stesso momento la stessa carta si è letta anche come un'altra, con una certa
+            // sicurezza, le letture si contraddicono: si chiede invece di scegliere da soli. Il
+            // cinque e il quattro di denari di certi mazzi si somigliano tanto.)
+            let s = self.opp_sight(c);
+            let rival = candidates.clone().any(|o| {
+                let r = self.opp_sight(o);
+                o != c && r.count >= 1 && r.margin >= SIGHT_MARGIN && r.last >= s.first && r.first <= s.last
+            });
+            let sure = switched_off("SENZA_LETTURE_IN_CONTRASTO") || !rival || s.margin >= 2.0 * AUTO_MARGIN;
+            return Some((c, sure));
         }
         // Vista più volte di recente ma senza sicurezza: si chiede (una lettura sbagliata di tanto
         // tempo fa non conta).
@@ -6082,6 +6139,7 @@ mod tests {
                 println!("frame={frame}; {what}; vero={:?}/{:?}; letto mano={:?}, tavolo={:?}/{:?}; app prese={}, punti={:?}, passo={:?}, mano={:?}, tavolo={:?}",
                     g.played.len()/2, g.points, scene.hand.iter().map(best).collect::<Vec<_>>(), scene.opp_slot.as_ref().and_then(best), scene.my_slot.as_ref().and_then(best),
                     a.pos.tricks, a.pos.points, a.pos.step(), a.pos.hand.iter().map(cards::name).collect::<Vec<_>>(), a.pos.table.map(cards::name));
+                println!("   stato: {:?} · incoerente {} · conferma {:?}", a.vision.status, a.vision.inconsistent, a.vision.confirm.as_ref().map(|c| (c.step, cards::name(c.card))));
             }
             if flicker {
                 // Mentre lo schermo è fermo, una lettura vede la briscola come un'altra carta, con

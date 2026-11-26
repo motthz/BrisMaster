@@ -13,6 +13,24 @@ Il formato delle annotazioni e i ruoli delle carte sono definiti in
 `crates/app/src/vision/replay.rs`. Conserva filmato, fotogrammi e annotazioni
 nella tua cartella locale.
 
+## Banco della prima lettura
+
+Per confrontare le letture sui replay storici, usare lo stesso insieme di
+fotogrammi e annotazioni per entrambi i binari:
+
+```sh
+PARTITE=/percorso/partite PRIMA_CSV=letture.csv ZOOM=0.5 \
+  cargo test --locked --release -p brismaster prima_lettura -- --ignored --nocapture
+python3 scripts/prima-lettura.py /percorso/partite letture.csv
+```
+
+Ogni fotogramma analizzato ha una riga con ruolo `-1`, anche se il
+riconoscitore non ha trovato alcuna carta. Il rapporto include le partite
+senza rilevamenti e richiede una riga di presenza per ciascun fotogramma
+annotato. I CSV storici vanno rigenerati. Per misurare la 0.6.19 con questo
+formato, applicare al suo checkout solo la modifica che esporta il CSV
+in `prima_lettura`. Eseguire il confronto anche a scala 1 e 0.6.
+
 ## Replay di Briscola dall'apertura all'ultima presa
 
 `replay_briscola_annotata` legge una sequenza locale di fotogrammi del tavolo,

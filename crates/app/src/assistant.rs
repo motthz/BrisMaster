@@ -5959,7 +5959,23 @@ mod tests {
             if let Ok(d) = std::env::var("SALVA") {
                 img.save_png(std::path::Path::new(&format!("{d}/partita_{seed}_{frame:03}.png"))).unwrap();
             }
-            let Some(scene) = read_briscola(&img, &a.vision.memory) else { return Ok(()) };
+            let scene = read_briscola(&img, &a.vision.memory);
+            if std::env::var_os("BRIS_STRESS_VISIBILITA").is_some() {
+                let best = |view: &CardView| view.best(CardSet::FULL);
+                let observed: [Option<&CardView>; 2] = scene
+                    .as_ref()
+                    .map(|s| [s.my_slot.as_ref(), s.opp_slot.as_ref()])
+                    .unwrap_or_default();
+                println!(
+                    "seed={seed}; frame={frame}; {what}; attese io={mine:?} avversario={opp:?}; \
+                     candidati io={} avversario={}; letture io={:?} avversario={:?}",
+                    observed[0].is_some(),
+                    observed[1].is_some(),
+                    observed[0].and_then(best),
+                    observed[1].and_then(best),
+                );
+            }
+            let Some(scene) = scene else { return Ok(()) };
             show(a, &scene);
             if std::env::var_os("BRIS_STRESS_LOG").is_some() {
                 let best = |v: &CardView| v.best(CardSet::FULL).map(|(c, m)| (cards::name(c), m));
@@ -6387,6 +6403,11 @@ mod tests {
                 let table: Vec<Card> = e["trick"].as_array().map(|a| a.iter().filter_map(|t| by_name(t["card"].as_str()?)).collect()).unwrap_or_default();
                 let trump: Vec<Card> = e["trump"].as_str().and_then(by_name).into_iter().collect();
                 let scene = crate::vision::read_briscola(&img, &mem);
+                if let Some(w) = csv.as_mut() {
+                    use std::io::Write;
+                    // Una riga esplicita anche quando non è stata rilevata alcuna carta.
+                    writeln!(w, "{name},{f},-1,,,").unwrap();
+                }
                 card_px = (crate::vision::detect::last_card_l() * k).round() as u32;
                 max_px = max_px.max(card_px);
                 grown += (k < 1.0) as usize;
@@ -6407,7 +6428,7 @@ mod tests {
                         g[6] += (!right && m >= AUTO_MARGIN) as usize;
                         if let Some(w) = csv.as_mut() {
                             use std::io::Write;
-                            let _ = writeln!(w, "{name},{f},{role},{},{},{m:.2}", if right { cards::short(c) } else { "?".into() }, cards::short(c));
+                            writeln!(w, "{name},{f},{role},{},{},{m:.2}", if right { cards::short(c) } else { "?".into() }, cards::short(c)).unwrap();
                         }
                     }
                     for &c in truth[role] {

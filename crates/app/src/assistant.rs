@@ -5847,6 +5847,92 @@ mod tests {
     }
 
     thread_local! {
+        /// Il mazzo con cui giocare al posto di quelli dell'app (banco `siti_possibili`).
+        static DECK: std::cell::RefCell<Option<Vec<Img>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Banco "su ogni sito possibile": partite intere con mazzi che l'app non conosce (cartelle di
+    /// MAZZI con 00.png..39.png, solo per misurare, restano in locale) o con i suoi (senza MAZZI),
+    /// su tavoli con gli effetti dei siti: angoli arrotondati, alone sulle carte giocabili, mano
+    /// scurita, ombre, dorsi diversi, carte senza bordo bianco, sfondi chiari o scuri, carte
+    /// piccole. `SITO=nome` ne prova uno solo, `SITI_SEMI` partite per sito e mazzo (2),
+    /// `SITI_MAZZI=a,b` solo quei mazzi.
+    ///
+    /// `MAZZI=cartella cargo test --release -p brismaster siti_possibili -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn siti_possibili() {
+        use crate::vision::synth::{Bg, Look, Table};
+        let d = Look::default();
+        let sites: Vec<(&str, Look)> = vec![
+            ("base", d),
+            ("arrotondate", Look { rounded: 0.12, ..d }),
+            ("alone", Look { glow: 7.0, ..d }),
+            ("mano-scurita", Look { dim: 0.6, ..d }),
+            ("ombre", Look { shadow: 8.0, rounded: 0.06, ..d }),
+            ("dorsi-blu", Look { back: Some([30, 60, 150]), ..d }),
+            ("senza-bordo", Look { bleed: 0.06, rounded: 0.05, ..d }),
+            ("tavolo-chiaro", Look { bg: Bg::Felt([205, 200, 185]), shadow: 5.0, ..d }),
+            ("tavolo-scuro", Look { bg: Bg::Felt([18, 18, 24]), glow: 5.0, ..d }),
+            ("legno-piccole", Look { bg: Bg::Wood, card_h: 90.0, rounded: 0.08, ..d }),
+            ("app-mobile", Look { card_h: 120.0, rounded: 0.1, shadow: 4.0, table: Table::SideBySide, pile_at: [0.86, 0.5], back: Some([20, 20, 20]), ..d }),
+            ("tutto", Look { rounded: 0.1, glow: 5.0, dim: 0.75, shadow: 6.0, back: Some([40, 110, 60]), lowres: 0.7, writing: true, ..d }),
+        ];
+        let mut decks: Vec<(String, Vec<Img>)> = Vec::new();
+        if let Ok(root) = std::env::var("MAZZI") {
+            let wanted: Option<Vec<String>> = std::env::var("SITI_MAZZI").ok().map(|v| v.split(',').map(str::to_owned).collect());
+            let mut dirs: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+            dirs.sort();
+            for dir in dirs {
+                let name = dir.file_name().unwrap().to_string_lossy().to_string();
+                if wanted.as_ref().is_some_and(|w| !w.contains(&name)) { continue; }
+                let cards: Vec<Img> = (0..40u8)
+                    .filter_map(|c| {
+                        let im = image::open(dir.join(format!("{c:02}.png"))).ok()?.to_rgba8();
+                        Some(Img::from_rgba(im.width() as usize, im.height() as usize, im.as_raw()))
+                    })
+                    .collect();
+                if cards.len() == 40 { decks.push((name, cards)); }
+            }
+        } else {
+            for style in 0..crate::vision::reference::STYLE_COUNT {
+                decks.push((format!("app{style}"), (0..40u8).map(|c| crate::vision::reference::card_image(style, c)).collect()));
+            }
+        }
+        let seeds = std::env::var("SITI_SEMI").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(2);
+        let only = std::env::var("SITO").ok();
+        let (mut all_perfect, mut all_games, mut all_failed, mut all_help, mut all_wrong) = (0, 0, 0, 0, 0);
+        for (deck_name, deck) in &decks {
+            DECK.with(|d| *d.borrow_mut() = Some(deck.clone()));
+            for (site, look) in &sites {
+                if only.as_ref().is_some_and(|o| o != site) { continue; }
+                let (mut perfect, mut failed, mut help, mut wrong) = (0, 0, 0, 0);
+                for k in 0..seeds {
+                    let seed = 91_000 + k * 37;
+                    LAST_GAME.with(|l| l.set((0, 0)));
+                    let result = play_on_screen_with_light(seed, 0, *look, k % 2 == 0, false, [1.0; 3], false, true);
+                    let (w, delays) = LAST_GAME.with(|l| l.get());
+                    wrong += w;
+                    match result {
+                        Ok((_, confirms)) => {
+                            help += confirms;
+                            if confirms == 0 && delays == 0 && w == 0 { perfect += 1; }
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            println!("{deck_name} {site} seed={seed}: FALLITA {e}");
+                        }
+                    }
+                }
+                println!("SITO {deck_name} {site}: perfette {perfect}/{seeds}, fallite {failed}, interventi {help}, attribuzioni sbagliate {wrong}");
+                all_perfect += perfect; all_games += seeds; all_failed += failed; all_help += help; all_wrong += wrong;
+            }
+        }
+        DECK.with(|d| *d.borrow_mut() = None);
+        println!("== SITI: perfette {all_perfect}/{all_games}, fallite {all_failed}, interventi {all_help}, attribuzioni sbagliate {all_wrong}");
+    }
+
+    thread_local! {
         /// Dell'ultima partita di `play_on_screen_with_light`: carte segnate al giocatore
         /// sbagliato (anche per poco) e controlli in cui l'app era indietro o sbagliata.
         static LAST_GAME: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
@@ -5920,7 +6006,8 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(seed);
         let first = (seed % 2) as u8;
         let mut g = Game::new(&mut rng, first);
-        let imgs: Vec<Img> = (0..40u8).map(|c| card_image(style, c)).collect();
+        let imgs: Vec<Img> = DECK.with(|d| d.borrow().clone())
+            .unwrap_or_else(|| (0..40u8).map(|c| card_image(style, c)).collect());
         // Un tavolo nuovo: niente di quello che l'analisi ricorda dalla partita prima.
         crate::vision::detect::forget_reading_state();
         let mut a = Assistant::default();

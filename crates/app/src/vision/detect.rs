@@ -1331,66 +1331,6 @@ fn as_partial(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Option<Found>
 /// l'erosione non basta a dividerle: si cerca una carta a ciascuna estremità della fila, provando
 /// qualche piccola rotazione (le carte a ventaglio sono un po' girate). Le carte in mezzo si
 /// ritrovano dopo, togliendo quelle delle estremità.
-/// Carte senza cornice bianca (il disegno arriva fino al bordo): non sono zone chiare, ma zone di
-/// un colore diverso dal tavolo, grandi come le carte già trovate. Si tengono solo se somigliano
-/// molto a una carta di riferimento, letta così com'è o come se la cornice fosse stata tagliata.
-fn borderless(img: &Img, paper: &[bool], cards: &[Found], card_l: f32, card_w: f32) -> Vec<Found> {
-    if off("SENZA_CARTE_SENZA_BORDO") || cards.is_empty() || card_l < 20.0 || card_w < 12.0 {
-        return Vec::new();
-    }
-    let (since, seen) = BORDERLESS.with(|s| s.get());
-    if !seen && since < 7 && std::env::var_os("SCARTI").is_none() {
-        BORDERLESS.with(|s| s.set((since + 1, seen)));
-        return Vec::new();
-    }
-    BORDERLESS.with(|s| s.set((0, seen)));
-    let colors: Vec<[u8; 3]> = cards.iter().filter_map(|c| table_color(img, paper, &c.rect)).collect();
-    let Some(table) = colors.iter().copied().max_by_key(|&a| colors.iter().filter(|&&b| same_table(a, b)).count()) else {
-        return Vec::new();
-    };
-    let mut mask: Vec<bool> = img.px.iter().zip(paper).map(|(&p, &w)| w || !same_table(p, table)).collect();
-    for c in cards {
-        clear(&mut mask, img.w, img.h, &RotRect { hw: c.rect.hw + 2.0, hh: c.rect.hh + 2.0, ..c.rect });
-    }
-    let min_area = (0.6 * card_l * card_w) as usize;
-    let cands: Vec<Blob> = blobs_with_min_area(img, &mask, 1, (0, 0, img.w, img.h), min_area)
-        .into_iter()
-        .inspect(|b| {
-            if std::env::var_os("SCARTI").is_some() {
-                eprintln!("    senza bordo? a {:.0},{:.0} {:.0}x{:.0} pieno {:.2} (carta {card_l:.0}x{card_w:.0})", b.rect.cx, b.rect.cy, b.rect.long(), b.rect.short(), b.white);
-            }
-        })
-        .filter(|b| (0.85..=1.15).contains(&(b.rect.long() / card_l)) && (0.85..=1.15).contains(&(b.rect.short() / card_w)))
-        .filter(|b| b.white > 0.75)
-        .collect();
-    let found: Vec<Found> = par_map(&cands, |b| {
-        // La cornice tagliata è circa un sedicesimo per lato.
-        let grown = RotRect { hw: b.rect.hw / 0.88, hh: b.rect.hh / 0.88, ..b.rect };
-        // (Il confronto veloce scarta subito i dorsi e i riquadri del sito.)
-        let quick = |r: &RotRect| reference::quick_tops(&warp(img, r), &[WHOLE])[0];
-        [b.rect, grown]
-            .into_iter()
-            .flat_map(|r| [r, r.flipped()])
-            .filter(|r| quick(r) >= 0.35)
-            .map(|r| Try::new(img, r, WHOLE).finish(img))
-            .inspect(|f| {
-                if std::env::var_os("SCARTI").is_some() {
-                    eprintln!("      prova senza bordo a {:.0},{:.0} {:.0}x{:.0}: punteggio {:.2} disegno {:.2}", f.rect.cx, f.rect.cy, f.rect.long(), f.rect.short(), f.score, traits(&f.view.img, f.view.vis).1);
-                }
-            })
-            .filter(|f| f.score >= 0.7 && traits(&f.view.img, f.view.vis).1 >= MIN_INK)
-            .max_by(|a, b| a.score.total_cmp(&b.score))
-            .map(|f| f.mark_alone())
-    })
-    .into_iter()
-    .flatten()
-    .collect();
-    if !found.is_empty() {
-        BORDERLESS.with(|s| s.set((0, true)));
-    }
-    found
-}
-
 fn ends(img: &Img, r: &RotRect, card_l: f32, card_w: f32) -> Vec<Found> {
     let mut out = Vec::new();
     // La fila corre lungo l'asse più lungo di una carta; l'altro lato è alto quanto una carta.
@@ -1923,7 +1863,6 @@ pub fn forget_reading_state() {
     LAST_N.with(|t| t.set(0));
     LAST_CARD_L.with(|l| l.set(0.0));
     STEADY.with(|s| s.set((0.0, 0.0, 0)));
-    BORDERLESS.with(|s| s.set((0, false)));
     FIXTURES.with(|f| f.borrow_mut().clear());
     PREV_CARDS.with(|p| p.borrow_mut().clear());
     PREFER_STRICT.with(|p| p.set(0));
@@ -2294,9 +2233,6 @@ thread_local! {
     /// (E da quante analisi non è più stata confermata: dopo un po' non vale più, perché la
     /// pagina può essere stata ingrandita o cambiata.)
     static STEADY: std::cell::Cell<(f32, f32, u32)> = const { std::cell::Cell::new((0.0, 0.0, 0)) };
-    /// Le carte senza cornice: quante analisi da l'ultima ricerca, e se il sito ne ha già mostrate
-    /// (allora si cercano sempre; altrimenti una volta ogni tanto, perché costa).
-    static BORDERLESS: std::cell::Cell<(u32, bool)> = const { std::cell::Cell::new((0, false)) };
 }
 
 fn mark(tm: &mut (std::time::Instant, String), what: &str) {
@@ -2548,8 +2484,6 @@ fn analyze_shaped(img: &Img, p: &Paper, shaped: fn(&RotRect) -> bool, small: boo
     // Carte coperte in parte.
     cards.extend(par_map(&leftover, |b| as_partial(img, &b.rect, card_l, card_w)).into_iter().flatten());
     mark(&mut tm, "parziali");
-    cards.extend(borderless(img, &paper, &cards, card_l, card_w));
-    mark(&mut tm, "senza bordo");
     // Una carta divisa da una scritta che la attraversa: dentro la sagoma della carta vista in parte
     // c'è anche l'altro pezzo, e si confronta la carta da un pezzo all'altro.
     for c in cards.iter_mut().filter(|c| c.partial()) {

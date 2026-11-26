@@ -4,7 +4,8 @@
 
 CARTELLA_PARTITE contiene una sottocartella per partita con `verita.json`; LETTURE.csv è il file
 scritto dal test con PRIMA_CSV (partita, schermata, ruolo, carta se giusta o ?, carta letta,
-distacco). Ruoli: 0 mano, 1 briscola, 2 tavolo.
+distacco). Ruoli: 0 mano, 1 briscola, 2 tavolo. La riga con ruolo -1 attesta che
+la schermata è stata analizzata, anche quando non ci sono letture.
 
 Prima lettura di una carta: dalla schermata in cui la verità la mette in un ruolo, la prima
 lettura *nuova* in quel ruolo (una carta letta che non era già nel ruolo nella verità della
@@ -35,18 +36,40 @@ def main():
     root, path = sys.argv[1], sys.argv[2]
     window = int(sys.argv[sys.argv.index('--finestra') + 1]) if '--finestra' in sys.argv else 10
     reads = collections.defaultdict(list)
-    for r in csv.reader(open(path)):
-        reads[(r[0], r[1])].append((int(r[2]), r[4], float(r[5])))
-    games = sorted({k[0] for k in reads})
+    processed = collections.Counter()
+    with open(path, newline='', encoding='utf-8') as csv_file:
+        for game, frame, role, _, card, margin in csv.reader(csv_file):
+            key = (game, frame)
+            if role == '-1':
+                processed[key] += 1
+            else:
+                reads[key].append((int(role), card, float(margin)))
+    games = sorted(entry for entry in os.listdir(root)
+                   if os.path.isfile(os.path.join(root, entry, 'verita.json')))
+    manifests = {}
+    expected = set()
+    for game in games:
+        with open(os.path.join(root, game, 'verita.json'), encoding='utf-8') as manifest:
+            manifests[game] = json.load(manifest)
+        for entry in manifests[game]:
+            key = (game, entry['frame'])
+            if key in expected:
+                sys.exit(f"Fotogramma duplicato nelle annotazioni: {key}")
+            expected.add(key)
+    if not expected:
+        sys.exit("Nessun fotogramma annotato nella cartella indicata.")
+    invalid = {key for key in expected if processed[key] != 1}
+    invalid.update((processed.keys() | reads.keys()) - expected)
+    if invalid:
+        game, frame = min(invalid)
+        sys.exit(
+            f"CSV incompleto o incoerente: {len(invalid)} fotogrammi, "
+            f"primo: {game}/{frame}. Rigenerare PRIMA_CSV con il test aggiornato."
+        )
+
     tot = collections.Counter()
     by_role = collections.defaultdict(collections.Counter)
-    for g in games:
-        log = json.load(open(os.path.join(root, g, 'verita.json')))
-        # (Una partita letta solo in parte, per esempio interrotta, non si conta.)
-        covered = sum(1 for e in log if (g, e['frame']) in reads)
-        if covered < 0.9 * len(log):
-            print(f"{g}: letta solo in parte ({covered}/{len(log)} schermate), esclusa")
-            continue
+    for g, log in manifests.items():
         truth = []
         for e in log:
             hand = [SHORT[c] for c in e.get('hand', [])]

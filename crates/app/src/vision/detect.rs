@@ -1344,6 +1344,27 @@ fn borderless(img: &Img, paper: &[bool], cards: &[Found], card_l: f32, card_w: f
         return Vec::new();
     }
     BORDERLESS.with(|s| s.set((0, seen)));
+    // Sui siti con le carte bianche quelle trovate sono quasi tutte carta: lì una zona grande
+    // come una carta ma senza bianco è un'animazione o un riquadro, non una carta.
+    let paper_share = |r: &RotRect| {
+        let e = r.hw + r.hh;
+        let (x0, x1) = ((r.cx - e).max(0.0) as usize, ((r.cx + e) as usize).min(img.w - 1));
+        let (y0, y1) = ((r.cy - e).max(0.0) as usize, ((r.cy + e) as usize).min(img.h - 1));
+        let (mut n, mut w) = (0usize, 0usize);
+        for y in (y0..=y1).step_by(2) {
+            for x in (x0..=x1).step_by(2) {
+                if r.contains(x as f32, y as f32) {
+                    n += 1;
+                    w += paper[y * img.w + x] as usize;
+                }
+            }
+        }
+        w as f32 / n.max(1) as f32
+    };
+    let white_cards = cards.iter().filter(|c| paper_share(&c.rect) > 0.5).count();
+    if 2 * white_cards > cards.len() {
+        return Vec::new();
+    }
     let colors: Vec<[u8; 3]> = cards.iter().filter_map(|c| table_color(img, paper, &c.rect)).collect();
     let Some(table) = colors.iter().copied().max_by_key(|&a| colors.iter().filter(|&&b| same_table(a, b)).count()) else {
         return Vec::new();

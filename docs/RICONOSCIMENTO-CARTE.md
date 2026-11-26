@@ -451,6 +451,13 @@ much it is worth:
 | `SENZA_ANGOLO`, `SENZA_BRISCOLA_DRITTA` | a card with a corner covered by another; the trump upright beside the deck |
 | `SENZA_FANTASMA` | a card read in my hand only before a new full hand appeared, never seen on the table, is a false reading and is not drawn later |
 | `SENZA_INGRANDIRE` | the screenshot is enlarged before reading when the cards are shorter than 75 px (up to 150 px, at most twice, at most 3.2 Mpx) |
+| `SENZA_PROVE_DEBOLI` | the reading stops at the first attempt even when no card looks clearly like a known deck |
+| `SENZA_APERTURA_VISTA` | a card seen first in my hand and then on the table decides that I opened, even if the hand was read only once |
+| `SENZA_MEDIANA_BASSA` | with two still cards the card size is the smaller one (a skewed or enlarged reading does not move it) |
+| `SENZA_SALTA_DUBBI` | a card the user said is wrong for the opponent's move, still seen (e.g. the previous trick still on the table), does not hide the real card played after |
+| `SENZA_TAVOLO_VUOTO` | a card already on the table when a trick closed, never seen again after the table was empty, is not a new opponent play |
+| `SENZA_LETTURE_IN_CONTRASTO` | when the same card was read at the same time also as another card with some confidence, the app asks instead of choosing |
+| `SENZA_MANO_CONFERMA` | my play seen on the table with low confidence counts if my hand got shorter by exactly that card |
 
 Other variables:
 
@@ -458,6 +465,7 @@ Other variables:
 - `ADOPT`: the last-resort delay, in ticks.
 - `INGRANDISCI_SOTTO` and `INGRANDISCI_A`: below what card length (px) the screenshot is enlarged, and to what length.
 - `ZOOM=f` (benchmarks `partite_registrate` and `prima_lettura`): the recorded screenshots as the site would give them zoomed by `f`; `INGRANDISCI=f` enlarges them again by `f` before reading.
+- Benchmark `siti_possibili`: plays games with the app's decks (or with `MAZZI=dir` and `SITI_MAZZI=name,...`, decks that are not in the app) on twelve site looks (`base`, `alone`, `ombre`, `dorsi-blu`, `tavolo-chiaro`, `tavolo-scuro`, `arrotondate`, `senza-bordo`, `mano-scurita`, `legno-piccole`, `app-mobile`, `tutto`). `SITO=name` runs one look, `SITI_SEMI=n` the number of games for each. Test decks from outside the app stay local: they are never committed or shipped.
 - `WARP_MEDIA`, `WARP_CUBICA`, `WARP_NITIDA=amount`: straightening the card with several samples per pixel, bicubic, or sharpened. Measured in 0.6.19 and kept switched off: no gain.
 - Experiments kept switched off (results in `docs/SPERIMENTAZIONE-RICONOSCIMENTO.md`):
   `SPER_MIGLIORE`, `SPER_STRETTE`, `SPER_SBIADITE`; `PRIMA_CSV` with the `prima_lettura` benchmark

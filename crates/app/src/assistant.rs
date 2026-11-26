@@ -4622,6 +4622,24 @@ impl Sightings {
         if let Some(c) = self.played_from_hand(pos, scene) {
             return Some((c, true));
         }
+        // Una mia carta letta in tavola adesso senza piena sicurezza, mentre le ultime due letture
+        // sicure della mano sono esattamente le altre carte (prima della pescata la mano si è
+        // accorciata proprio di quella): due prove diverse dicono la stessa cosa.
+        if !switched_off("SENZA_MANO_CONFERMA") {
+            if let [.., (fa, a), (fb, b)] = self.full_hands.as_slice() {
+                let left: Vec<Card> = pos.hand.iter().filter(|c| !b.contains(c)).collect();
+                if a == b && *fa + 4 >= self.frame && *fb == self.frame && b.len() + 1 == pos.hand.len() as usize
+                    && b.len() == scene.hand.len() && b.iter().all(|c| pos.hand.contains(*c))
+                {
+                    if let [c] = left.as_slice() {
+                        let t = &self.table[*c as usize];
+                        if t.last == self.frame && t.margin >= 0.3 {
+                            return Some((*c, true));
+                        }
+                    }
+                }
+            }
+        }
         // Una mia carta vista in tavola più volte ma senza sicurezza: si chiede.
         pos.hand
             .iter()

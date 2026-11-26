@@ -1521,7 +1521,7 @@ const MIN_CARD_PX: usize = 110;
 /// Con le carte più corte di tanto (pixel dello schermo) la schermata si ingrandisce prima di
 /// leggerla: il rilevamento è fatto per carte di un centinaio di pixel, e sulle carte piccole
 /// perde bordi e angoli (docs/SPERIMENTAZIONE-RICONOSCIMENTO.md §3.8).
-const GROW_BELOW: u32 = 80;
+const GROW_BELOW: u32 = 75;
 
 /// Le carte ingrandite diventano lunghe tanto (al più il doppio): misurato meglio di 110 (§3.8).
 const GROW_TO: f32 = 150.0;

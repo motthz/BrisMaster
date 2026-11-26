@@ -450,7 +450,7 @@ much it is worth:
 | `SENZA_TAVOLA_PARZIALE` | covered or overlapping table cards count less (margin × 0.6) |
 | `SENZA_ANGOLO`, `SENZA_BRISCOLA_DRITTA` | a card with a corner covered by another; the trump upright beside the deck |
 | `SENZA_FANTASMA` | a card read in my hand only before a new full hand appeared, never seen on the table, is a false reading and is not drawn later |
-| `SENZA_INGRANDIRE` | the screenshot is enlarged before reading when the cards are shorter than 80 px (up to 150 px, at most twice, at most 3.2 Mpx) |
+| `SENZA_INGRANDIRE` | the screenshot is enlarged before reading when the cards are shorter than 75 px (up to 150 px, at most twice, at most 3.2 Mpx) |
 
 Other variables:
 

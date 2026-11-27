@@ -231,6 +231,10 @@ impl BrisApp {
                 self.scopa.vision_off(ui.ctx());
             }
         }
+        if self.fly.on && self.settings.game == Gioco::Briscola {
+            ui.checkbox(&mut self.fly.show_roles, "Riquadri letti")
+                .on_hover_text("Mostra i ruoli assegnati dal rilevatore sul tavolo di gioco");
+        }
     }
 
     fn vision_on(&mut self, ctx: &egui::Context) {

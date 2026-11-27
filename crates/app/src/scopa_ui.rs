@@ -657,6 +657,7 @@ impl Assist {
             return psyfly::Sight {
                 monitor,
                 hand: Vec::new(),
+                table_roles: [None; 3],
                 guide: psyfly::Guide::Hidden,
                 context: (1, self.generation),
                 played_card: self.history.last().zip(self.obs).and_then(|((before, auto), now)| {
@@ -710,6 +711,7 @@ impl Assist {
         psyfly::Sight {
             monitor,
             hand,
+            table_roles: [None; 3],
             guide,
             context: (1, self.generation),
             played_card: self.history.last().zip(self.obs).and_then(|((before, auto), now)| {

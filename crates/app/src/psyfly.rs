@@ -45,6 +45,8 @@ pub struct Sight {
     pub monitor: Option<Geom>,
     /// Le tue carte sullo schermo (pixel del desktop): ci gironzola sopra.
     pub hand: Vec<[f32; 4]>,
+    /// Riquadri del rilevatore per briscola, propria giocata e giocata avversaria.
+    pub table_roles: [Option<[f32; 4]>; 3],
     pub guide: Guide,
     pub context: (u8, u64),
     pub played_card: Option<u8>,
@@ -53,7 +55,7 @@ pub struct Sight {
 impl Sight {
     /// Niente da indicare: la lettura dello schermo è spenta.
     pub fn off() -> Sight {
-        Sight { monitor: None, hand: Vec::new(), guide: Guide::NoTable, context: (0, 0), played_card: None }
+        Sight { monitor: None, hand: Vec::new(), table_roles: [None; 3], guide: Guide::NoTable, context: (0, 0), played_card: None }
     }
 }
 
@@ -147,6 +149,7 @@ impl Gesture {
 
 pub struct Fly {
     pub on: bool,
+    pub show_roles: bool,
     pos: Pos2,
     vel: Vec2,
     t: f32,
@@ -229,6 +232,7 @@ impl Default for Fly {
     fn default() -> Self {
         Fly {
             on: false,
+            show_roles: false,
             pos: pos2(400.0, 300.0),
             vel: Vec2::ZERO,
             t: 0.0,
@@ -305,6 +309,21 @@ const STARTLED: [&str; 3] = ["Ehi!", "Piano col mouse!", "Bzz! Che spavento!"];
 const PETTED: [&str; 4] = ["Mmm, grattini!", "Bzzzz... che bello", "Ancora, ancora!", "Fusa da mosca: brrr"];
 const NOT_THAT: [&str; 3] = ["No no, quella!", "Non quella!", "Bzz! L'altra!"];
 const LOST: [&str; 3] = ["Dove sono le carte?", "Non vedo il tavolo!", "Bzz? Tutto buio..."];
+
+fn paint_role(painter: &Painter, screen: Rect, rect: Rect, label: &str, color: Color32) {
+    let rect = rect.intersect(screen);
+    if !rect.is_positive() || !rect.is_finite() {
+        return;
+    }
+    painter.rect_stroke(rect, 3.0, Stroke::new(2.0, color), StrokeKind::Inside);
+    let galley = painter.layout_no_wrap(label.to_owned(), FontId::proportional(12.0), color);
+    let label_size = galley.size() + vec2(8.0, 4.0);
+    let x = rect.left().min((screen.right() - label_size.x).max(screen.left()));
+    let y = (rect.top() - label_size.y).max(screen.top());
+    let label_at = pos2(x, y);
+    painter.rect_filled(Rect::from_min_size(label_at, label_size), 3.0, Color32::from_gray(20));
+    painter.galley(label_at + vec2(4.0, 2.0), galley, color);
+}
 
 impl Fly {
     /// L'interruttore della mosca: un pulsante a levetta con la mosca sopra. Vero se è cambiato.
@@ -384,7 +403,7 @@ impl Fly {
         if self.monitor.is_some_and(|m| m != g) {
             // Le carte sono passate su un altro monitor: la mosca ci rientra volando dal bordo,
             // invece di comparire di colpo da un'altra parte.
-            *self = Fly { on: true, context: Some(sight.context), ..Fly::default() };
+            *self = Fly { on: true, show_roles: self.show_roles, context: Some(sight.context), ..Fly::default() };
         }
         self.monitor = Some(g);
         let guide = self.sticky(sight.guide.clone());
@@ -437,6 +456,23 @@ impl Fly {
             let mouse = native::cursor().map(|(x, y, down)| (pos2((x - g.x) / ppp, (y - g.y) / ppp), down));
             self.advance(dt, screen, &hand, &sight.guide, guide.as_ref());
             self.interact(dt, &hand, guide.as_ref(), mouse);
+            if self.show_roles && sight.context.0 == 0 && sight.guide != Guide::Hidden {
+                let labels = [
+                    ("Briscola", Color32::from_rgb(255, 208, 88)),
+                    ("Tua giocata", Color32::from_rgb(99, 219, 170)),
+                    ("Giocata avversaria", Color32::from_rgb(255, 141, 141)),
+                ];
+                for (at, (label, color)) in sight.table_roles.into_iter().zip(labels) {
+                    if let Some(at) = at {
+                        paint_role(&painter, screen, to_local(at), label, color);
+                    }
+                }
+                if let Some(bounds) = hand.iter().copied().filter(|rect| rect.is_finite() && rect.is_positive())
+                    .reduce(|left, right| left.union(right))
+                {
+                    paint_role(&painter, screen, bounds, "Tua mano", Color32::from_rgb(130, 202, 255));
+                }
+            }
             self.paint(&painter, guide.as_ref());
         });
         ctx.request_repaint_after(std::time::Duration::from_millis(16));

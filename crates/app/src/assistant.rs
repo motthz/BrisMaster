@@ -6228,6 +6228,36 @@ mod tests {
         println!("== VARIANTI: perfette {tot_perfect}/{tot_games}, fallite {tot_failed}, interventi {tot_help}, attribuzioni sbagliate {tot_wrong}");
     }
 
+    #[test]
+    fn reads_opening_trump_under_a_red_back_on_light_felt() {
+        use crate::vision::synth::{table, Bg, Deal, Look};
+        let look = Look { bg: Bg::Felt([205, 200, 185]), shadow: 5.0, ..Look::default() };
+        let cards: Vec<_> = (0..40).map(|id| crate::vision::reference::card_image(2, id)).collect();
+        for seed in [91_000, 91_037] {
+            crate::vision::detect::forget_reading_state();
+            let game = Game::new(&mut SmallRng::seed_from_u64(seed), (seed % 2) as u8);
+            let mut deal = Deal {
+                hand: game.hands[0].iter().map(|id| &cards[id as usize]).collect(),
+                opp: None,
+                mine: None,
+                trump: Some(&cards[game.trump_card as usize]),
+                deck: true,
+            };
+            let memory = Mutex::new(Memory::in_memory());
+            let scene = read_briscola(&table(&deal, &look), &memory).expect("table");
+            assert_eq!(scene.hand.len(), 3);
+            let trump = scene.trump.expect("visible trump");
+            let (card, margin) = trump.best(CardSet::FULL).expect("trump identity");
+            assert_eq!(card, game.trump_card, "seed {seed}");
+            assert!(margin >= AUTO_MARGIN, "seed {seed}: {margin}");
+
+            crate::vision::detect::forget_reading_state();
+            deal.trump = None;
+            let empty = read_briscola(&table(&deal, &look), &memory).expect("table without trump");
+            assert!(empty.trump.is_none(), "seed {seed}: deck without a face-up card");
+        }
+    }
+
     fn play_on_screen_with_light(
         seed: u64, style: usize, look: crate::vision::synth::Look,
         linger: bool, flicker: bool, gain: [f32; 3], gray: bool, allow_recovery: bool,

@@ -3162,6 +3162,14 @@ fn assign_briscola(img: &Img, mut a: Analysis) -> Scene {
     {
         if let Some(x) = hand_cx {
             let card_w = hand.iter().map(|card| card.rect.short()).sum::<f32>() / hand.len() as f32;
+            if let Some(candidate) = trump_from_deck_edge(img, x, top, card_l, card_w) {
+                let current = scene.trump.as_ref().map_or(0.0, |card| {
+                    card.sim.iter().copied().fold(0.0, f32::max)
+                });
+                if candidate.score > current + 0.04 {
+                    scene.trump = Some(candidate.view);
+                }
+            }
             if let Some(candidate) = trump_under_dark_back(img, x, top, card_l, card_w) {
                 let current = scene.trump.as_ref().map_or(0.0, |card| {
                     card.sim.iter().copied().fold(0.0, f32::max)
@@ -3226,6 +3234,84 @@ fn corner_covered(img: &Img, blob: &Blob, known: &[Found], card_l: f32, card_w: 
         }
     }
     None
+}
+
+/// La carta sotto un dorso può formare con lui un unico contorno chiaro.
+fn trump_from_deck_edge(img: &Img, hand_x: f32, hand_y: f32, length: f32, width: f32) -> Option<Found> {
+    if off("BRIS_SENZA_BORDO_TALLONE") {
+        return None;
+    }
+    let thumb = img.shrink(2);
+    // Il tavolo può essere anche grigio o avorio. Campiona la parte
+    // centrale, lontana dal tallone laterale e dalla riga della mano.
+    let samples: Vec<_> = (4..9).flat_map(|row| (4..9).map(move |col| (col, row)))
+        .map(|(col, row)| thumb.at(col * thumb.w / 12, row * thumb.h / 12))
+        .collect();
+    let background: [u8; 3] = std::array::from_fn(|channel| {
+        let mut values: Vec<_> = samples.iter().map(|pixel| pixel[channel]).collect();
+        values.sort_unstable();
+        values[values.len() / 2]
+    });
+    let ink: Vec<_> = thumb.px.iter().map(|&pixel| {
+        let min = pixel.into_iter().min().unwrap();
+        let max = pixel.into_iter().max().unwrap();
+        !same_table(pixel, background) && (max <= 65 || (max <= 210 && max - min >= 55))
+    }).collect();
+    let mut tries = Vec::new();
+    for blob in blobs_r(&thumb, &ink, 0) {
+        let (x, y) = (blob.rect.cx * 2.0, blob.rect.cy * 2.0);
+        let deck_long = blob.rect.long() * 2.0;
+        let deck_short = blob.rect.short() * 2.0;
+        if blob.rect.landscape() || blob.white < 0.73
+            || !(0.78..=1.05).contains(&(deck_long / length))
+            || !(0.70..=1.06).contains(&(deck_short / width))
+            || (x - hand_x).abs() < 2.5 * length
+            || !(1.0..=4.5).contains(&((hand_y - y) / length))
+        {
+            continue;
+        }
+        let length = deck_long + 0.05 * length;
+        let edge_offset = (deck_short + 0.08 * width) / 2.0;
+        for side in [-1.0_f32, 1.0] {
+            let edge = x + side * edge_offset;
+            let paper_at = |distance: f32| {
+                let col = (edge + side * distance).round() as isize;
+                if col < 0 || col >= img.w as isize { return false; }
+                [-0.40, -0.29, 0.29, 0.40].into_iter().filter(|offset| {
+                    let row = (y + offset * width).round().clamp(0.0, img.h as f32 - 1.0);
+                    let rgb = img.at(col as usize, row as usize);
+                    let white = rgb.into_iter().min().unwrap();
+                    let floor = background.into_iter().min().unwrap();
+                    white >= 170 && white >= floor.saturating_add(20)
+                }).count() >= 2
+            };
+            // Cerchiamo il bordo esterno, dove riappare il panno. I simboli
+            // possono interrompere la carta nel mezzo, quindi bastano due righe.
+            let found = (24..=80).rev().map(|percent| length * percent as f32 / 100.0)
+                .find(|&distance| paper_at(distance) && paper_at(distance - 0.025 * length));
+            let Some(exposed) = found else { continue };
+            if paper_at(exposed + 0.06 * length) || !paper_at(0.1 * length) { continue; }
+            for adjustment in [-0.018_f32, 0.0, 0.018] {
+                let fraction = exposed / length + adjustment;
+                let cx = edge + side * (fraction - 0.5) * length;
+                if cx - length / 2.0 < 0.0 || cx + length / 2.0 >= img.w as f32 { continue; }
+                for width_ratio in [0.94, 1.0, 1.06] {
+                    let rect = RotRect {
+                        cx, cy: y, u: (0.0, 1.0), v: (-1.0, 0.0),
+                        hw: width_ratio * width / 2.0, hh: length / 2.0,
+                    };
+                    let vis = if side > 0.0 { [0.0, fraction - 0.02] } else { [1.02 - fraction, 1.0] };
+                    tries.push(Try::new(img, rect, vis));
+                    let reverse = RotRect { u: (0.0, -1.0), v: (1.0, 0.0), ..rect };
+                    tries.push(Try::new(img, reverse, [1.0 - vis[1], 1.0 - vis[0]]));
+                }
+            }
+        }
+    }
+    tries.sort_by(|a, b| b.m.top().total_cmp(&a.m.top()));
+    tries.into_iter().take(4).map(|candidate| candidate.finish(img))
+        .filter(|candidate| candidate.inside < 0.14 && candidate.accepted(0.77))
+        .max_by(|a, b| a.score.total_cmp(&b.score))
 }
 
 /// Cerca l'interno scuro del dorso anche quando il suo bordo bianco

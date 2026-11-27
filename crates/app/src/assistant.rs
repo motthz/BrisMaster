@@ -2560,7 +2560,7 @@ impl Assistant {
     /// dov'è cosa (succede con la mano a ventaglio coperta da una scritta e il tavolo vuoto): la
     /// briscola è quella, e le altre carte fuori dalla mano sono in mano.
     fn fix_layout(&self, scene: &Scene) -> Option<Scene> {
-        // Dopo un'apertura avversaria già registrata, le due caselle possono
+        // Dopo un'apertura già registrata, le due caselle possono
         // invertirsi durante l'animazione. La mano rimasta deve tornare per intero.
         let certain = |view: &CardView| {
             if view.partial || view.recovered_outline {
@@ -2568,22 +2568,27 @@ impl Assistant {
             }
             view.best(CardSet::FULL).filter(|&(_, margin)| margin >= AUTO_MARGIN).map(|(card, _)| card)
         };
-        if self.pos.step() == Step::MyMove && !self.vision.gap {
-            if let (Some(lead), Some(ours), Some(theirs)) = (
+        if !self.vision.gap {
+            if let (Some(lead), Some(in_opp_slot), Some(in_my_slot)) = (
                 self.pos.table,
                 scene.opp_slot.as_ref().and_then(certain),
                 scene.my_slot.as_ref().and_then(certain),
             ) {
-                if theirs == lead && self.pos.hand.contains(ours) {
-                    let remaining: Option<CardSet> = scene.hand.iter().map(certain).collect::<Option<Vec<_>>>()
-                        .map(|cards| cards.into_iter().collect());
-                    let mut expected = self.pos.hand;
-                    expected.remove(ours);
-                    if remaining == Some(expected) && scene.hand.len() == expected.len() as usize {
-                        let mut fixed = scene.clone();
-                        std::mem::swap(&mut fixed.my_slot, &mut fixed.opp_slot);
-                        return Some(fixed);
+                let mut expected = self.pos.hand;
+                let reversed = match self.pos.step() {
+                    Step::MyMove if in_my_slot == lead && expected.contains(in_opp_slot) => {
+                        expected.remove(in_opp_slot);
+                        true
                     }
+                    Step::OppMove => in_opp_slot == lead && self.pos.allowed().contains(in_my_slot),
+                    _ => false,
+                };
+                if reversed && scene.hand.len() == expected.len() as usize
+                    && scene.hand.iter().map(certain).collect::<Option<CardSet>>() == Some(expected)
+                {
+                    let mut fixed = scene.clone();
+                    std::mem::swap(&mut fixed.my_slot, &mut fixed.opp_slot);
+                    return Some(fixed);
                 }
             }
         }
@@ -5485,6 +5490,30 @@ mod tests {
         scene.hand[0] = seen(20, 4.0);
         a.vision.gap = true;
         assert!(a.fix_layout(&scene).is_none());
+    }
+
+    #[test]
+    fn recovers_opponent_reply_from_swapped_slots_without_reusing_hand_cards() {
+        let mut a = Assistant::default();
+        a.rec.off = true;
+        assert!(a.enter(0));
+        a.set_first(ME);
+        for card in [10, 20, 30, 10] { assert!(a.enter(card)); }
+        let mut scene = Scene {
+            opp_slot: Some(seen(10, 4.0)),
+            my_slot: Some(seen(13, 4.0)),
+            hand: vec![seen(20, 4.0), seen(30, 4.0)],
+            ..Default::default()
+        };
+        let fixed = a.fix_layout(&scene).expect("risposta nella casella sbagliata");
+        assert_eq!(fixed.opp_slot.unwrap().best(CardSet::FULL).unwrap().0, 13);
+        assert_eq!(fixed.my_slot.unwrap().best(CardSet::FULL).unwrap().0, 10);
+        scene.my_slot = Some(seen(20, 4.0));
+        assert!(a.fix_layout(&scene).is_none());
+        scene.my_slot = Some(seen(0, 4.0));
+        let fixed = a.fix_layout(&scene).expect("briscola ripristinata");
+        assert!(fixed.my_slot.is_none());
+        assert_eq!(fixed.trump.unwrap().best(CardSet::FULL).unwrap().0, 0);
     }
 
     #[test]

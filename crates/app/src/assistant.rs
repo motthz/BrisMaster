@@ -6243,6 +6243,10 @@ mod tests {
         crate::vision::detect::forget_reading_state();
         let mut a = Assistant::default();
         let hands_off = std::env::var_os("BRIS_SENZA_INTERVENTI").is_some();
+        let calibrated = std::env::var_os("BRIS_TEST_ZONE").is_some();
+        let measure_roles = std::env::var_os("BRIS_TEST_MISURA_RUOLI").is_some();
+        let zones = crate::vision::synth::play_zones(&look);
+        let (mut visible_plays, mut correct_roles, mut reversed_roles) = (0, 0, 0);
         let mut confirms = 0;
         let mut delays = Vec::new();
         a.rec.off = true;
@@ -6278,7 +6282,24 @@ mod tests {
             if let Ok(d) = std::env::var("SALVA") {
                 img.save_png(std::path::Path::new(&format!("{d}/partita_{seed}_{frame:03}.png"))).unwrap();
             }
-            let Some(scene) = read_briscola(&img, &a.vision.memory) else { return Ok(()) };
+            let mut scene = read_briscola(&img, &a.vision.memory);
+            if calibrated {
+                if let Some(scene) = &mut scene {
+                    crate::vision::zones::assign(scene, zones);
+                }
+            }
+            if measure_roles {
+                let best = |card: Option<&CardView>| card.and_then(|card| card.best(CardSet::FULL)).map(|(id, _)| id);
+                let detected = [best(scene.as_ref().and_then(|s| s.my_slot.as_ref())), best(scene.as_ref().and_then(|s| s.opp_slot.as_ref()))];
+                for (index, expected) in [mine, opp].into_iter().enumerate() {
+                    if let Some(expected) = expected {
+                        visible_plays += 1;
+                        correct_roles += usize::from(detected[index] == Some(expected));
+                        reversed_roles += usize::from(detected[index] != Some(expected) && detected[1-index] == Some(expected));
+                    }
+                }
+            }
+            let Some(scene) = scene else { return Ok(()) };
             show(a, &scene);
             if std::env::var_os("BRIS_STRESS_LOG").is_some() {
                 let best = |v: &CardView| v.best(CardSet::FULL).map(|(c, m)| (cards::name(c), m));
@@ -6461,6 +6482,9 @@ mod tests {
                 if !allow_recovery { return Err(error); }
                 delays.push(error);
             }
+        }
+        if measure_roles {
+            println!("RUOLI seed={seed} corrette={correct_roles} invertite={reversed_roles} attese={visible_plays}");
         }
         let (played, identified) = a.played_coverage();
         println!("seed={seed}; copertura {identified}/{played}; giocate reali={}", g.played.len());

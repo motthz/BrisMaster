@@ -1,0 +1,88 @@
+diff --git a/crates/app/src/assistant.rs b/crates/app/src/assistant.rs
+index 57a1a60..e92821d 100644
+--- a/crates/app/src/assistant.rs
++++ b/crates/app/src/assistant.rs
+@@ -6009,6 +6009,11 @@ mod tests {
+                     let result = play_on_screen_with_light(seed, 0, *look, k % 2 == 0, false, [1.0; 3], false, true);
+                     let (w, delays) = LAST_GAME.with(|l| l.get());
+                     wrong += w;
++                    let confirms = result.as_ref().ok().map(|(_, count)| *count);
++                    println!(
++                        "PARTITA siti_possibili {deck_name} {site} seed={seed} completa={} conferme={confirms:?} attribuzioni={w} ritardi={delays}",
++                        result.is_ok(),
++                    );
+                     match result {
+                         Ok((_, confirms)) => {
+                             help += confirms;
+@@ -6084,6 +6089,11 @@ mod tests {
+                 let (w, delays) = LAST_GAME.with(|l| l.get());
+                 wrong += w;
+                 late += delays;
++                let confirms = result.as_ref().ok().map(|(_, count)| *count);
++                println!(
++                    "PARTITA tavoli_varianti {name} seed={seed} completa={} conferme={confirms:?} attribuzioni={w} ritardi={delays}",
++                    result.is_ok(),
++                );
+                 match result {
+                     Ok((_, confirms)) => {
+                         help += confirms;
+@@ -6115,6 +6125,7 @@ mod tests {
+         // Un tavolo nuovo: niente di quello che l'analisi ricorda dalla partita prima.
+         crate::vision::detect::forget_reading_state();
+         let mut a = Assistant::default();
++        let hands_off = std::env::var_os("BRIS_SENZA_INTERVENTI").is_some();
+         let mut confirms = 0;
+         let mut delays = Vec::new();
+         a.rec.off = true;
+@@ -6174,7 +6185,7 @@ mod tests {
+             // Quando il programma chiede esplicitamente la briscola non visibile,
+             // l'utente può inserirla: si misura anche questo intervento, senza
+             // fornire carte vere di nascosto al riconoscitore.
+-            if allow_recovery && a.pos.step() == Step::Trump && a.vision.status.starts_with("Non trovo la briscola") {
++            if !hands_off && allow_recovery && a.pos.step() == Step::Trump && a.vision.status.starts_with("Non trovo la briscola") {
+                 confirms += 1;
+                 println!("seed={seed}; intervento manuale: briscola richiesta dall'app");
+                 assert!(a.enter(g.trump_card));
+@@ -6182,6 +6193,7 @@ mod tests {
+             }
+             // L'utente conferma le carte che l'app chiede (se sono giuste).
+             for _ in 0..3 {
++                if hands_off { break; }
+                 let Some(c) = &a.vision.confirm else { break };
+                 let right = match c.step {
+                     Step::Trump => Some(g.trump_card),
+@@ -6239,7 +6251,7 @@ mod tests {
+                     }
+                 }
+             }
+-            if allow_recovery && a.vision.inconsistent && a.vision.confirm.is_none() {
++            if !hands_off && allow_recovery && a.vision.inconsistent && a.vision.confirm.is_none() {
+                 let step = a.pos.step();
+                 let requested = match step {
+                     Step::Draw(_) => {
+@@ -6349,6 +6361,25 @@ mod tests {
+                 a.pos.tricks, a.pos.points, g.points, a.pos.hand.len(), a.pos.deck_len)
+                 + &format!(", briscola {:?} (vera {})", a.pos.trump_card.map(cards::name), cards::name(g.trump_card)));
+         }
++        if hands_off {
++            if a.pos.trump_card != Some(g.trump_card) {
++                return Err("briscola finale errata".into());
++            }
++            let expected = true_plays.borrow();
++            for player in [ME, OPP] {
++                let actual = a.rec.events.iter().filter_map(|event| match event {
++                    Event::Giocata { presa, chi, carta, .. } if *chi == record::who(player) => {
++                        Some((usize::from(*presa), carta.id))
++                    }
++                    _ => None,
++                });
++                let expected = expected[player as usize]
++                    .iter().copied().enumerate().map(|(index, card)| (index + 1, card));
++                if !actual.eq(expected) {
++                    return Err(format!("storico delle giocate errato per {}", record::who(player)));
++                }
++            }
++        }
+         Ok((a.pos.tricks, confirms))
+     }
+ 

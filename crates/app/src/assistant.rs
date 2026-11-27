@@ -6009,6 +6009,11 @@ mod tests {
                     let result = play_on_screen_with_light(seed, 0, *look, k % 2 == 0, false, [1.0; 3], false, true);
                     let (w, delays) = LAST_GAME.with(|l| l.get());
                     wrong += w;
+                    let confirms = result.as_ref().ok().map(|(_, count)| *count);
+                    println!(
+                        "PARTITA siti_possibili {deck_name} {site} seed={seed} completa={} conferme={confirms:?} attribuzioni={w} ritardi={delays}",
+                        result.is_ok(),
+                    );
                     match result {
                         Ok((_, confirms)) => {
                             help += confirms;
@@ -6084,6 +6089,11 @@ mod tests {
                 let (w, delays) = LAST_GAME.with(|l| l.get());
                 wrong += w;
                 late += delays;
+                let confirms = result.as_ref().ok().map(|(_, count)| *count);
+                println!(
+                    "PARTITA tavoli_varianti {name} seed={seed} completa={} conferme={confirms:?} attribuzioni={w} ritardi={delays}",
+                    result.is_ok(),
+                );
                 match result {
                     Ok((_, confirms)) => {
                         help += confirms;

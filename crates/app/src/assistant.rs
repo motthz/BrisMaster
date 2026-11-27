@@ -1284,7 +1284,7 @@ impl Assistant {
                 }
                 if self.vision.confirm_age.1 >= AUTO_ACCEPT || self.confirm_steady() {
                     self.vision.confirm_age = (None, 0);
-                    self.auto_accept();
+                    self.auto_accept(scene);
                 }
             }
             None => self.vision.confirm_age = (None, 0),
@@ -3077,7 +3077,7 @@ impl Assistant {
     }
 
     /// Accetta da sola la carta proposta (senza impararne l'immagine: non è confermata).
-    fn auto_accept(&mut self) {
+    fn auto_accept(&mut self, scene: &Scene) {
         let Some(c) = self.vision.confirm.take() else { return };
         // Solo la briscola, che resta ferma sotto gli occhi per tutta la partita: una carta
         // giocata o pescata letta senza sicurezza non entra mai da sola. Se nessuno la conferma,
@@ -3103,7 +3103,11 @@ impl Assistant {
             return;
         }
         self.vision.auto = true;
-        if c.step == self.pos.step() {
+        // Alla scadenza, una lettura più recente può aver smentito la proposta.
+        // La prossima lettura stabile riformula la briscola.
+        let still_visible = scene.trump.as_ref().and_then(|v| v.best(CardSet::FULL))
+            .is_some_and(|(card, _)| card == c.card);
+        if c.step == self.pos.step() && still_visible {
             self.enter(c.card);
         }
         self.vision.auto = false;
@@ -5490,6 +5494,24 @@ mod tests {
         scene.hand[0] = seen(20, 4.0);
         a.vision.gap = true;
         assert!(a.fix_layout(&scene).is_none());
+    }
+
+    #[test]
+    fn expired_trump_proposal_requires_matching_current_evidence() {
+        let mut a = Assistant::default();
+        a.rec.off = true;
+        let initial = Scene { trump: Some(seen(7, 0.8)), ..Default::default() };
+        let corrected = Scene { trump: Some(seen(8, 4.0)), ..Default::default() };
+        a.sync_trump(&initial);
+        assert_eq!(a.vision.confirm.as_ref().unwrap().card, 7);
+        a.auto_accept(&corrected);
+        assert!(a.pos.trump_card.is_none());
+        a.sync_trump(&initial);
+        a.auto_accept(&Scene::default());
+        assert!(a.pos.trump_card.is_none());
+        a.sync_trump(&initial);
+        a.auto_accept(&initial);
+        assert_eq!(a.pos.trump_card, Some(7));
     }
 
     #[test]

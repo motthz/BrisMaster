@@ -6369,6 +6369,25 @@ mod tests {
                 a.pos.tricks, a.pos.points, g.points, a.pos.hand.len(), a.pos.deck_len)
                 + &format!(", briscola {:?} (vera {})", a.pos.trump_card.map(cards::name), cards::name(g.trump_card)));
         }
+        if hands_off {
+            if a.pos.trump_card != Some(g.trump_card) {
+                return Err("briscola finale errata".into());
+            }
+            let expected = true_plays.borrow();
+            for player in [ME, OPP] {
+                let actual = a.rec.events.iter().filter_map(|event| match event {
+                    Event::Giocata { presa, chi, carta, .. } if *chi == record::who(player) => {
+                        Some((usize::from(*presa), carta.id))
+                    }
+                    _ => None,
+                });
+                let expected = expected[player as usize]
+                    .iter().copied().enumerate().map(|(index, card)| (index + 1, card));
+                if !actual.eq(expected) {
+                    return Err(format!("storico delle giocate errato per {}", record::who(player)));
+                }
+            }
+        }
         Ok((a.pos.tricks, confirms))
     }
 

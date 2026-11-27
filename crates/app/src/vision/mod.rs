@@ -275,6 +275,17 @@ fn place_table(scene: &mut Scene) {
                 let c = center(v);
                 let d = |p: [f32; 2]| (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2);
                 let mine_is_nearer = d(m) < d(o);
+                let nearest = if mine_is_nearer { m } else { o };
+                let width = v.at[2] - v.at[0];
+                let height = v.at[3] - v.at[1];
+                // Le posizioni apprese valgono solo vicino alle caselle. Un altro tavolo alla
+                // stessa risoluzione può avere una carta lontana da entrambe.
+                if width <= 0.0 || height <= 0.0
+                    || ((nearest[0] - c[0]) / width).powi(2)
+                        + ((nearest[1] - c[1]) / height).powi(2) > 1.0
+                {
+                    return;
+                }
                 if mine_is_nearer && scene.opp_slot.is_some() {
                     scene.my_slot = scene.opp_slot.take();
                 } else if !mine_is_nearer && scene.my_slot.is_some() {
@@ -1752,6 +1763,45 @@ mod tests {
 
     fn best(v: &CardView) -> Card {
         v.best(CardSet::FULL).unwrap().0
+    }
+
+    #[test]
+    fn learned_slots_do_not_move_a_card_from_a_distant_table() {
+        forget_focus();
+        let card = |x: f32, y: f32| {
+            let mut view = CardView::new(Img::new(1, 1), [0.0, 1.0], [0.0; 40]);
+            view.at = [x - 0.035, y - 0.07, x + 0.035, y + 0.07];
+            view
+        };
+
+        // Impara il tavolo A e controlla che una carta vicina venga ancora riassegnata.
+        let pair = Scene {
+            opp_slot: Some(card(0.30, 0.35)),
+            my_slot: Some(card(0.40, 0.55)),
+            ..Scene::default()
+        };
+        for _ in 0..5 {
+            place_table(&mut pair.clone());
+        }
+        let mut near = Scene {
+            opp_slot: Some(card(0.40, 0.55)),
+            ..Scene::default()
+        };
+        place_table(&mut near);
+        assert!(near.opp_slot.is_none() && near.my_slot.is_some());
+
+        // Tavolo B alla stessa risoluzione: la carta più a destra è dell'avversario.
+        let mut distant = Scene {
+            opp_slot: Some(card(0.70, 0.39)),
+            ..Scene::default()
+        };
+        place_table(&mut distant);
+        assert!(distant.opp_slot.is_some() && distant.my_slot.is_none());
+
+        // Tornando al tavolo A, il campione lontano non ha modificato le posizioni.
+        let mut back = Scene { opp_slot: Some(card(0.40, 0.55)), ..Scene::default() };
+        place_table(&mut back);
+        assert!(back.opp_slot.is_none() && back.my_slot.is_some());
     }
 
     #[test]

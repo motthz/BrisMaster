@@ -2185,6 +2185,10 @@ impl Assistant {
         // (E la briscola non è più al suo posto: con una carta della mano non letta le carte
         // sembrano meno di tre anche col mazzo ancora pieno.)
         let trump_shown = scene.trump.as_ref().and_then(sure) == Some(trump);
+        // Una mano parziale e la briscola coperta non provano che il tallone sia finito.
+        if each < 3 && pos.deck_len > 2 && !trump_shown {
+            return false;
+        }
         let exhausted = each < 3 && pos.deck_len > 0 && !trump_shown;
         let unchanged_hand = new.is_empty() && missing.len() <= 1 && !exhausted;
         let endgame_reply = pos.deck_len == 0 && pos.step() == Step::OppMove && pos.table.is_some()
@@ -2466,6 +2470,10 @@ impl Assistant {
         let led = pos.table.is_some() && pos.step() == Step::OppMove;
         let each = hand.len() as u8;
         let trump_shown = scene.trump.as_ref().and_then(|v| v.best(CardSet::FULL)).is_some_and(|b| b.0 == trump && b.1 >= AUTO_MARGIN);
+        // Una mano parziale e la briscola coperta non provano che il tallone sia finito.
+        if each < 3 && pos.deck_len > 2 && !trump_shown {
+            return false;
+        }
         let exhausted = each < 3 && pos.deck_len > 0 && !trump_shown;
         let done = if exhausted || pos.deck_len == 0 {
             (20 - each).saturating_sub(pos.tricks)

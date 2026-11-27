@@ -2313,6 +2313,7 @@ impl Assistant {
             self.pos = p;
         }
         self.vision.gap = false;
+        self.vision.sightings.resume_from(self.pos.hand);
         self.changed();
         self.vision.last = None;
         self.vision.status = format!(
@@ -2520,19 +2521,8 @@ impl Assistant {
         self.history.push((self.pos, self.tricks.len(), self.rec.events.len(), false));
         self.pos = p;
         self.vision.gap = false;
-        // Quello che si era visto in tavola prima non vale più per le prese nuove.
-        let s = &mut self.vision.sightings;
-        for c in 0..40usize {
-            s.table[c] = Sighting::default();
-            s.opponents[c] = Sighting::default();
-            s.lone_mine[c] = Sighting::default();
-            s.my_side[c] = Sighting::default();
-            s.their_side[c] = Sighting::default();
-            if !p.hand.contains(c as Card) {
-                s.hand[c] = Sighting::default();
-            }
-        }
-        self.vision.guessed_leader = Some(s.frame);
+        self.vision.sightings.resume_from(p.hand);
+        self.vision.guessed_leader = Some(self.vision.sightings.frame);
         self.changed();
         self.vision.last = None;
         self.vision.status = format!(
@@ -4264,6 +4254,21 @@ struct Sightings {
 const SIGHT_MARGIN: f32 = 0.8;
 
 impl Sightings {
+    /// Dopo una ripartenza gli avvistamenti del tavolo appartengono alle
+    /// prese passate. Conserva le letture delle carte ancora in mano.
+    fn resume_from(&mut self, hand: CardSet) {
+        self.table.fill(Sighting::default());
+        self.opponents.fill(Sighting::default());
+        self.lone_mine.fill(Sighting::default());
+        self.my_side.fill(Sighting::default());
+        self.their_side.fill(Sighting::default());
+        for (card, sighting) in self.hand.iter_mut().enumerate() {
+            if !hand.contains(card as Card) {
+                *sighting = Sighting::default();
+            }
+        }
+    }
+
     fn update(&mut self, scene: &Scene) {
         if self.hand.is_empty() {
             self.hand = vec![Sighting::default(); 40];
@@ -5789,6 +5794,10 @@ mod tests {
         let mut a = manual_turn();
         assert!(a.enter(10));
         a.vision.gap = true;
+        let old_reply = Scene { opp_slot: Some(seen(12, 8.0)), ..Default::default() };
+        a.vision.sightings.update(&old_reply);
+        a.vision.sightings.update(&old_reply);
+        assert!(a.vision.sightings.opp_sight(12).sure());
         a.vision.sightings.full_hands = vec![(1, vec![20, 11]), (2, vec![20, 11])];
         a.vision.sightings.frame = 2;
         let scene = Scene {
@@ -5806,6 +5815,12 @@ mod tests {
             _ => None,
         }).collect();
         assert_eq!(plays, vec![(1, record::who(ME), 10), (2, record::who(ME), 30)]);
+        assert_eq!(a.vision.sightings.next_opp_play(&a.pos, &scene), None);
+
+        let fresh_reply = Scene { opp_slot: Some(seen(13, 8.0)), ..Default::default() };
+        a.vision.sightings.update(&fresh_reply);
+        a.vision.sightings.update(&fresh_reply);
+        assert_eq!(a.vision.sightings.next_opp_play(&a.pos, &fresh_reply), Some((13, true)));
     }
 
     #[test]

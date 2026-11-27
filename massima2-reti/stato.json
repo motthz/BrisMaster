@@ -1,5 +1,5 @@
 {
-    "aggiornato":  "2026-11-27T16:14:48Z",
+    "aggiornato":  "2026-11-27T16:49:08Z",
     "reti":  [
                  {
                      "hidden":  1024,
@@ -44,10 +44,10 @@
                  {
                      "hidden":  128,
                      "stato":  "in corso",
-                     "partite":  9641984,
+                     "partite":  12476416,
                      "obiettivo":  17000000,
-                     "partite_min":  84672,
-                     "ore_rimaste":  1.45,
+                     "partite_min":  85407,
+                     "ore_rimaste":  0.88,
                      "inizio":  "2026-11-27T14:33:42Z",
                      "fine":  null
                  }

@@ -1074,7 +1074,7 @@ impl Assistant {
         let placement = reader.placement(self.vision.frame_id);
         let monitor = placement.monitor;
         if self.screen_is_behind() {
-            return psyfly::Sight { monitor, hand: Vec::new(), guide: psyfly::Guide::Hidden, context:(0,self.generation), played_card:None };
+            return psyfly::Sight { monitor, hand: Vec::new(), table_roles: [None; 3], guide: psyfly::Guide::Hidden, context:(0,self.generation), played_card:None };
         }
         // Le carte lette ma non più sullo schermo (sparite, coperte, schermo cambiato) non si
         // segnano: la mosca aspetta la prossima lettura invece di indicare un posto vuoto.
@@ -1083,6 +1083,7 @@ impl Assistant {
             return psyfly::Sight {
                 monitor,
                 hand: Vec::new(),
+                table_roles: [None; 3],
                 guide: psyfly::Guide::Hidden,
                 context: (0, self.generation),
                 played_card: self.history.last().and_then(|(before, _, _, auto)| {
@@ -1119,9 +1120,14 @@ impl Assistant {
             }
             _ => psyfly::Guide::Waiting,
         };
+        let table_roles = scene.map_or([None; 3], |scene| {
+            [&scene.trump, &scene.my_slot, &scene.opp_slot]
+                .map(|role| role.as_ref().and_then(|card| placement.on_desktop(card.at)))
+        });
         psyfly::Sight {
             monitor,
             hand,
+            table_roles,
             guide,
             context: (0, self.generation),
             played_card: self.history.last().and_then(|(before, _, _, auto)| {

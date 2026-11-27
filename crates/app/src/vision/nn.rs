@@ -32,6 +32,9 @@ struct Net {
 }
 
 fn net() -> Option<&'static Net> {
+    if cfg!(test) && std::env::var_os("BRIS_TEST_SENZA_RETE").is_some() {
+        return None;
+    }
     static NET: OnceLock<Option<Net>> = OnceLock::new();
     NET.get_or_init(|| {
         let bytes: &[u8] = include_bytes!("../../assets/carte_rete.bin");

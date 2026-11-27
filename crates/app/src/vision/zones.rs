@@ -58,7 +58,7 @@ pub(super) fn apply(scene: &mut Scene, area: Area, geom: Geom) {
     }
 }
 
-fn assign(scene: &mut Scene, zones: [Option<Bounds>; 4]) {
+pub(crate) fn assign(scene: &mut Scene, zones: [Option<Bounds>; 4]) {
     let groups = [scene.trump.as_slice(), scene.hand.as_slice(), scene.my_slot.as_slice(), scene.opp_slot.as_slice()];
     let mut by_role: [Vec<&CardView>; 4] = Default::default();
     let mut changed = false;

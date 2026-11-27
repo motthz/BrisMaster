@@ -313,6 +313,33 @@ pub fn writing_only(look: &Look) -> Img {
 }
 
 /// Il tavolo con le carte, come lo vedrebbe la lettura dello schermo.
+fn play_positions(look: &Look) -> (([f32; 2], f32), ([f32; 2], f32)) {
+    let h = look.card_h;
+    let w = h * look.aspect.unwrap_or(0.62);
+    let (mx, my) = (W as f32 / 2.0, H as f32 / 2.0);
+    match look.table {
+        Table::Classic => (([mx, my - h * 0.45], 0.0), ([mx + w * 0.3, my + h * 0.5], 0.0)),
+        Table::SideBySide => (([mx - w * 0.6, my], 0.0), ([mx + w * 0.6, my], 0.0)),
+        Table::Overlap => (([mx - w * 0.2, my - h * 0.2], 0.0), ([mx + w * 0.2, my + h * 0.25], 0.0)),
+        Table::Tilted => (([mx - w * 0.1, my - h * 0.45], -9.0), ([mx + w * 0.3, my + h * 0.5], 8.0)),
+        Table::LightOverlap => (([mx - w * 0.4, my - h * 0.35], 0.0), ([mx + w * 0.4, my + h * 0.4], 0.0)),
+    }
+}
+
+/// Zone fisse ricavate dalla geometria del tavolo, indipendenti dalle carte.
+pub fn play_zones(look: &Look) -> [Option<[f32; 4]>; 4] {
+    let ((opp, _), (mine, _)) = play_positions(look);
+    let radius = look.card_h * 0.42;
+    let (mut left, mut right) = ([opp[0]-radius, opp[1]-radius, opp[0]+radius, opp[1]+radius],
+        [mine[0]-radius, mine[1]-radius, mine[0]+radius, mine[1]+radius]);
+    let axis = if mine[1] - opp[1] > look.card_h * 0.2 { 1 } else { 0 };
+    let middle = (opp[axis] + mine[axis]) / 2.0;
+    left[axis + 2] = left[axis + 2].min(middle - 1.0);
+    right[axis] = right[axis].max(middle + 1.0);
+    let normalize = |[x0, y0, x1, y1]: [f32; 4]| [x0 / W as f32, y0 / H as f32, x1 / W as f32, y1 / H as f32];
+    [None, None, Some(normalize(right)), Some(normalize(left))]
+}
+
 pub fn table(deal: &Deal, look: &Look) -> Img {
     let mut img = Img::new(W, H);
     let tex = texture(look.bg);
@@ -374,14 +401,7 @@ pub fn table(deal: &Deal, look: &Look) -> Img {
     if deal.deck {
         draw_back_of(&mut img, deck_x, deck_y, pw, ph, look.back, look.rounded * pw);
     }
-    let (mx, my) = (W as f32 / 2.0, H as f32 / 2.0);
-    let (opp_at, mine_at) = match look.table {
-        Table::Classic => (([mx, my - h * 0.45], 0.0), ([mx + w * 0.3, my + h * 0.5], 0.0)),
-        Table::SideBySide => (([mx - w * 0.6, my], 0.0), ([mx + w * 0.6, my], 0.0)),
-        Table::Overlap => (([mx - w * 0.2, my - h * 0.2], 0.0), ([mx + w * 0.2, my + h * 0.25], 0.0)),
-        Table::Tilted => (([mx - w * 0.1, my - h * 0.45], -9.0), ([mx + w * 0.3, my + h * 0.5], 8.0)),
-        Table::LightOverlap => (([mx - w * 0.4, my - h * 0.35], 0.0), ([mx + w * 0.4, my + h * 0.4], 0.0)),
-    };
+    let (opp_at, mine_at) = play_positions(look);
     if let Some(c) = deal.opp {
         draw_card(&mut img, c, look, opp_at.0[0], opp_at.0[1], h, opp_at.1);
     }

@@ -14,6 +14,7 @@ pub mod pips;
 pub mod nn;
 pub mod layout;
 pub mod screen;
+pub mod zones;
 #[cfg(test)]
 pub(crate) mod synth;
 #[cfg(test)]
@@ -878,10 +879,14 @@ pub trait Located {
     /// Tutte le carte visibili, inseguite singolarmente fra i riconoscimenti.
     fn spots(&self) -> Vec<[f32; 4]>;
     fn refine_native(&mut self, _img: &Img) {}
+    fn apply_zones(&mut self, _area: screen::Area, _geom: capture::Geom) {}
 
 }
 
 impl Located for Scene {
+    fn apply_zones(&mut self, area: screen::Area, geom: capture::Geom) {
+        zones::apply(self, area, geom);
+    }
     fn spots(&self) -> Vec<[f32; 4]> {
         self.hand
             .iter()
@@ -1193,7 +1198,10 @@ impl<S: Located + Send + Clone + 'static> Reader<S> {
                                     .unwrap_or_default();
                                 Reading::Error(format!("errore interno ({why})"))
                             }
-                            Ok(Some(s)) => {
+                            Ok(Some(mut s)) => {
+                                if let Some((geom, area)) = at {
+                                    s.apply_zones(area, geom);
+                                }
                                 // Le carte sono su questo monitor: la mosca va qui, e da qui si
                                 // insegue la zona delle carte nelle catture che seguono.
                                 let mut sp = found.lock().unwrap_or_else(|e| e.into_inner());

@@ -427,6 +427,7 @@ struct Vision {
     sightings: Sightings,
     /// Scelta del monitor e dell'area del tavolo, e diagnosi.
     picker: crate::vision::screen::AreaPicker,
+    zones: crate::vision::zones::Editor,
     /// L'ultima lettura non ha trovato il tavolo.
     lost: bool,
     /// Le carte decise dall'utente (scritte o confermate), con le prese fatte fino a quel momento
@@ -3236,6 +3237,7 @@ impl Assistant {
             scene.trump.iter().chain(&scene.opp_slot).chain(&scene.my_slot).chain(&scene.hand).collect::<Vec<_>>()
         }).unwrap_or_default();
         self.vision.picker.controls(ui, last, &summary, &self.vision.memory, &cards);
+        self.vision.zones.controls(ui);
         let ctx = ui.ctx().clone();
         if let Some(c) = &mut self.vision.confirm {
             let tex = c.texture.get_or_insert_with(|| {

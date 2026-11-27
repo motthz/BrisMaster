@@ -5511,7 +5511,9 @@ mod tests {
         scene.my_slot = Some(seen(20, 4.0));
         assert!(a.fix_layout(&scene).is_none());
         scene.my_slot = Some(seen(0, 4.0));
-        assert!(a.fix_layout(&scene).is_none());
+        let fixed = a.fix_layout(&scene).expect("briscola ripristinata");
+        assert!(fixed.my_slot.is_none());
+        assert_eq!(fixed.trump.unwrap().best(CardSet::FULL).unwrap().0, 0);
     }
 
     #[test]

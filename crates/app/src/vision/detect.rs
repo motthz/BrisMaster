@@ -3112,7 +3112,9 @@ fn assign_briscola(img: &Img, mut a: Analysis) -> Scene {
         scene.trump = Some(t.view.clone());
     } else if !hand.is_empty() {
         let card_w = hand.iter().map(|f| f.rect.short()).sum::<f32>() / hand.len() as f32;
-        if let Some(t) = trump_beside_deck(img, &a.blobs, &a.cards, card_l, card_w) {
+        if let Some(t) = trump_beside_deck(img, &a.blobs, &a.cards, card_l, card_w)
+            .or_else(|| trump_under_deck(img, &a.blobs, hand_cx?, top, card_l, card_w))
+        {
             scene.trump = Some(t.view);
         }
     }
@@ -3210,6 +3212,38 @@ fn corner_covered(img: &Img, blob: &Blob, known: &[Found], card_l: f32, card_w: 
         }
     }
     None
+}
+
+fn trump_under_deck(img: &Img, blobs: &[Blob], hand_x: f32, hand_y: f32, length: f32, width: f32) -> Option<Found> {
+    // Il dorso isolato permette di ritagliare la briscola anche quando il suo bordo
+    // bianco è unito al mazzo o spezzato dai simboli della carta.
+    let mut candidates = Vec::new();
+    for deck in blobs.iter().filter(|b| {
+        b.white <= 0.3
+            && !b.rect.landscape()
+            && (0.85..=1.15).contains(&(b.rect.long() / length))
+            && (0.75..=1.20).contains(&(b.rect.short() / width))
+            && (b.rect.cx - hand_x).abs() > 2.5 * length
+            && (0.8..=4.5).contains(&((hand_y - b.rect.cy) / length))
+    }) {
+        let length = deck.rect.long();
+        let half_width = deck.rect.short() / 2.0;
+        for side in [-1.0, 1.0] {
+            let edge = deck.rect.cx + side * half_width;
+            for visible in [0.45_f32, 0.55, 0.65] {
+                let cx = edge + side * (visible - 0.5) * length;
+                if cx - length / 2.0 < 0.0 || cx + length / 2.0 >= img.w as f32 {
+                    continue;
+                }
+                let rect = RotRect { cx, cy: deck.rect.cy, u: (0.0, 1.0), v: (-1.0, 0.0), hw: half_width, hh: length / 2.0 };
+                let vis = if side > 0.0 { [0.0, visible - 0.03] } else { [1.03 - visible, 1.0] };
+                candidates.push(Try::new(img, rect, vis));
+            }
+        }
+    }
+    candidates.sort_by(|a, b| b.m.top().total_cmp(&a.m.top()));
+    candidates.into_iter().take(2).map(|candidate| candidate.finish(img))
+        .find(|candidate| candidate.accepted(0.72))
 }
 
 /// La briscola dritta accanto al mazzo e coperta di lato dal mazzo: una zona chiara alta come una

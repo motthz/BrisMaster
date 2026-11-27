@@ -3116,6 +3116,19 @@ fn assign_briscola(img: &Img, mut a: Analysis) -> Scene {
             scene.trump = Some(t.view);
         }
     }
+    if scene.trump.as_ref().is_none_or(|card| card.partial) && card_l >= 70.0 {
+        if let Some(x) = hand_cx {
+            let card_w = hand.iter().map(|card| card.rect.short()).sum::<f32>() / hand.len() as f32;
+            if let Some(candidate) = trump_under_dark_back(img, x, top, card_l, card_w) {
+                let current = scene.trump.as_ref().map_or(0.0, |card| {
+                    card.sim.iter().copied().fold(0.0, f32::max)
+                });
+                if candidate.score >= current + 0.05 {
+                    scene.trump = Some(candidate.view);
+                }
+            }
+        }
+    }
     // Le carte dell'avversario coperte, in alto: servono a dividere il tavolo a metà.
     let backs_y = a
         .blobs
@@ -3210,6 +3223,47 @@ fn corner_covered(img: &Img, blob: &Blob, known: &[Found], card_l: f32, card_w: 
         }
     }
     None
+}
+
+/// Cerca l'interno scuro del dorso anche quando il suo bordo bianco
+/// forma una sola componente con la briscola scoperta.
+fn trump_under_dark_back(img: &Img, hand_x: f32, hand_y: f32, length: f32, width: f32) -> Option<Found> {
+    let thumb = img.shrink(2);
+    let dark: Vec<_> = thumb.px.iter().map(|rgb| rgb.iter().all(|&value| value <= 56)).collect();
+    let mut tries = Vec::new();
+    for blob in blobs_r(&thumb, &dark, 0) {
+        let deck = blob.rect;
+        let (x, y) = (deck.cx * 2.0, deck.cy * 2.0);
+        if deck.landscape()
+            || !(0.78..=1.08).contains(&(deck.long() * 2.0 / length))
+            || !(0.72..=1.08).contains(&(deck.short() * 2.0 / width))
+            || (x - hand_x).abs() < 2.5 * length
+            || !(0.8..=4.5).contains(&((hand_y - y) / length))
+        {
+            continue;
+        }
+        for side in [-1.0, 1.0] {
+            let edge = x + side * width / 2.0;
+            for visible in [0.35_f32, 0.45, 0.55, 0.65, 0.75] {
+                let cx = edge + side * (visible - 0.5) * length;
+                if cx - length / 2.0 < 0.0 || cx + length / 2.0 >= img.w as f32 {
+                    continue;
+                }
+                let rect = RotRect {
+                    cx, cy: y, u: (0.0, 1.0), v: (-1.0, 0.0),
+                    hw: width / 2.0, hh: length / 2.0,
+                };
+                let vis = if side > 0.0 { [0.0, visible - 0.04] } else { [1.04 - visible, 1.0] };
+                tries.push(Try::new(img, rect, vis));
+                let reverse = RotRect { u: (0.0, -1.0), v: (1.0, 0.0), ..rect };
+                tries.push(Try::new(img, reverse, [1.0 - vis[1], 1.0 - vis[0]]));
+            }
+        }
+    }
+    tries.sort_by(|a, b| b.m.top().total_cmp(&a.m.top()));
+    tries.into_iter().take(3).map(|candidate| candidate.finish(img))
+        .filter(|candidate| candidate.score >= 0.82 && candidate.inside < 0.15)
+        .max_by(|a, b| a.score.total_cmp(&b.score))
 }
 
 /// La briscola dritta accanto al mazzo e coperta di lato dal mazzo: una zona chiara alta come una

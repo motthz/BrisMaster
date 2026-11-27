@@ -2185,6 +2185,10 @@ impl Assistant {
         // (E la briscola non è più al suo posto: con una carta della mano non letta le carte
         // sembrano meno di tre anche col mazzo ancora pieno.)
         let trump_shown = scene.trump.as_ref().and_then(sure) == Some(trump);
+        // Una mano parziale e la briscola coperta non provano che il tallone sia finito.
+        if each < 3 && pos.deck_len > 2 && !trump_shown {
+            return false;
+        }
         let exhausted = each < 3 && pos.deck_len > 0 && !trump_shown;
         let unchanged_hand = new.is_empty() && missing.len() <= 1 && !exhausted;
         let endgame_reply = pos.deck_len == 0 && pos.step() == Step::OppMove && pos.table.is_some()
@@ -2466,6 +2470,10 @@ impl Assistant {
         let led = pos.table.is_some() && pos.step() == Step::OppMove;
         let each = hand.len() as u8;
         let trump_shown = scene.trump.as_ref().and_then(|v| v.best(CardSet::FULL)).is_some_and(|b| b.0 == trump && b.1 >= AUTO_MARGIN);
+        // Una mano parziale e la briscola coperta non provano che il tallone sia finito.
+        if each < 3 && pos.deck_len > 2 && !trump_shown {
+            return false;
+        }
         let exhausted = each < 3 && pos.deck_len > 0 && !trump_shown;
         let done = if exhausted || pos.deck_len == 0 {
             (20 - each).saturating_sub(pos.tricks)
@@ -6125,6 +6133,7 @@ mod tests {
         // Un tavolo nuovo: niente di quello che l'analisi ricorda dalla partita prima.
         crate::vision::detect::forget_reading_state();
         let mut a = Assistant::default();
+        let hands_off = std::env::var_os("BRIS_SENZA_INTERVENTI").is_some();
         let mut confirms = 0;
         let mut delays = Vec::new();
         a.rec.off = true;
@@ -6184,7 +6193,7 @@ mod tests {
             // Quando il programma chiede esplicitamente la briscola non visibile,
             // l'utente può inserirla: si misura anche questo intervento, senza
             // fornire carte vere di nascosto al riconoscitore.
-            if allow_recovery && a.pos.step() == Step::Trump && a.vision.status.starts_with("Non trovo la briscola") {
+            if !hands_off && allow_recovery && a.pos.step() == Step::Trump && a.vision.status.starts_with("Non trovo la briscola") {
                 confirms += 1;
                 println!("seed={seed}; intervento manuale: briscola richiesta dall'app");
                 assert!(a.enter(g.trump_card));
@@ -6192,6 +6201,7 @@ mod tests {
             }
             // L'utente conferma le carte che l'app chiede (se sono giuste).
             for _ in 0..3 {
+                if hands_off { break; }
                 let Some(c) = &a.vision.confirm else { break };
                 let right = match c.step {
                     Step::Trump => Some(g.trump_card),
@@ -6249,7 +6259,7 @@ mod tests {
                     }
                 }
             }
-            if allow_recovery && a.vision.inconsistent && a.vision.confirm.is_none() {
+            if !hands_off && allow_recovery && a.vision.inconsistent && a.vision.confirm.is_none() {
                 let step = a.pos.step();
                 let requested = match step {
                     Step::Draw(_) => {
@@ -6358,6 +6368,25 @@ mod tests {
             return Err(format!("fine partita: {} prese, punti {:?} (veri {:?}), mano {}, mazzo {}",
                 a.pos.tricks, a.pos.points, g.points, a.pos.hand.len(), a.pos.deck_len)
                 + &format!(", briscola {:?} (vera {})", a.pos.trump_card.map(cards::name), cards::name(g.trump_card)));
+        }
+        if hands_off {
+            if a.pos.trump_card != Some(g.trump_card) {
+                return Err("briscola finale errata".into());
+            }
+            let expected = true_plays.borrow();
+            for player in [ME, OPP] {
+                let actual = a.rec.events.iter().filter_map(|event| match event {
+                    Event::Giocata { presa, chi, carta, .. } if *chi == record::who(player) => {
+                        Some((usize::from(*presa), carta.id))
+                    }
+                    _ => None,
+                });
+                let expected = expected[player as usize]
+                    .iter().copied().enumerate().map(|(index, card)| (index + 1, card));
+                if !actual.eq(expected) {
+                    return Err(format!("storico delle giocate errato per {}", record::who(player)));
+                }
+            }
         }
         Ok((a.pos.tricks, confirms))
     }

@@ -1357,9 +1357,8 @@ pub fn place_on_desktop(at: [f32; 4], g: capture::Geom, area: screen::Area) -> [
 }
 
 /// Le schermate in attesa di analisi: si tiene una schermata quando è cambiata rispetto all'ultima
-/// tenuta (o ogni tanto anche se non cambia). Se l'analisi resta indietro, si scartano le schermate
-/// più simili a quella prima, mai l'ultima: uno stato breve (una presa che resta in tavola un
-/// attimo) non si perde.
+/// tenuta (o ogni tanto anche se non cambia). Se l'analisi resta indietro, si scartano prima
+/// le schermate che differiscono poco da una vicina nella coda.
 pub struct Frames<T = ()> {
     /// Schermata, impronta, dato attaccato, quando è stata catturata e se era cambiata.
     frames: std::collections::VecDeque<(Img, Vec<u8>, T, std::time::Instant, bool)>,
@@ -1420,14 +1419,22 @@ impl<T> Frames<T> {
             return false;
         }
         if self.frames.len() >= FRAMES {
-            // Si scarta una schermata di passaggio (rimasta sullo schermo meno delle altre: un
-            // momento di un'animazione), la più simile a quella prima; mai l'ultima, e mai uno
-            // stato rimasto fermo (la carta giocata in tavola).
+            // Il primo e l'ultimo fotogramma restano in coda. Tra quelli intermedi, si
+            // privilegiano i cambiamenti locali e, a parità, le schermate durate più a lungo.
             let lasted = |i: usize| self.frames[i + 1].3.duration_since(self.frames[i].3);
             let drop = (1..self.frames.len() - 1)
                 .min_by(|&a, &b| {
                     let d = |i: usize| difference(&self.frames[i - 1].1, &self.frames[i].1);
-                    lasted(a).cmp(&lasted(b)).then(d(a).total_cmp(&d(b)))
+                    // Un fotogramma senza cambiamenti significativi rispetto a uno dei due
+                    // vicini è il primo da scartare, anche se è rimasto visibile più a lungo.
+                    let distinct = |i: usize| {
+                        let current = &self.frames[i].1;
+                        changed_cells(&self.frames[i - 1].1, current) >= 2
+                            && changed_cells(current, &self.frames[i + 1].1) >= 2
+                    };
+                    distinct(a).cmp(&distinct(b))
+                        .then(lasted(a).cmp(&lasted(b)))
+                        .then(d(a).total_cmp(&d(b)))
                 })
                 .unwrap_or(0);
             self.frames.remove(drop);
@@ -1888,6 +1895,49 @@ mod tests {
             seen.push(i.px[0][0]);
         }
         assert!(seen.contains(&200), "stato breve perso: {seen:?}");
+    }
+
+    #[test]
+    fn unique_card_frame_survives_a_full_queue() {
+        use synth::{table, Deal, Look};
+
+        let images: Vec<_> = [7, 14, 21, 26, 32]
+            .map(|card| reference::card_image(0, card))
+            .into_iter()
+            .collect();
+        let board = |opponent: bool| table(&Deal {
+            hand: images[..3].iter().collect(),
+            opp: opponent.then_some(&images[3]),
+            mine: None,
+            trump: Some(&images[4]),
+            deck: true,
+        }, &Look::default());
+        let empty = board(false);
+        let played = board(true);
+
+        let start = std::time::Instant::now();
+        let mut queue = Frames::new(std::time::Duration::from_millis(500));
+        for (id, millis) in [0, 16, 32, 96, 160, 224, 288, 352, 416].into_iter().enumerate() {
+            let mut frame = if id == 1 { played.clone() } else { empty.clone() };
+            if id % 2 == 1 && id != 1 {
+                for rgb in &mut frame.px {
+                    *rgb = rgb.map(|channel| channel.saturating_add(4));
+                }
+            }
+            let timestamp = start + std::time::Duration::from_millis(millis);
+            assert!(queue.offer_with(frame, id, timestamp), "fotogramma {id} non ammesso");
+        }
+
+        let mut card_frame = None;
+        while let Some((frame, id)) = queue.next_with() {
+            if id == 1 {
+                card_frame = Some(frame);
+            }
+        }
+        let frame = card_frame.expect("la coda ha espulso l'unico fotogramma con la carta");
+        forget_focus();
+        let scene = read(&frame);
+        assert!(scene.opp_slot.iter().chain(&scene.my_slot).any(|view| best(view) == 26));
     }
 
     #[test]

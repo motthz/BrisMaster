@@ -6133,6 +6133,7 @@ mod tests {
         // Un tavolo nuovo: niente di quello che l'analisi ricorda dalla partita prima.
         crate::vision::detect::forget_reading_state();
         let mut a = Assistant::default();
+        let hands_off = std::env::var_os("BRIS_SENZA_INTERVENTI").is_some();
         let mut confirms = 0;
         let mut delays = Vec::new();
         a.rec.off = true;
@@ -6192,7 +6193,7 @@ mod tests {
             // Quando il programma chiede esplicitamente la briscola non visibile,
             // l'utente può inserirla: si misura anche questo intervento, senza
             // fornire carte vere di nascosto al riconoscitore.
-            if allow_recovery && a.pos.step() == Step::Trump && a.vision.status.starts_with("Non trovo la briscola") {
+            if !hands_off && allow_recovery && a.pos.step() == Step::Trump && a.vision.status.starts_with("Non trovo la briscola") {
                 confirms += 1;
                 println!("seed={seed}; intervento manuale: briscola richiesta dall'app");
                 assert!(a.enter(g.trump_card));
@@ -6200,6 +6201,7 @@ mod tests {
             }
             // L'utente conferma le carte che l'app chiede (se sono giuste).
             for _ in 0..3 {
+                if hands_off { break; }
                 let Some(c) = &a.vision.confirm else { break };
                 let right = match c.step {
                     Step::Trump => Some(g.trump_card),
@@ -6257,7 +6259,7 @@ mod tests {
                     }
                 }
             }
-            if allow_recovery && a.vision.inconsistent && a.vision.confirm.is_none() {
+            if !hands_off && allow_recovery && a.vision.inconsistent && a.vision.confirm.is_none() {
                 let step = a.pos.step();
                 let requested = match step {
                     Step::Draw(_) => {

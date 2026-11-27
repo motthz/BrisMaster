@@ -2041,7 +2041,12 @@ fn analyze_once(img: &Img, small: bool) -> Analysis {
     // rettangoli dubbi.)
     let known = a.cards.iter().filter(|c| !c.partial() && c.score >= KNOWN_DECK).count();
     let whole = a.cards.iter().filter(|c| !c.partial()).count();
-    let unknown_deck = whole == 0 || known * 2 < whole || off("SENZA_NOTO");
+    // Una carta nuova o arrotondata può produrre una sagoma con una
+    // corrispondenza debole anche quando le altre carte identificano il mazzo.
+    // Ripeti la ricerca sui contorni soltanto se la risoluzione permette di
+    // distinguere i quattro lati e almeno una sagoma ha un'identità incerta.
+    let mixed_evidence = a.card_l >= 110.0 && whole >= 2 && known < whole;
+    let unknown_deck = whole == 0 || known * 2 < whole || mixed_evidence || off("SENZA_NOTO");
     {
         let unknown_rule = |c: &Found| c.alone || (!c.partial() && c.score < ACCEPT);
         let sure: Vec<&Found> = a.cards.iter().filter(|c| !unknown_rule(c) && c.score >= ACCEPT).collect();

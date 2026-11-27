@@ -2560,6 +2560,33 @@ impl Assistant {
     /// dov'è cosa (succede con la mano a ventaglio coperta da una scritta e il tavolo vuoto): la
     /// briscola è quella, e le altre carte fuori dalla mano sono in mano.
     fn fix_layout(&self, scene: &Scene) -> Option<Scene> {
+        // Dopo un'apertura avversaria già registrata, le due caselle possono
+        // invertirsi durante l'animazione. La mano rimasta deve tornare per intero.
+        let certain = |view: &CardView| {
+            if view.partial || view.recovered_outline {
+                return None;
+            }
+            view.best(CardSet::FULL).filter(|&(_, margin)| margin >= AUTO_MARGIN).map(|(card, _)| card)
+        };
+        if self.pos.step() == Step::MyMove && !self.vision.gap {
+            if let (Some(lead), Some(ours), Some(theirs)) = (
+                self.pos.table,
+                scene.opp_slot.as_ref().and_then(certain),
+                scene.my_slot.as_ref().and_then(certain),
+            ) {
+                if theirs == lead && self.pos.hand.contains(ours) {
+                    let remaining: Option<CardSet> = scene.hand.iter().map(certain).collect::<Option<Vec<_>>>()
+                        .map(|cards| cards.into_iter().collect());
+                    let mut expected = self.pos.hand;
+                    expected.remove(ours);
+                    if remaining == Some(expected) && scene.hand.len() == expected.len() as usize {
+                        let mut fixed = scene.clone();
+                        std::mem::swap(&mut fixed.my_slot, &mut fixed.opp_slot);
+                        return Some(fixed);
+                    }
+                }
+            }
+        }
         // Con lo zoom alto la carta giocata può essere scambiata per una seconda
         // riga della mano. Conta il movimento rispetto alle letture precedenti:
         // una sola carta sale, le altre restano dove stavano.
@@ -5435,6 +5462,29 @@ mod tests {
         a.vision.sightings.update(&opp);
         a.vision.sightings.update(&opp);
         assert_eq!(a.vision.sightings.next_opp_play(&a.pos, &opp), Some((13, true)));
+    }
+
+    #[test]
+    fn swaps_table_roles_only_when_the_known_lead_and_remaining_hand_agree() {
+        let mut a = Assistant::default();
+        a.rec.off = true;
+        assert!(a.enter(0));
+        a.set_first(OPP);
+        for card in [10, 20, 30, 13] { assert!(a.enter(card)); }
+        let mut scene = Scene {
+            opp_slot: Some(seen(10, 4.0)),
+            my_slot: Some(seen(13, 4.0)),
+            hand: vec![seen(20, 4.0), seen(30, 4.0)],
+            ..Default::default()
+        };
+        let fixed = a.fix_layout(&scene).expect("ruoli invertiti");
+        assert_eq!(fixed.my_slot.unwrap().best(CardSet::FULL).unwrap().0, 10);
+        assert_eq!(fixed.opp_slot.unwrap().best(CardSet::FULL).unwrap().0, 13);
+        scene.hand[0] = seen(10, 4.0);
+        assert!(a.fix_layout(&scene).is_none());
+        scene.hand[0] = seen(20, 4.0);
+        a.vision.gap = true;
+        assert!(a.fix_layout(&scene).is_none());
     }
 
     #[test]

@@ -459,14 +459,14 @@ impl Memory {
     }
 }
 
-fn save_atomic(path: &std::path::Path, memory: &Memory) -> std::io::Result<()> {
+pub(super) fn save_atomic(path: &std::path::Path, value: &impl Serialize) -> std::io::Result<()> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let temp = path.with_extension(format!("{}.tmp", std::process::id()));
     let result = (|| {
-        let bytes = serde_json::to_vec(memory)?;
+        let bytes = serde_json::to_vec(value)?;
         let mut file = std::fs::File::create(&temp)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
